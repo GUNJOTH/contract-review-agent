@@ -1,0 +1,8 @@
+.venv/
+.uv-cache/
+node_modules/
+__pycache__/
+*.py[cod]
+.test-work/
+.tmp-smoke/
+tmp*/

@@ -1,0 +1,2571 @@
+{
+  "bundle_id": "contract-rules-v0.14-9108d8c81499",
+  "source_filename": "合同审批检查自查标准_v0.14.xlsx",
+  "source_sha256": "9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+  "source_sheet": "Sheet1",
+  "source_range": "A1:M54",
+  "source_notes": [
+    "说明：\n1、每合同一份表；\n2、合同税率对公司的收益（0%【技术开发或转让】>13%【自主软件，需附著作权】>6%【一般性服务】>13%【一般商品或自产硬件，如：外购服务器、自产锁具】）\n3、著作权请参照：https://docs.qq.com/sheet/DVVNjRXpEUW5XU3BO?tab=000001核对，【名称】和【规格型号】要相同；\n4、根据合同类型将自查结果填在对应合同类型相邻列【检查说明】中。"
+  ],
+  "rules": [
+    {
+      "rule_id": "CONTRACT-CHECK-0D566D1140D9",
+      "legacy_id": 1,
+      "version": "v0.14",
+      "title": "软件产品销售",
+      "category": "合同类型",
+      "applies_to": [
+        "软件产品销售"
+      ],
+      "condition": null,
+      "check_method": "classification",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C5"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-66F4FDEE8852",
+      "legacy_id": 2,
+      "version": "v0.14",
+      "title": "软件开发/转让服务",
+      "category": "合同类型",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "classification",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C6"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-65C73394F4BA",
+      "legacy_id": 3,
+      "version": "v0.14",
+      "title": "一般商品销售合同",
+      "category": "合同类型",
+      "applies_to": [
+        "一般商品销售合同"
+      ],
+      "condition": null,
+      "check_method": "classification",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C7"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-7EDAE6E42319",
+      "legacy_id": 4,
+      "version": "v0.14",
+      "title": "混合合同",
+      "category": "合同类型",
+      "applies_to": [
+        "混合合同"
+      ],
+      "condition": null,
+      "check_method": "classification",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C8"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-99BE9ADE3773",
+      "legacy_id": 5,
+      "version": "v0.14",
+      "title": "其它服务合同",
+      "category": "合同类型",
+      "applies_to": [
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "classification",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C9"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-875D2A258280",
+      "legacy_id": 6,
+      "version": "v0.14",
+      "title": "金额大小写一致",
+      "category": "金额",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C10"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-5E14216899C4",
+      "legacy_id": 7,
+      "version": "v0.14",
+      "title": "金额明细汇总一致",
+      "category": "金额",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C11"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-2C24E4374821",
+      "legacy_id": 8,
+      "version": "v0.14",
+      "title": "不含税",
+      "category": "金额",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C12"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-CBAFDF262EB8",
+      "legacy_id": 9,
+      "version": "v0.14",
+      "title": "税率",
+      "category": "金额",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "expected_value",
+          "expected_value": 0.13,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "expected_value",
+          "expected_value": 0,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "expected_value",
+          "expected_value": 0.13,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "expected_value",
+          "expected_value": "混合税率",
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "expected_value",
+          "expected_value": 0.06,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C13"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-1BF7A165D755",
+      "legacy_id": 10,
+      "version": "v0.14",
+      "title": "税额",
+      "category": "金额",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C14"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-8A7E00066A65",
+      "legacy_id": 11,
+      "version": "v0.14",
+      "title": "付款方式（付款比例）",
+      "category": "付款",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C15"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+      "legacy_id": 12,
+      "version": "v0.14",
+      "title": "是否有保函要求？",
+      "category": "付款",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C16"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-6DFB2B3C395A",
+      "legacy_id": 13,
+      "version": "v0.14",
+      "title": "付款总额是否与合同额相等",
+      "category": "付款",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C17"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-51E4F72FF9D1",
+      "legacy_id": 14,
+      "version": "v0.14",
+      "title": "发票类型",
+      "category": "发票",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C18"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-F57828183B8B",
+      "legacy_id": 15,
+      "version": "v0.14",
+      "title": "发票金额",
+      "category": "发票",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C19"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-41B683F2356A",
+      "legacy_id": 16,
+      "version": "v0.14",
+      "title": "发票总额是否与合同额相等",
+      "category": "发票",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "deterministic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C20"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-1EB03A0ED5A0",
+      "legacy_id": 17,
+      "version": "v0.14",
+      "title": "源代码",
+      "category": "源代码相关（按关键字搜索）",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "keyword",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": "如果需要交付源码，备注交付原因。"
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C21"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-F036278C7CB9",
+      "legacy_id": 18,
+      "version": "v0.14",
+      "title": "源程序",
+      "category": "源代码相关（按关键字搜索）",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "keyword",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C22"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-997A98C9285D",
+      "legacy_id": 19,
+      "version": "v0.14",
+      "title": "源码",
+      "category": "源代码相关（按关键字搜索）",
+      "applies_to": [],
+      "condition": null,
+      "check_method": "keyword",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C23"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-150551B0F63E",
+      "legacy_id": 20,
+      "version": "v0.14",
+      "title": "代码",
+      "category": "源代码相关（按关键字搜索）",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "keyword",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C24"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-16BC0E4573FB",
+      "legacy_id": 21,
+      "version": "v0.14",
+      "title": "程序",
+      "category": "源代码相关（按关键字搜索）",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "keyword",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": false,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C25"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-AD9C3769093E",
+      "legacy_id": 22,
+      "version": "v0.14",
+      "title": "产权归属",
+      "category": "知识产权",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "human",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "expected_value",
+          "expected_value": "乙方",
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "expected_value",
+          "expected_value": "甲方/双方",
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "expected_value",
+          "expected_value": "甲方",
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "expected_value",
+          "expected_value": "甲方/双方",
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "expected_value",
+          "expected_value": "甲方",
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C26"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-9CCBE1B516D5",
+      "legacy_id": 23,
+      "version": "v0.14",
+      "title": "专利",
+      "category": "知识产权",
+      "applies_to": [],
+      "condition": null,
+      "check_method": "human",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": "软件只能申请发明专利。"
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C27"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-1DA17C10920C",
+      "legacy_id": 24,
+      "version": "v0.14",
+      "title": "期刊",
+      "category": "知识产权",
+      "applies_to": [],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": "不同期刊费用差别非常大。"
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C28"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-68FD46A56186",
+      "legacy_id": 25,
+      "version": "v0.14",
+      "title": "著作权名称",
+      "category": "知识产权",
+      "applies_to": [
+        "软件产品销售",
+        "混合合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "not_applicable",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "not_applicable",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "not_applicable",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C29"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-AA61E0FE61E2",
+      "legacy_id": 26,
+      "version": "v0.14",
+      "title": "微服务",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C30"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-A48023900111",
+      "legacy_id": 27,
+      "version": "v0.14",
+      "title": "信创",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C31"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-6C794D5A861E",
+      "legacy_id": 28,
+      "version": "v0.14",
+      "title": "国产化",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C32"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-0717EBD030A4",
+      "legacy_id": 29,
+      "version": "v0.14",
+      "title": "云架构",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C33"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-D287A323E291",
+      "legacy_id": 30,
+      "version": "v0.14",
+      "title": "大数据",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C34"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-157FEC3F335B",
+      "legacy_id": 31,
+      "version": "v0.14",
+      "title": "数据治理",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C35"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-7816F4A0A226",
+      "legacy_id": 32,
+      "version": "v0.14",
+      "title": "补充，业绩和控标用...",
+      "category": "Qx新技术架构描述相关",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C36"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-97AB266DCBA7",
+      "legacy_id": 33,
+      "version": "v0.14",
+      "title": "合同名称",
+      "category": "合同主体",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C37"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-4C9A7D6FB7EC",
+      "legacy_id": 34,
+      "version": "v0.14",
+      "title": "合同范围",
+      "category": "合同主体",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C38"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-E1903FDBD368",
+      "legacy_id": 35,
+      "version": "v0.14",
+      "title": "技术协议",
+      "category": "合同主体",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C39"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-6D59A5035735",
+      "legacy_id": 36,
+      "version": "v0.14",
+      "title": "违约责任明确",
+      "category": "合同主体",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C40"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-62A5629DD18D",
+      "legacy_id": 37,
+      "version": "v0.14",
+      "title": "合同完整性（无空白等）",
+      "category": "合规性/交付问题",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C41"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-81DA4685E47F",
+      "legacy_id": 38,
+      "version": "v0.14",
+      "title": "工期/交付日期",
+      "category": "合规性/交付问题",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C42"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-1AD81446696C",
+      "legacy_id": 39,
+      "version": "v0.14",
+      "title": "成本估算",
+      "category": "合规性/交付问题",
+      "applies_to": [
+        "软件产品销售",
+        "软件开发/转让服务",
+        "一般商品销售合同",
+        "混合合同",
+        "其它服务合同"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C43"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-5022DA193A57",
+      "legacy_id": 40,
+      "version": "v0.14",
+      "title": "封面：技术开发合同",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C44"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-BACB2ECA9235",
+      "legacy_id": 41,
+      "version": "v0.14",
+      "title": "项目名称",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C45"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-3B7CD50964E7",
+      "legacy_id": 42,
+      "version": "v0.14",
+      "title": "标的内容、范围和要求",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C46"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-EE73FB5AECCA",
+      "legacy_id": 43,
+      "version": "v0.14",
+      "title": "履行的计划、进度、期限、地点、地域和方式",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C47"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-4D4FCC703F14",
+      "legacy_id": 44,
+      "version": "v0.14",
+      "title": "技术情报和资料的保密",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C48"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-BB629A656600",
+      "legacy_id": 45,
+      "version": "v0.14",
+      "title": "风险责任承担",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C49"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-774388E91C1A",
+      "legacy_id": 46,
+      "version": "v0.14",
+      "title": "技术成果归属和收益的分成办法",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "human",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C50"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-274FC4247520",
+      "legacy_id": 47,
+      "version": "v0.14",
+      "title": "验收标准和方法",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C51"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-999C61BD8B59",
+      "legacy_id": 48,
+      "version": "v0.14",
+      "title": "开具技术开发服务发票（税率为0的普票，非专票）",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C52"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-1B59A23E6377",
+      "legacy_id": 49,
+      "version": "v0.14",
+      "title": "合同（包括：技术协议及附件）必须盖骑缝章",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "visual",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C53"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CHECK-44EA101C6E2C",
+      "legacy_id": 50,
+      "version": "v0.14",
+      "title": "如果有是升级、优化、扩展可能会需要提供第一次开发合同",
+      "category": "软件开发服务合同（0税率）重点检查项",
+      "applies_to": [
+        "软件开发/转让服务"
+      ],
+      "condition": null,
+      "check_method": "semantic",
+      "expected_value": null,
+      "risk_level": null,
+      "applicability": {
+        "软件产品销售": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "expected_value": null,
+          "note": null
+        },
+        "一般商品销售合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "混合合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        },
+        "其它服务合同": {
+          "applicability": "unspecified",
+          "expected_value": null,
+          "note": null
+        }
+      },
+      "required_evidence": [],
+      "human_review": true,
+      "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
+      "source_locator": {
+        "locator_type": "table_cell",
+        "sheet_name": "Sheet1",
+        "cell_reference": "C54"
+      }
+    }
+  ],
+  "imported_at": "2026-08-28T01:47:47.153Z"
+}
