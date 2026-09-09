@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -16,7 +16,11 @@ from .facts import (
     extract_tax_rate_facts,
 )
 from .index import evidence_by_id, index_package_snapshot
-from .knowledge import LexicalKnowledgeIndex, build_knowledge_corpus
+from .knowledge import (
+    KnowledgeIndex,
+    LexicalKnowledgeIndex,
+    build_knowledge_corpus,
+)
 from .models import (
     ContractFact,
     ContractPackage,
@@ -26,6 +30,7 @@ from .models import (
     Evidence,
     Finding,
     FindingStatus,
+    KnowledgeChunk,
     ParsedDocument,
     ReviewDecision,
     ReviewReport,
@@ -46,6 +51,7 @@ from .semantic import (
     build_semantic_batch_request_fingerprint,
     build_semantic_model_request,
     findings_from_semantic_response,
+    is_model_judged_rule,
     SemanticReviewer,
 )
 
@@ -156,6 +162,9 @@ def run_review(
     semantic_response: SemanticReviewResponse | None = None,
     semantic_request: SemanticModelRequest | None = None,
     run_id: str | None = None,
+    extra_evidence: Sequence[Evidence] = (),
+    knowledge_index_factory: Callable[[Sequence[KnowledgeChunk]], KnowledgeIndex] | None = None,
+    retrieval_top_k: int = 5,
 ) -> ReviewResult:
     """Run the local deterministic portion and leave unsupported work visible."""
 
@@ -183,17 +192,19 @@ def run_review(
     keyword_facts, keyword_evidence = extract_keyword_facts(parsed_documents, keyword_terms)
     tax_facts, tax_evidence = extract_tax_rate_facts(parsed_documents)
     attachment_references, attachment_evidence = extract_attachment_references(parsed_documents)
-    knowledge_index = LexicalKnowledgeIndex(knowledge_chunks)
+    knowledge_index = (knowledge_index_factory or LexicalKnowledgeIndex)(
+        knowledge_chunks
+    )
     retrieval_traces = []
     retrieved_evidence_ids: dict[str, list[str]] = {}
     retrieved_chunks_by_rule = {}
     chunks_by_id = {chunk.chunk_id: chunk for chunk in knowledge_chunks}
     for rule in rule_bundle.rules:
-        if rule.check_method not in {"semantic", "human", "visual"}:
+        if not is_model_judged_rule(rule):
             continue
         trace = knowledge_index.retrieve(
             rule.title,
-            top_k=5,
+            top_k=retrieval_top_k,
             used_for_rule_ids=[rule.rule_id],
         )
         retrieval_traces.append(trace)
@@ -282,6 +293,7 @@ def run_review(
         retrieved_evidence_ids=retrieved_evidence_ids,
         attachment_references=attachment_references,
         documents=documents,
+        visual_evidence=extra_evidence,
     )
     findings = execution.findings
     evidence_items = [
@@ -291,6 +303,7 @@ def run_review(
         *tax_evidence,
         *attachment_evidence,
         *execution.evidence,
+        *extra_evidence,
     ]
     evidence_items = list(evidence_by_id(evidence_items).values())
     if semantic_response is not None:
@@ -307,7 +320,7 @@ def run_review(
         semantic_rules = [
             rule
             for rule in rule_bundle.rules
-            if rule.check_method in {"semantic", "human", "visual"}
+            if is_model_judged_rule(rule)
         ]
         expected_request_fingerprint = build_semantic_batch_request_fingerprint(
             rules=semantic_rules,
@@ -327,7 +340,7 @@ def run_review(
             item.rule_id
             for item in semantic_response.items
             if item.rule_id in rule_by_id
-            and rule_by_id[item.rule_id].check_method not in {"semantic", "human", "visual"}
+            and not is_model_judged_rule(rule_by_id[item.rule_id])
         }
         if unknown_response_rules or unsupported_response_rules:
             raise ReviewPipelineError(
@@ -423,6 +436,9 @@ def run_review_with_semantic_client(
     ocr_provider: OCRProvider | None = None,
     configuration: Mapping[str, object] | None = None,
     run_id: str | None = None,
+    extra_evidence: Sequence[Evidence] = (),
+    knowledge_index_factory: Callable[[Sequence[KnowledgeChunk]], KnowledgeIndex] | None = None,
+    retrieval_top_k: int = 5,
 ) -> ReviewResult:
     """Run deterministic review, call one provider, then re-run with its snapshot."""
 
@@ -437,6 +453,9 @@ def run_review_with_semantic_client(
         ocr_provider=ocr_provider,
         model_version=model_version,
         configuration=configuration,
+        extra_evidence=extra_evidence,
+        knowledge_index_factory=knowledge_index_factory,
+        retrieval_top_k=retrieval_top_k,
     )
     request = build_semantic_model_request(
         baseline,
@@ -461,6 +480,9 @@ def run_review_with_semantic_client(
         semantic_request=request,
         semantic_response=response,
         run_id=run_id,
+        extra_evidence=extra_evidence,
+        knowledge_index_factory=knowledge_index_factory,
+        retrieval_top_k=retrieval_top_k,
     )
 
 

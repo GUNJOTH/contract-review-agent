@@ -108,6 +108,7 @@ def execute_rule_bundle(
     retrieved_evidence_ids: Mapping[str, Sequence[str]] | None = None,
     attachment_references: Sequence[AttachmentReference] = (),
     documents: Sequence[Document] = (),
+    visual_evidence: Sequence[Evidence] = (),
 ) -> RuleExecutionResult:
     """Evaluate every rule and emit UNKNOWN for checks not yet implemented.
 
@@ -370,6 +371,31 @@ def execute_rule_bundle(
             "human": "由法务、财税或技术审核人直接确认。",
         }.get(rule.check_method, "由审核人确认规则处理方式。")
         retrieval_evidence_ids = list((retrieved_evidence_ids or {}).get(rule.rule_id, ()))
+        visual_evidence_ids = [
+            item.evidence_id
+            for item in visual_evidence
+            if item.evidence_type == EvidenceType.VISUAL_REGION
+        ]
+        if rule.check_method == "visual" and visual_evidence_ids:
+            findings.append(
+                _finding(
+                    rule,
+                    status=FindingStatus.UNKNOWN,
+                    reason=(
+                        f"检测到 {len(visual_evidence_ids)} 项印章/视觉证据，"
+                        "需人工核验是否符合规则要求（如骑缝章覆盖范围）。"
+                    ),
+                    evidence_ids=[
+                        rule_evidence.evidence_id,
+                        package_evidence.evidence_id,
+                        *retrieval_evidence_ids,
+                        *visual_evidence_ids,
+                    ],
+                    recommended_action="人工核验页面图像中的印章位置和覆盖范围。",
+                    confidence=0.0,
+                )
+            )
+            continue
         findings.append(
             _finding(
                 rule,

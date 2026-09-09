@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Sequence
+from typing import Protocol
 
 from .index import index_text_evidence
 from .models import (
@@ -19,6 +20,21 @@ from .models import (
 )
 
 KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.1.0"
+
+
+class KnowledgeIndex(Protocol):
+    """可替换检索器契约：词法/向量检索都产出同样的 RetrievalTrace。
+
+    生产环境可替换为向量检索，但必须保留证据 ID 和版本信息。
+    """
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        used_for_rule_ids: Sequence[str] = (),
+    ) -> RetrievalTrace: ...
 
 
 def _terms(text: str) -> set[str]:
@@ -80,8 +96,15 @@ def build_knowledge_corpus(
             )
     if rule_bundle is not None:
         for rule in rule_bundle.rules:
-            text = " / ".join(
-                value for value in (rule.category, rule.title, rule.condition) if value
+            # 规则块内容带 rule_id 前缀：语义模型收到的 context 是扁平列表，
+            # 只有把规则 ID 写进块内容，模型才能把"规则 ID ↔ 规则定义"对应起来。
+            text = (
+                f"{rule.rule_id} | "
+                + " / ".join(
+                    value
+                    for value in (rule.category, rule.title, rule.condition)
+                    if value
+                )
             )
             item = _rule_evidence(
                 rule.rule_id,
