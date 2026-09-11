@@ -55,6 +55,8 @@ def test_run_task_handler_contract_review_files_mode(monkeypatch):
         assert review["documents"], "应返回文档信息"
         assert review["findings"], "确定性规则应产出审核发现"
         assert review["report"]["finding_counts"]
-        assert result["ai_analysis"] is None  # 测试未配置模型端点
+        assert result["ai_analysis"]["projection_version"]
+        assert result["ai_analysis"]["analysis_id"].startswith("review-")
+        assert result["ai_analysis"]["provider"] == "deterministic-rule-engine"
     finally:
         task_file_store.delete_task_files(task_id)

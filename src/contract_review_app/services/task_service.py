@@ -49,7 +49,9 @@ class TaskService:
         idempotency_key: str | None = None,
     ) -> TaskCreateAcceptedResponse:
         normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
-        if normalized_idempotency_key and hasattr(self._store, "find_by_idempotency_key"):
+        if normalized_idempotency_key and hasattr(
+            self._store, "find_by_idempotency_key"
+        ):
             try:
                 existing = await asyncio.to_thread(
                     self._store.find_by_idempotency_key,
@@ -90,11 +92,39 @@ class TaskService:
                 input_content_type=input_content_type_hint,
             )
         except ValueError as exc:
-            raise AppError(400, "InvalidParameterValue.InvalidTaskType", str(exc)) from exc
+            raise AppError(
+                400, "InvalidParameterValue.InvalidTaskType", str(exc)
+            ) from exc
 
-        try:
-            input_mode, input_path, input_size, input_filename, input_content_type = (
-                await self._persist_input(
+        # 支持 attach_input 的存储先做原子准入，再让唯一胜者消费请求体。
+        # 这样并发重复请求不会各自创建临时目录、写入合同后再删除。
+        deferred_input = hasattr(self._store, "admit_and_create") and hasattr(
+            self._store, "attach_input"
+        )
+        if deferred_input:
+            input_mode, input_size, input_filename, input_content_type = (
+                _input_reservation(
+                    file=file,
+                    files=files,
+                    image_base64=image_base64,
+                    image_url=image_url,
+                )
+            )
+            input_path = self._input_path_hint(task_id)
+        else:
+            input_mode = input_path = input_size = input_filename = (
+                input_content_type
+            ) = None
+
+        if not deferred_input:
+            try:
+                (
+                    input_mode,
+                    input_path,
+                    input_size,
+                    input_filename,
+                    input_content_type,
+                ) = await self._persist_input(
                     task_id=task_id,
                     file=file,
                     files=files,
@@ -102,10 +132,9 @@ class TaskService:
                     image_url=image_url,
                     options=normalized_options,
                 )
-            )
-        except Exception:
-            await self._cleanup_input(task_id)
-            raise
+            except Exception:
+                await self._cleanup_input(task_id)
+                raise
 
         created_at = _now_iso()
         record = AsyncTaskRecord(
@@ -138,10 +167,12 @@ class TaskService:
                     event_limit=settings.TASK_STAGE_EVENT_LIMIT,
                 )
                 if outcome == "full":
-                    await self._cleanup_input(task_id)
+                    if not deferred_input:
+                        await self._cleanup_input(task_id)
                     raise AppError(409, "LimitExceeded.QueueFull")
                 if outcome == "replayed":
-                    await self._cleanup_input(task_id)
+                    if not deferred_input:
+                        await self._cleanup_input(task_id)
                     if accepted is None:  # 防御性检查：存储层必须返回任务记录
                         raise AppError(
                             503,
@@ -153,7 +184,8 @@ class TaskService:
                 # 兼容尚未接入 Redis 原子适配器的轻量集成/测试存储。
                 await asyncio.to_thread(self._store.create, record)
         except Exception as exc:
-            await self._cleanup_input(task_id)
+            if not deferred_input:
+                await self._cleanup_input(task_id)
             if isinstance(exc, AppError):
                 raise
             raise AppError(
@@ -161,6 +193,45 @@ class TaskService:
                 "FailedOperation.UnOpenError",
                 "任务状态保存失败，请稍后重试。",
             ) from exc
+
+        if deferred_input:
+            try:
+                (
+                    input_mode,
+                    input_path,
+                    input_size,
+                    input_filename,
+                    input_content_type,
+                ) = await self._persist_input(
+                    task_id=task_id,
+                    file=file,
+                    files=files,
+                    image_base64=image_base64,
+                    image_url=image_url,
+                    options=normalized_options,
+                )
+                attached = await asyncio.to_thread(
+                    self._store.attach_input,
+                    task_id,
+                    input_mode=input_mode,
+                    input_path=input_path,
+                    input_size=input_size,
+                    input_filename=input_filename,
+                    input_content_type=input_content_type,
+                )
+                if attached is None:
+                    raise AppError(
+                        503,
+                        "FailedOperation.UnOpenError",
+                        "任务输入绑定失败，请稍后重试。",
+                    )
+                record = attached
+            except Exception as exc:
+                await self._cleanup_input(task_id)
+                await self._mark_reserved_task_failed(task_id)
+                if isinstance(exc, AppError):
+                    raise
+                raise
         self._safe_record_task_created(task_type, dispatch.queue_name)
         await self._record_queue_depth(dispatch.queue_name)
         log_async_task_event(
@@ -173,7 +244,9 @@ class TaskService:
             progress=record.progress,
         )
 
-        await asyncio.to_thread(self._enqueue_task, task_id, task_type, dispatch.queue_name)
+        await asyncio.to_thread(
+            self._enqueue_task, task_id, task_type, dispatch.queue_name
+        )
 
         return self._accepted_response(record)
 
@@ -219,7 +292,9 @@ class TaskService:
                 raise AppError(500, "FailedOperation.UnKnowError", "任务结果缺失")
             return task.result
         if task.status == AsyncTaskStatus.FAILED:
-            raise AppError(409, task.error_code or "FailedOperation.TaskFailed", task.error_message)
+            raise AppError(
+                409, task.error_code or "FailedOperation.TaskFailed", task.error_message
+            )
         if task.status == AsyncTaskStatus.EXPIRED:
             raise AppError(410, "FailedOperation.TaskExpired")
         raise AppError(409, "FailedOperation.TaskNotCompleted")
@@ -254,8 +329,12 @@ class TaskService:
                 created_from=created_from,
                 created_to=created_to,
             )
-            normalized_all_tasks = [self._normalize_task_state(task) for task in all_tasks]
-            filtered_tasks = [task for task in normalized_all_tasks if task.status.value == status]
+            normalized_all_tasks = [
+                self._normalize_task_state(task) for task in all_tasks
+            ]
+            filtered_tasks = [
+                task for task in normalized_all_tasks if task.status.value == status
+            ]
             total = len(filtered_tasks)
             start = max(page - 1, 0) * size
             end = start + size
@@ -294,7 +373,10 @@ class TaskService:
 
     def _normalize_task_state(self, task: AsyncTaskRecord) -> AsyncTaskRecord:
         # 查询时补齐过期状态
-        if task.status in {AsyncTaskStatus.SUCCEEDED, AsyncTaskStatus.FAILED} and self._is_past_expiry(task):
+        if task.status in {
+            AsyncTaskStatus.SUCCEEDED,
+            AsyncTaskStatus.FAILED,
+        } and self._is_past_expiry(task):
             return task.model_copy(update={"status": AsyncTaskStatus.EXPIRED})
         return task
 
@@ -302,7 +384,10 @@ class TaskService:
     def _is_past_expiry(task: AsyncTaskRecord) -> bool:
         if not task.expires_at:
             return False
-        return datetime.fromisoformat(task.expires_at) <= datetime.now(timezone.utc).astimezone()
+        return (
+            datetime.fromisoformat(task.expires_at)
+            <= datetime.now(timezone.utc).astimezone()
+        )
 
     def _enqueue_task(self, task_id: str, task_type: str, queue_name: str) -> None:
         try:
@@ -354,7 +439,9 @@ class TaskService:
             first_content_type: str | None = None
             for upload in files:
                 data = await upload.read()
-                payloads.append((upload.filename or "upload.bin", data, upload.content_type))
+                payloads.append(
+                    (upload.filename or "upload.bin", data, upload.content_type)
+                )
                 total_size += len(data)
                 if first_name is None:
                     first_name = upload.filename
@@ -405,6 +492,31 @@ class TaskService:
             "必须提供 file、ImageBase64、ImageUrl 其中之一",
         )
 
+    def _input_path_hint(self, task_id: str) -> str:
+        resolver = getattr(self._file_store, "input_path_for", None)
+        if callable(resolver):
+            return str(resolver(task_id))
+        return str(settings.TASK_INPUT_PATH / task_id / "input.json")
+
+    async def _mark_reserved_task_failed(self, task_id: str) -> None:
+        """输入落盘失败时关闭已准入任务，避免留下可执行的空预约。"""
+
+        marker = getattr(self._store, "mark_failed", None)
+        if not callable(marker):
+            return
+        try:
+            await asyncio.to_thread(
+                marker,
+                task_id,
+                error_code="FailedOperation.InputPersistenceFailed",
+                error_message="任务输入保存失败，任务未进入执行队列。",
+                stage=AsyncTaskStage.FAILED.value,
+                finished_at=_now_iso(),
+                expires_at=_future_iso(settings.TASK_RESULT_TTL_FAILED),
+            )
+        except Exception as exc:  # pragma: no cover - 防御性清理路径
+            logger.warning("准入任务失败状态写入失败", task_id=task_id, error=str(exc))
+
     def _queue_depth(self, queue_name: str) -> int:
         return self._store.count_pending_by_queue(queue_name)
 
@@ -414,12 +526,16 @@ class TaskService:
         try:
             depth = await asyncio.to_thread(self._queue_depth, queue_name)
         except Exception as exc:  # pragma: no cover - broker 观测不可用
-            logger.warning("任务队列深度采集失败", queue_name=queue_name, error=str(exc))
+            logger.warning(
+                "任务队列深度采集失败", queue_name=queue_name, error=str(exc)
+            )
             return
         try:
             metrics.set_async_queue_depth(queue_name, depth)
         except Exception as exc:  # pragma: no cover - broker 观测不可用
-            logger.warning("任务队列深度指标写入失败", queue_name=queue_name, error=str(exc))
+            logger.warning(
+                "任务队列深度指标写入失败", queue_name=queue_name, error=str(exc)
+            )
 
     @staticmethod
     def _safe_record_task_created(task_type: str, queue_name: str) -> None:
@@ -454,7 +570,7 @@ class TaskService:
             )
 
     async def _cleanup_input(self, task_id: str) -> None:
-        """尽力清理任务准入前已经写入的输入文件。"""
+        """尽力清理本次请求已经写入的输入文件。"""
 
         try:
             await asyncio.to_thread(self._file_store.delete_task_files, task_id)
@@ -489,7 +605,9 @@ def _now_iso() -> str:
 
 
 def _future_iso(seconds: int) -> str:
-    return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat()
+    return (
+        datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)
+    ).isoformat()
 
 
 def _input_metadata(
@@ -504,6 +622,31 @@ def _input_metadata(
         first = files[0]
         return first.filename, first.content_type
     return None, None
+
+
+def _input_reservation(
+    *,
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+    image_base64: str | None,
+    image_url: str | None,
+) -> tuple[str, int, str | None, str | None]:
+    """只读取输入元数据，为原子准入构造不含正文的任务预约。"""
+
+    if files:
+        first = files[0]
+        return "files", 0, first.filename, first.content_type
+    if file is not None:
+        return "file", 0, file.filename, file.content_type
+    if image_base64:
+        return "base64", len(image_base64.encode("utf-8")), None, None
+    if image_url:
+        return "url", len(image_url.encode("utf-8")), None, None
+    raise AppError(
+        400,
+        "InvalidParameterValue.InvalidParameterValueLimit",
+        "必须提供 file、ImageBase64、ImageUrl 其中之一",
+    )
 
 
 def _normalize_idempotency_key(value: str | None) -> str | None:

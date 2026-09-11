@@ -563,6 +563,20 @@
         }
       },
       "required_evidence": [],
+      "playbook": {
+        "playbook_id": "payment-position-v1",
+        "version": "v1",
+        "clause_types": ["付款", "支付"],
+        "preferred_position": "验收合格后支付",
+        "fallback_positions": ["分阶段付款"],
+        "prohibited_positions": ["100%预付", "一次性全额预付"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "补充与验收节点绑定的付款比例和付款条件。",
+        "escalation_condition": "付款比例或预付款比例超出企业授权底线时升级法务和财务。"
+      },
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -1140,6 +1154,20 @@
         }
       },
       "required_evidence": [],
+      "playbook": {
+        "playbook_id": "ip-ownership-v1",
+        "version": "v1",
+        "clause_types": ["知识产权", "产权", "成果"],
+        "preferred_position": "甲方所有",
+        "fallback_positions": ["双方共有"],
+        "prohibited_positions": ["乙方所有", "供应商所有"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "ESCALATE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "明确项目成果、源代码及相关知识产权的归属和使用范围。",
+        "escalation_condition": "成果归属或既有知识产权未区分时必须人工确认。"
+      },
       "human_review": true,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -1860,6 +1888,20 @@
         }
       },
       "required_evidence": [],
+      "playbook": {
+        "playbook_id": "breach-liability-v1",
+        "version": "v1",
+        "clause_types": ["违约责任", "违约"],
+        "preferred_position": "违约方应承担",
+        "fallback_positions": ["按实际损失赔偿"],
+        "prohibited_positions": ["不承担任何违约责任", "免责"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "ESCALATE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "补充违约情形、责任承担方式、违约金或损失计算口径。",
+        "escalation_condition": "责任上限、免责或违约金明显失衡时升级人工审查。"
+      },
       "human_review": true,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -2411,6 +2453,20 @@
         }
       },
       "required_evidence": [],
+      "playbook": {
+        "playbook_id": "acceptance-criteria-v1",
+        "version": "v1",
+        "clause_types": ["验收", "验收标准"],
+        "preferred_position": "验收标准和方法",
+        "fallback_positions": ["以甲方书面确认为准"],
+        "prohibited_positions": ["视为验收合格", "自动验收合格"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "补充可验证的验收指标、验收材料、验收期限和不合格处理方式。",
+        "escalation_condition": "验收标准不可量化或与付款条件脱钩时升级项目和法务审核。"
+      },
       "human_review": true,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {

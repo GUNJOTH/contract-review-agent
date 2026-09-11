@@ -15,11 +15,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from .event_store import JsonStageEventStore, StageEventStoreError
 from .models import ReviewResult
 from .replay import build_result_fingerprint
 from .audit import audit_result
 
-STORE_VERSION = "json-audit-store-0.1.0"
+STORE_VERSION = "json-audit-store-0.3.0"
 
 
 class AuditStoreError(RuntimeError):
@@ -71,11 +72,22 @@ class JsonAuditStore:
             "payload_sha256": payload_sha256,
         }
         (temporary / "review.json").write_bytes(payload_bytes)
+        event_store = JsonStageEventStore(temporary)
+        for event in result.run.stage_events:
+            event_store.append_stage_event(event)
+        stage_events_path = temporary / "stage-events" / f"review_run-{run_id}.jsonl"
+        stage_events_path.parent.mkdir(parents=True, exist_ok=True)
+        stage_events_path.touch(exist_ok=True)
+        stage_events_bytes = stage_events_path.read_bytes()
+        manifest["stage_event_count"] = len(result.run.stage_events)
+        manifest["stage_events_sha256"] = hashlib.sha256(stage_events_bytes).hexdigest()
         (temporary / "manifest.json").write_bytes(_json_bytes(manifest))
         try:
             os.rename(temporary, target)
         except OSError as exc:
-            raise AuditStoreError(f"failed to commit review artifact {run_id}: {exc}") from exc
+            raise AuditStoreError(
+                f"failed to commit review artifact {run_id}: {exc}"
+            ) from exc
         return target
 
     def append_revision(self, result: ReviewResult) -> Path:
@@ -103,11 +115,22 @@ class JsonAuditStore:
             "payload_sha256": payload_sha256,
         }
         (temporary / "review.json").write_bytes(payload_bytes)
+        event_store = JsonStageEventStore(temporary)
+        for event in result.run.stage_events:
+            event_store.append_stage_event(event)
+        stage_events_path = temporary / "stage-events" / f"review_run-{run_id}.jsonl"
+        stage_events_path.parent.mkdir(parents=True, exist_ok=True)
+        stage_events_path.touch(exist_ok=True)
+        stage_events_bytes = stage_events_path.read_bytes()
+        manifest["stage_event_count"] = len(result.run.stage_events)
+        manifest["stage_events_sha256"] = hashlib.sha256(stage_events_bytes).hexdigest()
         (temporary / "manifest.json").write_bytes(_json_bytes(manifest))
         try:
             os.rename(temporary, revision_target)
         except OSError as exc:
-            raise AuditStoreError(f"failed to commit review revision {revision_id}: {exc}") from exc
+            raise AuditStoreError(
+                f"failed to commit review revision {revision_id}: {exc}"
+            ) from exc
         return revision_target
 
     def load(self, run_id: str) -> ReviewResult:
@@ -124,10 +147,50 @@ class JsonAuditStore:
             raise AuditStoreError(f"invalid review artifact {run_id}: {exc}") from exc
         if not isinstance(manifest, dict):
             raise AuditStoreError(f"invalid review artifact manifest: {run_id}")
+        if manifest.get("store_version") != STORE_VERSION:
+            raise AuditStoreError(
+                f"unsupported review artifact version: {manifest.get('store_version')}"
+            )
         actual_sha256 = hashlib.sha256(payload_bytes).hexdigest()
-        if manifest.get("run_id") != run_id or manifest.get("payload_sha256") != actual_sha256:
+        if (
+            manifest.get("run_id") != run_id
+            or manifest.get("payload_sha256") != actual_sha256
+        ):
             raise AuditStoreError(f"review artifact integrity check failed: {run_id}")
-        return self._validate_loaded_payload(payload, manifest, run_id)
+        result = self._validate_loaded_payload(payload, manifest, run_id)
+        ledger_root = artifact_source / "stage-events"
+        if not ledger_root.is_dir():
+            raise AuditStoreError(f"stage event ledger is missing: {run_id}")
+        stage_events_path = ledger_root / f"review_run-{run_id}.jsonl"
+        if not stage_events_path.is_file():
+            raise AuditStoreError(f"stage event ledger is missing: {run_id}")
+        try:
+            stage_events_bytes = stage_events_path.read_bytes()
+            expected_event_count = int(manifest["stage_event_count"])
+            expected_event_digest = str(manifest["stage_events_sha256"])
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise AuditStoreError(
+                f"invalid stage event ledger metadata: {run_id}"
+            ) from exc
+        if expected_event_digest != hashlib.sha256(stage_events_bytes).hexdigest():
+            raise AuditStoreError(f"stage event ledger integrity failed: {run_id}")
+        try:
+            events = JsonStageEventStore(artifact_source).list_stage_events(
+                "review_run", run_id
+            )
+        except StageEventStoreError as exc:
+            raise AuditStoreError(
+                f"invalid stage event ledger {run_id}: {exc}"
+            ) from exc
+        if events != result.run.stage_events:
+            raise AuditStoreError(
+                f"stage event ledger does not match review result: {run_id}"
+            )
+        if expected_event_count != len(events):
+            raise AuditStoreError(
+                f"stage event count does not match review result: {run_id}"
+            )
+        return result
 
     @staticmethod
     def _latest_artifact_source(artifact_dir: Path) -> Path:
@@ -160,7 +223,9 @@ class JsonAuditStore:
         try:
             result = ReviewResult.model_validate(payload)
         except ValueError as exc:
-            raise AuditStoreError(f"review artifact schema check failed: {run_id}") from exc
+            raise AuditStoreError(
+                f"review artifact schema check failed: {run_id}"
+            ) from exc
         if result.run.run_id != run_id:
             raise AuditStoreError(f"review artifact run_id mismatch: {run_id}")
         if manifest.get("result_fingerprint") != result.run.result_fingerprint:

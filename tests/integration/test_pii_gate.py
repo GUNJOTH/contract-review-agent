@@ -1,15 +1,12 @@
 """PII fail-closed 门禁与外部语义客户端边界测试。"""
 
 import pytest
-import fitz
 
 from contract_review.models import KnowledgeChunk, SemanticModelRequest
 from contract_review.semantic import SemanticClientError
 from contract_review_app.config import settings
 from contract_review_app.services.pii_gate import gate_external_model_input, scan_text
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
-from contract_review_app.services.review_service import run_contract_review
-from contract_review_app.services.ai_analysis import run_ai_analysis
 from contract_review_app.services.vector_knowledge_index import embed_texts
 
 
@@ -92,28 +89,3 @@ def test_embedding_input_is_also_blocked(monkeypatch):
     )
     with pytest.raises(ValueError, match="PII"):
         embed_texts(["联系人电话：13800138000"], use_cache=False)
-
-
-def test_ai_analysis_returns_explicit_block_without_http_call(monkeypatch, tmp_path):
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_text((72, 72), "联系人电话：13800138000", fontname="china-s")
-    pdf = document.tobytes()
-    document.close()
-    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "http://fake/model")
-    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL", "test-model")
-    monkeypatch.setattr(settings, "CONTRACT_SEAL_DETECTION_ENABLED", False)
-    monkeypatch.setattr(settings, "CONTRACT_REVIEW_CACHE_DIR", str(tmp_path / "review-cache"))
-    monkeypatch.setattr(settings, "CONTRACT_AI_RULES_DB_PATH", str(tmp_path / "ai-rules.db"))
-    monkeypatch.setattr(
-        "contract_review_app.services.ai_analysis._post",
-        lambda *_args, **_kwargs: pytest.fail("PII gate must run before AI HTTP"),
-    )
-    result = run_contract_review(
-        [("pii.pdf", pdf)], package_id="pkg-pii-ai", contract_type="其它服务合同"
-    )
-    analysis = run_ai_analysis(result)
-    assert analysis is not None
-    assert analysis.status == "blocked"
-    assert analysis.provider == "pii-gate"
-    assert analysis.blocked_pii_types == ["mainland_mobile"]

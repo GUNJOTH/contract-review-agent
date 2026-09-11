@@ -23,7 +23,5 @@ htmlcov/
 *.docx
 *.pdf
 
-# Local runtime databases and diagnostics
-data/ai_rules.db
-data/element_fields.db
+# Local runtime diagnostics
 gcm-diagnose.log

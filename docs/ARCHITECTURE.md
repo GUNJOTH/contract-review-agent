@@ -11,6 +11,7 @@
 - 每个发现、模型结论和人工决定都必须引用已持久化的证据 ID；不能因为模型没有把握就补造证据。
 - 文档、规则、模型、提示词、配置和结果都带版本或指纹；同一输入应可以重放并校验结果指纹。
 - OCR、模型和向量服务失败时，结果必须显式降级到 `UNKNOWN`/人工复核，不能静默通过。
+- 知识块显式区分 `source_kind=contract` 与 `source_kind=rule`；规则块可以解释判断标准，但模型结论只能引用合同正文证据。
 - 上传内容、运行时数据库、缓存和 Token 不进入 Git；外部服务只通过配置的网关访问。
 - API 错误对调用方保持稳定且不泄漏内部路径、SQL、堆栈或供应商响应；完整诊断只进受控日志。
 
@@ -44,15 +45,46 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
          → FINALIZED
 ```
 
-失败会进入 `FAILED`，未知证据和未实现能力仍保留在人工复核范围内。`ReviewRun.transitions` 是同步审查的审计轨迹；它与最终 `result_fingerprint` 一起用于回放。
+失败会进入 `FAILED`，未知证据和未实现能力仍保留在人工复核范围内。
+`ReviewRun.stage_events` 是结果内的事件快照，独立 `StageEventStore` 是统一追加/读取
+边界；系统不再维护第二套 `ReviewTransition`。事件账本和最终
+`result_fingerprint` 共同用于审计与回放。
+
+### 业务对象、规则和接口契约
+
+合同审查的核心业务链按以下边界实现：
+
+```text
+ReviewContext（本次业务前提）
+        ↓
+ContractPackage / Document / Evidence（合同包与证据）
+        ↓
+ContractClause / ContractObligation（条款与履约义务）
+        ↓
+RuleBundle / PlaybookSpec（规则快照与企业立场）
+        ↓
+Finding / ReviewQuestion / QuestionAssessment（审查结论）
+        ↓
+ReviewDecision / ContractRevisionSet（人工确认与修订提案）
+```
+
+- `ReviewContext` 统一保存合同类型、交易立场、法域、交易背景和可选规则范围；旧的 `ContractType` 参数只作为兼容入口，不能与上下文中的合同类型冲突。
+- `rules.py` 统一负责规则范围选择、合同类型适用性和规则预期值解析；`playbook.py` 统一负责优选/备选/禁止立场、缺失条款处置和动作生成，Router 与任务处理器不复制这些判断。
+- `ReviewResult.rule_bundle` 始终保留完整规则快照，`review_context.review_scope` 只决定本次执行的规则白名单；所有条款、发现、问题和修订操作继续通过 `Evidence` 回指原文。
+- `KnowledgeChunk.source_kind` 统一区分合同事实和规则依据；语义检索没有合同正文命中时不调用外部模型，规则发现保持 `UNKNOWN` 并进入人工复核。
+- 同步 `POST /api/v1/contract-review` 使用显式表单字段 `PackageId`、`ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext`、`ReviewScope`，返回 `ContractReviewResponse`；异步接口把同一上下文序列化进任务 manifest，由任务处理器还原为 `ReviewContext`。
+- 语义模型请求携带同一 `ReviewContext`，并把上下文写入请求指纹；模型只能输出规则枚举状态和已存在的 `evidence_id`，不能改变规则快照或企业 Playbook。
 
 ### 应用服务：`src/contract_review_app/services`
 
 - `review_service.py`：组合文件指纹、规则快照、解析、印章证据、语义客户端和缓存。
-- `ai_analysis.py`：调用模型输出结构化风险项，绑定证据后与规则发现合并；候选规则只能进入 `draft`，须人工确认。
+- `services/review_context.py`：只负责 API/任务输入的上下文解析与别名归一化，不参与规则判断。
+- `models/review_schemas.py`：定义同步审查和修订提案的 HTTP 响应 DTO，不把领域模型直接作为不受约束的字典返回。
+- `projections.py`：只把核心 `ReviewResult` 投影为历史风险清单、要素抽取和规则目录形状；不执行解析、模型调用或数据库写入。
+- `elements.py`：从解析快照生成带证据的标准合同要素 `ContractFact`，要素结果与审查结果共用同一个事实集合。
 - `task_service.py`：负责上传落盘、任务状态和 Celery 入队；同步 Redis/文件适配器在异步 API 中通过线程池调用。
 - `result_cache.py`：以输入/规则/模型/提示词指纹为键的可选缓存，使用同目录临时文件加原子替换。
-- `rule_evolution.py`、`element_schema.py`：SQLite 中的规则和要素定义，不改写源合同文件。
+- `/rules` 与 `/contract-element-fields` 仅返回正式 `RuleBundle` 和标准要素目录的只读兼容投影。
 
 ### 适配层与运行时
 
@@ -66,24 +98,28 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
 2. 应用服务在线程池中运行确定性审查；文件按稳定 `document_id` 排序，保证上传顺序不影响指纹。
 3. 解析质量门、证据索引、知识检索和规则执行产生 `ReviewResult`。
 4. 如配置了模型，再调用语义客户端；模型请求/响应指纹、规则 ID 和证据 ID 在引擎边界复核。
-5. 可选 AI 风险分析只消费已生成结果；缓存命中不跳过证据校验。
+5. HTTP 层需要历史字段时，只从已生成的 `ReviewResult` 生成兼容投影；缓存命中不跳过证据校验。
 6. 返回报告并停在 `HUMAN_REVIEW`，人工决定通过追加修订记录完成闭环。
 
 ### 异步任务
 
-1. 先校验任务类型，再把上传文件写入任务目录和 `input.json` manifest。
-2. Redis 保存 `PENDING` 记录，Celery 投递到 `contract.heavy` 队列。
+1. 先校验任务类型和输入元数据，再由 Redis Lua 原子完成幂等准入、待处理上限检查和首条事件登记；此时不写合同正文。
+2. 只有原子准入胜者才把上传文件写入任务目录和 `input.json` manifest，再绑定真实输入元数据并投递到 `contract.heavy` 队列；重复请求直接回放原任务。
 3. worker 取得任务锁，按阶段更新心跳/进度，调用同一应用服务和领域引擎。
 4. 成功结果写入 Redis 并进入 TTL；异常按错误码、重试次数和死信策略处理。
 5. reconcile/cleanup 负责僵尸任务、过期结果和残留输入。
 
 ## 4. 本轮已落地的架构改进
 
-这些改动保持现有 API 形状，均有回归测试：
+这些改动采用审查结果 Schema v2，旧结果不再兼容，均有回归测试：
 
 - 请求上下文 ID 现在贯穿成功/业务错误响应；未捕获异常只返回稳定的未知错误码，内部异常仅写日志。
 - 结果缓存改为同目录临时文件 + `os.replace`，读者不会看到半个 JSON；写入失败会清理临时文件并降级为未命中。
-- 异步任务在写入输入前验证 dispatch 配置；Redis 状态创建失败时删除已写输入，避免孤儿任务目录。
+- 异步任务在写入输入前验证 dispatch 配置；Redis 原子准入先登记任务，只有唯一胜者落盘输入并绑定 manifest，持久化失败会把预约任务关闭，避免重复写入和空预约。
+- 阶段事件统一遵循 `StageEventStore` 契约：同步编排使用内存适配器，JSON 审计工件使用独立 `stage-events/*.jsonl`，Redis 使用独立有界列表；任务状态快照不再承担事件账本的持久化边界。
+- `ReviewResult` 新增条款、履约义务、审查问题和问题结论；规则发现被明确映射为 `SUPPORTED`、`CONTRADICTED`、`NOT_MENTIONED`、`UNKNOWN` 或 `NOT_APPLICABLE`，且必须引用持久化证据。
+- 删除“关闭引擎规则、截断规则快照、只解析合同”的旧分支；每次合同审查都执行完整 `RuleBundle`，模型只是有合同证据时的补充判断。
+- 知识块增加显式来源类型，语义模型的证据白名单只包含合同正文命中；规则定义证据被引用时由流水线和审计同时拒绝。
 - Redis、文件和 SQLite 适配器不再直接阻塞 FastAPI 事件循环，查询任务和规则/要素管理接口统一使用 `asyncio.to_thread`。
 
 ## 5. 从优秀项目吸收的模式
@@ -92,7 +128,7 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
 
 - [OpenAI Agents SDK guardrails](https://github.com/openai/openai-agents-python/blob/main/docs/guardrails.md) 的输入/输出/工具门禁启发了“在外部副作用前校验结构和权限”的边界；当前对应实现是语义响应的规则 ID、指纹和证据 ID 校验。
 - [OpenAI Agents SDK tracing](https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md) 和 [OpenTelemetry 语义约定](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) 说明了应以 trace/span 关联阶段、模型、工具和耗时，同时默认过滤敏感内容；当前已提供可选 OTEL span，白名单只保留 ID、阶段、状态、模型和计数，不写入合同正文、提示词或密钥。
-- [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 的 thread-scoped checkpoint 与 durable store 对应本项目已有的 `ReviewRun.transitions`、统一 `StageEvent` 账本和 Redis 任务记录；当前以独立事件账本增强现有领域引擎，而不是替换它。
+- [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 的 thread-scoped checkpoint 与 durable store 对应本项目统一的 `StageEvent` 账本和 Redis 任务记录；当前以独立事件账本增强现有领域引擎，而不是替换它。
 - [openreview-cli 的流水线设计](https://github.com/mohamed-benoughidene/openreview-cli/blob/main/ARCHITECTURE.md) 将解析、隐私门、条款抽取、QA、引用核验和报告拆成可恢复阶段；本项目沿用“先质量门、再检索/规则、最后模型与人工”的顺序。
 - [legal.ai 的 provenance 与人工门](https://github.com/saiabhinav001/legal.ai/blob/main/README.md) 强调每个字段回指源文档片段，低置信度进入人工确认；这与本项目的 `Evidence`、`Finding`、`ReviewDecision` 和 `HUMAN_REVIEW` 状态一致。
 - [Docling Graph provenance](https://docling-project.github.io/docling-graph/fundamentals/graph-management/provenance/) 的“来源账本是事实源、无法确定时留空”原则，强化了本项目 `fail-closed` 的证据绑定约束。
@@ -102,8 +138,8 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
 
 ### P1：边界契约（幂等与事件核心已落地）
 
-- 为异步任务创建增加 `Idempotency-Key` 和 Redis Lua 原子 admission；同一键在 TTL 内只返回原任务，不重复落盘或入队，待处理上限检查与首条事件写入在同一脚本中完成。
-- 把 `ReviewRun.transitions` 和异步任务状态抽象为统一的 `StageEvent` 形状，保留当前 Redis/JSON 适配器；旧结果没有事件账本时仍可按迁移链审计。
+- 为异步任务创建增加 `Idempotency-Key` 和 Redis Lua 原子 admission；同一键在 TTL 内只返回原任务，只有准入胜者落盘/绑定输入并入队，待处理上限检查与首条事件写入在同一脚本中完成。
+- 同步审查和异步任务共用 `StageEventStore` 契约，保留 Redis/JSON 的后端差异但统一追加/读取边界；删除重复的 `ReviewTransition`，缺少 v2 Schema 或独立事件文件的旧结果直接拒绝。
 - 规则编辑、要素编辑和 AI 合同类型的严格 JSON DTO 仍可作为后续收紧项，不把本轮未实现的范围计入验收。
 
 ### P2：生产可观测与隐私（已落地基础能力）

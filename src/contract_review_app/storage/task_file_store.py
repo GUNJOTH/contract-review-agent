@@ -75,7 +75,9 @@ class TaskFileStore:
         }
         return self._write_manifest(task_dir, manifest)
 
-    def save_base64(self, *, task_id: str, encoded: str, options: dict[str, Any]) -> str:
+    def save_base64(
+        self, *, task_id: str, encoded: str, options: dict[str, Any]
+    ) -> str:
         task_dir = self._task_dir(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
         manifest = {
@@ -101,6 +103,11 @@ class TaskFileStore:
 
     def load_manifest(self, manifest_path: str) -> dict[str, Any]:
         return json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+    def input_path_for(self, task_id: str) -> str:
+        """返回预留的 manifest 路径，但不创建任务目录或写入任何字节。"""
+
+        return str(self._task_dir(task_id) / "input.json")
 
     def delete_task_files(self, task_id: str) -> None:
         task_dir = self._task_dir(task_id)
@@ -128,7 +135,9 @@ class TaskFileStore:
 
     def _write_manifest(self, task_dir: Path, manifest: dict[str, Any]) -> str:
         manifest_path = task_dir / "input.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
         return str(manifest_path)
 
 

@@ -1,14 +1,19 @@
+import json
 import shutil
 import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
 import fitz
+from pydantic import ValidationError
 
 from contract_review.models import (
     ContractFact,
+    EvidenceType,
+    KnowledgeSourceKind,
     Rule,
     RuleBundle,
+    ReviewContext,
     ReviewStatus,
     SemanticReviewItem,
     SemanticReviewResponse,
@@ -22,7 +27,10 @@ from contract_review.pipeline import (
     run_review,
     run_review_with_semantic_client,
 )
-from contract_review.semantic import StaticSemanticReviewer, build_semantic_model_request
+from contract_review.semantic import (
+    StaticSemanticReviewer,
+    build_semantic_model_request,
+)
 from contract_review.parser import find_text_evidence, parse_pdf
 from contract_review.store import AuditStoreError, JsonAuditStore
 
@@ -58,7 +66,7 @@ class PipelineTests(unittest.TestCase):
                 Rule(
                     rule_id="semantic-breach",
                     version="v1",
-                    title="违约责任明确",
+                    title="breach responsibility",
                     category="合同主体",
                     applies_to=["software"],
                     check_method="semantic",
@@ -93,6 +101,9 @@ class PipelineTests(unittest.TestCase):
             revision_store_path = self.work_path / "audit-store-revision"
             if revision_store_path.exists():
                 shutil.rmtree(revision_store_path)
+            version_store_path = self.work_path / "audit-store-version"
+            if version_store_path.exists():
+                shutil.rmtree(version_store_path)
 
     def test_run_review_produces_auditable_findings_and_replayable_result(self) -> None:
         first = run_review(
@@ -115,6 +126,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(first.report.overall_status, "UNKNOWN")
         self.assertTrue(first.report.review_required)
         self.assertTrue(first.findings)
+        self.assertEqual(first.schema_version, "2.0")
+        self.assertTrue(first.clauses)
+        self.assertEqual(len(first.review_questions), len(self.bundle.rules))
+        self.assertEqual(len(first.question_assessments), len(first.findings))
         self.assertTrue(first.knowledge_chunks)
         self.assertTrue(first.retrieval_traces)
         chunks = {chunk.chunk_id: chunk for chunk in first.knowledge_chunks}
@@ -127,9 +142,50 @@ class PipelineTests(unittest.TestCase):
             )
         )
         self.assertTrue(
-            all(set(finding.evidence_ids).issubset(evidence_ids) for finding in first.findings)
+            all(
+                set(finding.evidence_ids).issubset(evidence_ids)
+                for finding in first.findings
+            )
         )
         self.assertEqual(first.run.result_fingerprint, second.run.result_fingerprint)
+
+    def test_review_scope_keeps_full_snapshot_and_audits_selected_rules(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-scoped-review",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(
+                contract_type="software",
+                review_scope=["source code"],
+            ),
+            run_id="run-scoped-review",
+        )
+
+        self.assertEqual(len(result.rule_bundle.rules), len(self.bundle.rules))
+        self.assertEqual(
+            result.run.configuration["selected_rule_ids"], ["keyword-source-code"]
+        )
+        self.assertEqual(
+            [question.rule_id for question in result.review_questions],
+            ["keyword-source-code"],
+        )
+        from contract_review.audit import audit_result
+
+        self.assertTrue(audit_result(result).passed)
+
+    def test_v1_result_without_schema_version_is_rejected(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-schema-v2",
+            rule_bundle=self.bundle,
+            contract_type="software",
+            run_id="run-schema-v2",
+        )
+        payload = result.model_dump(mode="json")
+        payload.pop("schema_version")
+
+        with self.assertRaises(ValidationError):
+            type(result).model_validate(payload)
 
     def test_review_decisions_are_required_before_finalization(self) -> None:
         result = run_review(
@@ -167,7 +223,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(finalized.decisions), required_count)
         replayed = replay_review(finalized, [self.pdf_path], rule_bundle=self.bundle)
         self.assertEqual(replayed.run.status, ReviewStatus.FINALIZED)
-        self.assertEqual(replayed.run.result_fingerprint, finalized.run.result_fingerprint)
+        self.assertEqual(
+            replayed.run.result_fingerprint, finalized.run.result_fingerprint
+        )
 
     def test_replay_requires_same_inputs_and_result(self) -> None:
         result = run_review(
@@ -200,7 +258,20 @@ class PipelineTests(unittest.TestCase):
             run_id="run-semantic-baseline",
         )
         semantic_finding = next(
-            finding for finding in baseline.findings if finding.rule_id == "semantic-breach"
+            finding
+            for finding in baseline.findings
+            if finding.rule_id == "semantic-breach"
+        )
+        contract_evidence_id = next(
+            evidence.evidence_id
+            for evidence in baseline.evidence
+            if evidence.evidence_id in semantic_finding.evidence_ids
+            and evidence.evidence_type != EvidenceType.EXTERNAL_REFERENCE
+            and any(
+                chunk.source_kind == KnowledgeSourceKind.CONTRACT
+                and evidence.evidence_id in chunk.evidence_ids
+                for chunk in baseline.knowledge_chunks
+            )
         )
         prompt_version = "contract-review-prompt-v1"
         model_version = "test-model-v1"
@@ -221,7 +292,7 @@ class PipelineTests(unittest.TestCase):
                     rule_id="semantic-breach",
                     status="WARN",
                     reason="条款虽有责任约定，但赔偿上限不清晰。",
-                    evidence_ids=[semantic_finding.evidence_ids[-1]],
+                    evidence_ids=[contract_evidence_id],
                     confidence=0.9,
                 )
             ],
@@ -235,14 +306,46 @@ class PipelineTests(unittest.TestCase):
             semantic_response=response,
             run_id="run-semantic",
         )
-        item = next(finding for finding in result.findings if finding.rule_id == "semantic-breach")
+        item = next(
+            finding
+            for finding in result.findings
+            if finding.rule_id == "semantic-breach"
+        )
         self.assertEqual(item.status, "WARN")
         self.assertEqual(result.run.status, ReviewStatus.HUMAN_REVIEW)
-        self.assertIn("SEMANTIC_REVIEWED", [transition.to_status for transition in result.run.transitions])
+        self.assertIn(
+            "SEMANTIC_REVIEWED",
+            [event.to_stage for event in result.run.stage_events],
+        )
         self.assertEqual(
-            replay_review(result, [self.pdf_path], rule_bundle=self.bundle).run.result_fingerprint,
+            replay_review(
+                result, [self.pdf_path], rule_bundle=self.bundle
+            ).run.result_fingerprint,
             result.run.result_fingerprint,
         )
+
+        rule_evidence_id = next(
+            evidence.evidence_id
+            for evidence in baseline.evidence
+            if evidence.evidence_type == EvidenceType.EXTERNAL_REFERENCE
+        )
+        with self.assertRaisesRegex(ValueError, "cannot cite rule source evidence"):
+            run_review(
+                [self.pdf_path],
+                package_id="pkg-semantic-rule-evidence",
+                rule_bundle=self.bundle,
+                contract_type="software",
+                semantic_request=semantic_request,
+                semantic_response=response.model_copy(
+                    update={
+                        "items": [
+                            response.items[0].model_copy(
+                                update={"evidence_ids": [rule_evidence_id]}
+                            )
+                        ]
+                    }
+                ),
+            )
 
         with self.assertRaises(ValueError):
             run_review(
@@ -254,7 +357,9 @@ class PipelineTests(unittest.TestCase):
                 semantic_response=response.model_copy(
                     update={
                         "items": [
-                            response.items[0].model_copy(update={"evidence_ids": ["not-real"]})
+                            response.items[0].model_copy(
+                                update={"evidence_ids": ["not-real"]}
+                            )
                         ]
                     }
                 ),
@@ -277,7 +382,20 @@ class PipelineTests(unittest.TestCase):
             configuration={"temperature": 0, "top_k": 5},
         )
         semantic_finding = next(
-            finding for finding in baseline.findings if finding.rule_id == "semantic-breach"
+            finding
+            for finding in baseline.findings
+            if finding.rule_id == "semantic-breach"
+        )
+        contract_evidence_id = next(
+            evidence.evidence_id
+            for evidence in baseline.evidence
+            if evidence.evidence_id in semantic_finding.evidence_ids
+            and evidence.evidence_type != EvidenceType.EXTERNAL_REFERENCE
+            and any(
+                chunk.source_kind == KnowledgeSourceKind.CONTRACT
+                and evidence.evidence_id in chunk.evidence_ids
+                for chunk in baseline.knowledge_chunks
+            )
         )
         response = SemanticReviewResponse(
             response_id="captured-response-1",
@@ -290,7 +408,7 @@ class PipelineTests(unittest.TestCase):
                     rule_id="semantic-breach",
                     status="WARN",
                     reason="违约责任条款需要明确赔偿范围。",
-                    evidence_ids=[semantic_finding.evidence_ids[-1]],
+                    evidence_ids=[contract_evidence_id],
                     confidence=0.95,
                 )
             ],
@@ -304,6 +422,7 @@ class PipelineTests(unittest.TestCase):
             model_version="captured-model-v1",
             prompt_version="contract-review-prompt-v2",
             system_instruction="只能引用给定证据；无法确定则返回 UNKNOWN。",
+            contract_type="software",
             configuration={"temperature": 0, "top_k": 5},
             run_id="run-semantic-client",
         )
@@ -315,9 +434,43 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.semantic_response, response)
         self.assertTrue(audit_result(result).passed)
         self.assertEqual(
-            replay_review(result, [self.pdf_path], rule_bundle=self.bundle).run.result_fingerprint,
+            replay_review(
+                result, [self.pdf_path], rule_bundle=self.bundle
+            ).run.result_fingerprint,
             result.run.result_fingerprint,
         )
+
+    def test_semantic_client_skips_rule_without_contract_evidence(self) -> None:
+        unmatched_rule = self.bundle.rules[1].model_copy(
+            update={"title": "unmatched semantic requirement"}
+        )
+        bundle = self.bundle.model_copy(
+            update={
+                "rules": [self.bundle.rules[0], unmatched_rule, self.bundle.rules[2]]
+            }
+        )
+
+        class _UnexpectedSemanticCall:
+            def review(self, _request):
+                raise AssertionError("没有合同正文证据时不应调用语义模型")
+
+        result = run_review_with_semantic_client(
+            [self.pdf_path],
+            package_id="pkg-semantic-no-contract-evidence",
+            rule_bundle=bundle,
+            client=_UnexpectedSemanticCall(),
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+            contract_type="software",
+        )
+
+        finding = next(
+            finding for finding in result.findings if finding.rule_id == unmatched_rule.rule_id
+        )
+        self.assertEqual(finding.status, "UNKNOWN")
+        self.assertIsNone(result.semantic_request)
+        self.assertIsNone(result.semantic_response)
 
     def test_decision_must_cite_the_finding_evidence(self) -> None:
         result = run_review(
@@ -327,7 +480,9 @@ class PipelineTests(unittest.TestCase):
             contract_type="software",
             run_id="run-decision-evidence",
         )
-        finding = next(finding for finding in result.findings if finding.status == "UNKNOWN")
+        finding = next(
+            finding for finding in result.findings if finding.status == "UNKNOWN"
+        )
         unrelated = next(
             evidence.evidence_id
             for evidence in result.evidence
@@ -369,9 +524,18 @@ class PipelineTests(unittest.TestCase):
             contract_type_evidence=fact_evidence,
             run_id="run-contract-type",
         )
-        self.assertIn("contract-type-1-0", {item.evidence_id for item in result.evidence})
+        self.assertTrue(
+            any(
+                item.evidence_id.startswith(
+                    f"contract-type-{parsed.document.document_id}-p1-b0-"
+                )
+                for item in result.evidence
+            )
+        )
         self.assertEqual(
-            replay_review(result, [self.pdf_path], rule_bundle=self.bundle).run.result_fingerprint,
+            replay_review(
+                result, [self.pdf_path], rule_bundle=self.bundle
+            ).run.result_fingerprint,
             result.run.result_fingerprint,
         )
 
@@ -459,6 +623,15 @@ class PipelineTests(unittest.TestCase):
         loaded = store.load(result.run.run_id)
         self.assertEqual(loaded.run.result_fingerprint, result.run.result_fingerprint)
 
+        event_ledger = (
+            artifact / "stage-events" / f"review_run-{result.run.run_id}.jsonl"
+        )
+        event_ledger.write_text(
+            event_ledger.read_text(encoding="utf-8") + "{}\n", encoding="utf-8"
+        )
+        with self.assertRaises(AuditStoreError):
+            store.load(result.run.run_id)
+
         with self.assertRaises(AuditStoreError):
             store.save(result)
 
@@ -477,7 +650,9 @@ class PipelineTests(unittest.TestCase):
         )
         store = JsonAuditStore(self.work_path / "audit-store-revision")
         store.save(result)
-        finding = next(finding for finding in result.findings if finding.status == "UNKNOWN")
+        finding = next(
+            finding for finding in result.findings if finding.status == "UNKNOWN"
+        )
         reviewed = record_review_decision(
             result,
             finding.finding_id,
@@ -492,3 +667,24 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(revision.is_dir())
         self.assertEqual(len(loaded.decisions), 1)
         self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
+
+    def test_json_store_rejects_previous_store_version(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-store-version",
+            rule_bundle=self.bundle,
+            contract_type="software",
+            run_id="run-store-version",
+        )
+        store = JsonAuditStore(self.work_path / "audit-store-version")
+        artifact = store.save(result)
+        manifest_path = artifact / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["store_version"] = "json-audit-store-0.2.0"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(AuditStoreError):
+            store.load(result.run.run_id)

@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     CONTRACT_REVIEW_PROVIDER: str = "openai-compatible"
     CONTRACT_REVIEW_PROMPT_VERSION: str = "contract-review-prompt-v1"
     CONTRACT_REVIEW_TIMEOUT_SECONDS: int = 300
-    CONTRACT_AI_ANALYSIS_TIMEOUT_SECONDS: int = 300
     CONTRACT_REVIEW_JSON_MODE: bool = False
     CONTRACT_SEAL_DETECTION_ENABLED: bool = True
     CONTRACT_SEAL_MAX_PAGES: int = 50
@@ -53,17 +52,10 @@ class Settings(BaseSettings):
     CONTRACT_REVIEW_EMBEDDING_MODEL: str = ""
     CONTRACT_REVIEW_EMBEDDING_CACHE_DIR: str = "runtime/embedding_cache"
     CONTRACT_REVIEW_RETRIEVAL_TOP_K: int = 7
-    CONTRACT_AI_ANALYSIS_ENABLED: bool = True
     # 外部模型调用默认采用 fail-closed PII 门禁；关闭仅适用于已审批的隔离环境。
     CONTRACT_AI_PII_GATE_ENABLED: bool = True
     CONTRACT_AI_PII_MODE: str = "block"
     CONTRACT_PII_SCANNER_VERSION: str = "pii-scanner-0.1.0"
-    CONTRACT_AI_ANALYSIS_PROMPT_VERSION: str = "contract-ai-analysis-v6"
-    CONTRACT_AI_RULES_DB_PATH: str = "data/ai_rules.db"
-    CONTRACT_ELEMENT_SCHEMA_PATH: str = "data/element_fields.db"
-    CONTRACT_AI_RULE_EVOLVE_STALE_REVIEWS: int = 5
-    CONTRACT_AI_RULE_RETRIEVAL_TOP_K: int = 50
-    CONTRACT_ENGINE_RULES_ENABLED: bool = True
     CONTRACT_REVIEW_CACHE_ENABLED: bool = True
     CONTRACT_REVIEW_CACHE_DIR: str = "runtime/review_cache"
 

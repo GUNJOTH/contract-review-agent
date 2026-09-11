@@ -1,9 +1,16 @@
 """RelaySemanticReviewer 单元测试（mock httpx.post，不打外网）。"""
 
+import json
+
 import httpx
 import pytest
 
-from contract_review.models import SemanticModelRequest, SemanticReviewResponse
+from contract_review.models import (
+    PartyPosition,
+    ReviewContext,
+    SemanticModelRequest,
+    SemanticReviewResponse,
+)
 from contract_review.semantic import SemanticClientError
 
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
@@ -78,6 +85,37 @@ def test_review_extracts_json_from_preamble(monkeypatch):
     )
     response = client.review(_request())
     assert response.items[0].status.value == "WARN"
+
+
+def test_review_sends_business_context_with_structured_request(monkeypatch):
+    captured: dict = {}
+
+    def fake_post(endpoint, json=None, headers=None, timeout=None):
+        del endpoint, headers, timeout
+        captured["body"] = json
+        return FakeResponse(_ok_payload('{"items": []}'))
+
+    request = _request().model_copy(
+        update={
+            "review_context": ReviewContext(
+                contract_type="软件开发/转让服务",
+                party_position=PartyPosition.BUYER,
+                jurisdiction="中国大陆",
+                transaction_context="项目采购",
+                review_scope=["金额"],
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "contract_review_app.services.semantic_client.httpx.post", fake_post
+    )
+    RelaySemanticReviewer(
+        endpoint="http://fake/v1/chat/completions", model_version="test-model"
+    ).review(request)
+
+    user_payload = json.loads(captured["body"]["messages"][1]["content"])
+    assert user_payload["review_context"]["party_position"] == "buyer"
+    assert user_payload["review_context"]["review_scope"] == ["金额"]
 
 
 def test_review_omits_response_format_unless_json_mode(monkeypatch):

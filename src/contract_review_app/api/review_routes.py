@@ -3,54 +3,45 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from loguru import logger
 
+from contract_review import (
+    build_revision_set,
+    list_contract_element_definitions,
+    load_rule_bundle,
+    project_element_extraction,
+    project_review_analysis,
+    project_rule_bundle,
+    RuleBundleProjection,
+    RuleGroupProjection,
+    RulePackProjection,
+    RulePacksProjection,
+)
 from contract_review.pipeline import ReviewPipelineError
 
 from contract_review_app.api.auth import verify_api_token
 from contract_review_app.api.errors import AppError
 from contract_review_app.config import settings
-from contract_review_app.services.ai_analysis import (
-    _analysis_fingerprint,
-    run_ai_analysis,
+from contract_review_app.models import (
+    ContractReviewResponse,
+    ContractRevisionSetResponse,
+    TaskCreateAcceptedResponse,
 )
 from contract_review_app.services.result_cache import cache_get
 from contract_review_app.services.document_compare import compare_contract_documents
 from contract_review_app.services.document_preview import preview_contract_document
-from contract_review_app.services.element_extraction import (
-    extract_contract_elements,
-)
-from contract_review_app.services.element_schema import (
-    create_element_field,
-    delete_element_field,
-    get_element_field,
-    list_element_fields,
-    seed_default_fields,
-    update_element_field,
-)
 from contract_review_app.services.review_service import (
     _review_fingerprint,
+    rules_path,
     run_contract_review,
 )
-from contract_review_app.services.rule_evolution import (
-    ENGINE_TOPIC_ORDER,
-    RULE_MODULES,
-    RULE_STATUSES,
-    confirm_rule,
-    create_rule,
-    delete_rule,
-    disable_rule,
-    grouped_rules,
-    list_rules,
-    split_rule_packs,
-    rule_exists,
-    set_rule_enabled,
-    update_rule,
+from contract_review_app.services.review_context import (
+    ReviewContextInputError,
+    build_review_context,
 )
 from contract_review_app.services.task_service import task_service
 from contract_review_app.telemetry.logging import log_error, log_request_end, log_request_start
@@ -60,13 +51,30 @@ from contract_review.models import ReviewResult
 router = APIRouter()
 
 
-@router.post("/contract-review", summary="合同审查（确定性规则 + OCR 网关）")
+@router.post(
+    "/contract-review",
+    response_model=ContractReviewResponse,
+    summary="合同审查（确定性规则 + OCR 网关）",
+)
 async def review_contract(
     request: Request,
     _: bool = Depends(verify_api_token),
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
     ContractType: Optional[str] = Form(None, description="合同类型，如 software"),
+    PartyPosition: Optional[str] = Form(
+        None,
+        description="本方交易立场：buyer/甲方、seller/乙方、both/双方、unknown/未知",
+    ),
+    Jurisdiction: Optional[str] = Form(None, description="适用法域或地区"),
+    TransactionContext: Optional[str] = Form(
+        None,
+        description="交易背景和本次审查需要关注的业务前提",
+    ),
+    ReviewScope: Optional[str] = Form(
+        None,
+        description="规则 ID 或 category，支持逗号分隔文本或 JSON 字符串数组；缺省审查全部规则",
+    ),
 ):
     """上传合同附件包并返回证据化审查结果。
 
@@ -77,6 +85,21 @@ async def review_contract(
     request_id = getattr(request.state, "request_id", None) or "unknown-request"
     endpoint = "/contract-review"
     start_time = time.time()
+
+    try:
+        review_context = build_review_context(
+            contract_type=ContractType,
+            party_position=PartyPosition,
+            jurisdiction=Jurisdiction,
+            transaction_context=TransactionContext,
+            review_scope=ReviewScope,
+        )
+    except ReviewContextInputError as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
 
     log_request_start(
         request_id=request_id,
@@ -108,38 +131,17 @@ async def review_contract(
             run_contract_review,
             file_payloads,
             package_id=PackageId,
-            contract_type=ContractType,
+            review_context=review_context,
         )
-        ai_analysis = await asyncio.to_thread(run_ai_analysis, result)
+        compatibility = project_review_analysis(result)
 
-        # 缓存命中标记（供前端提示"已复用缓存结果"）：审查级 + AI 分析级
-        review_cached = (
-            cache_get(
-                _review_fingerprint(
-                    file_payloads,
-                    package_id=PackageId,
-                    contract_type=ContractType,
-                )
-            )
-            is not None
+        # 缓存命中标记只由核心 ReviewResult 决定；投影没有独立缓存。
+        review_cache_key = _review_fingerprint(
+            file_payloads,
+            package_id=PackageId,
+            review_context=review_context,
         )
-        ai_cached = False
-        if review_cached:
-            try:
-                cached_result = ReviewResult.model_validate_json(
-                    cache_get(
-                        _review_fingerprint(
-                            file_payloads,
-                            package_id=PackageId,
-                            contract_type=ContractType,
-                        )
-                    )["result"]
-                )
-                ai_cached = (
-                    cache_get(_analysis_fingerprint(cached_result)) is not None
-                )
-            except Exception:
-                ai_cached = False
+        review_cached = cache_get(review_cache_key) is not None
 
         duration_ms = (time.time() - start_time) * 1000
         log_request_end(
@@ -151,15 +153,15 @@ async def review_contract(
             fields_extracted={
                 "findings": len(result.findings),
                 "overall": result.report.overall_status.value,
-                "ai_risk_items": len(ai_analysis.items) if ai_analysis else 0,
-                "cached": review_cached and ai_cached,
+                "risk_items": len(compatibility.items),
+                "cached": review_cached,
             },
         )
-        return {
-            "review_result": result.model_dump(mode="json"),
-            "ai_analysis": ai_analysis.model_dump(mode="json") if ai_analysis else None,
-            "cached": review_cached and ai_cached,
-        }
+        return ContractReviewResponse(
+            review_result=result,
+            ai_analysis=compatibility,
+            cached=review_cached,
+        )
     except AppError:
         raise
     except ReviewPipelineError as exc:
@@ -204,76 +206,41 @@ async def review_contract(
         )
 
 
-@router.get("/contract-element-fields", summary="合同要素定义（可自定义抽取字段）")
+@router.post(
+    "/contract-review/revision-set",
+    response_model=ContractRevisionSetResponse,
+    summary="生成合同条款修订提案",
+)
+async def create_contract_revision_set(
+    payload: ReviewResult,
+    _: bool = Depends(verify_api_token),
+):
+    """根据已完成的证据化审查结果生成条款级修订/评论提案。
+
+    接口只生成结构化提案，不直接修改上传文件；只有 Playbook 明确给出
+    REVISE 动作和建议文本时才产生 REPLACE 操作，其余结果保留为 COMMENT，
+    由法务确认后再接入 DOCX 修订写入器。
+    """
+
+    try:
+        revision = await asyncio.to_thread(build_revision_set, payload)
+    except ValueError as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
+    return ContractRevisionSetResponse(revision_set=revision)
+
+
+@router.get("/contract-element-fields", summary="合同标准要素目录（只读）")
 async def get_contract_element_fields(
     _: bool = Depends(verify_api_token),
-    enabled: Optional[bool] = Query(None, description="是否只返回启用字段"),
+    enabled: Optional[bool] = Query(None, description="兼容参数；核心目录始终返回启用字段"),
 ):
-    await asyncio.to_thread(seed_default_fields)
-    fields = await asyncio.to_thread(list_element_fields, enabled=enabled)
+    del enabled
+    fields = await asyncio.to_thread(list_contract_element_definitions)
     return {"fields": fields}
-
-
-@router.post("/contract-element-fields", summary="新增合同要素")
-async def add_contract_element_field(
-    payload: dict,
-    _: bool = Depends(verify_api_token),
-):
-    try:
-        field = await asyncio.to_thread(create_element_field, payload or {})
-    except ValueError as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            str(exc),
-        ) from exc
-    except re.error as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            f"正则无效: {exc}",
-        ) from exc
-    return {"field": field}
-
-
-@router.put("/contract-element-fields/{key}", summary="编辑合同要素")
-async def edit_contract_element_field(
-    key: str,
-    payload: dict,
-    _: bool = Depends(verify_api_token),
-):
-    if await asyncio.to_thread(get_element_field, key) is None:
-        raise AppError(
-            404, "ResourceNotFound.ElementFieldNotFound", f"要素 {key} 不存在"
-        )
-    try:
-        field = await asyncio.to_thread(update_element_field, key, payload or {})
-    except ValueError as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            str(exc),
-        ) from exc
-    except re.error as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            f"正则无效: {exc}",
-        ) from exc
-    return {"field": field}
-
-
-@router.delete("/contract-element-fields/{key}", summary="删除合同要素")
-async def remove_contract_element_field(
-    key: str,
-    _: bool = Depends(verify_api_token),
-):
-    if await asyncio.to_thread(get_element_field, key) is None:
-        raise AppError(
-            404, "ResourceNotFound.ElementFieldNotFound", f"要素 {key} 不存在"
-        )
-    await asyncio.to_thread(delete_element_field, key)
-    return {"key": key, "deleted": True}
 
 
 @router.post("/contract-preview", summary="打开合同原文（PDF 内嵌，Word/Excel 转成可预览 HTML）")
@@ -392,9 +359,10 @@ async def extract_contract_fields(
                 "合同包至少需要一个文件",
             )
         result = await asyncio.to_thread(
-            extract_contract_elements,
+            run_contract_review,
             file_payloads,
             package_id=PackageId,
+            allow_semantic=False,
         )
         duration_ms = (time.time() - start_time) * 1000
         log_request_end(
@@ -403,9 +371,9 @@ async def extract_contract_fields(
             duration_ms=duration_ms,
             status="success",
             status_code=200,
-            fields_extracted={"fields": len(result.fields)},
+            fields_extracted={"facts": len(result.facts)},
         )
-        return result.model_dump(mode="json")
+        return project_element_extraction(result).model_dump(mode="json")
     except AppError:
         raise
     except Exception as exc:
@@ -452,13 +420,30 @@ async def extract_contract_fields_async(
     )
 
 
-@router.post("/contract-review-async", summary="异步合同审查（Celery 任务）")
+@router.post(
+    "/contract-review-async",
+    response_model=TaskCreateAcceptedResponse,
+    summary="异步合同审查（Celery 任务）",
+)
 async def review_contract_async(
     request: Request,
     _: bool = Depends(verify_api_token),
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
     ContractType: Optional[str] = Form(None, description="合同类型，如 software"),
+    PartyPosition: Optional[str] = Form(
+        None,
+        description="本方交易立场：buyer/甲方、seller/乙方、both/双方、unknown/未知",
+    ),
+    Jurisdiction: Optional[str] = Form(None, description="适用法域或地区"),
+    TransactionContext: Optional[str] = Form(
+        None,
+        description="交易背景和本次审查需要关注的业务前提",
+    ),
+    ReviewScope: Optional[str] = Form(
+        None,
+        description="规则 ID 或 category，支持逗号分隔文本或 JSON 字符串数组；缺省审查全部规则",
+    ),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """上传合同附件包并创建异步审查任务。
@@ -468,140 +453,81 @@ async def review_contract_async(
     查询状态与结果（与其他异步 OCR 任务一致）。
     """
     del request
+    try:
+        review_context = build_review_context(
+            contract_type=ContractType,
+            party_position=PartyPosition,
+            jurisdiction=Jurisdiction,
+            transaction_context=TransactionContext,
+            review_scope=ReviewScope,
+        )
+    except ReviewContextInputError as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
     return await task_service.create_task(
         task_type="contract-review",
         files=files,
         options={
             "PackageId": PackageId,
-            "ContractType": ContractType,
+            "ReviewContextPayload": review_context.model_dump(mode="json"),
         },
         idempotency_key=idempotency_key,
     )
 
 
-@router.get("/ai-rules", summary="规则引擎库列表（可按状态/模块过滤）")
-async def get_ai_rules(
+@router.get("/rules", response_model=RuleBundleProjection, summary="正式规则包（只读）")
+@router.get("/ai-rules", include_in_schema=False)
+async def get_rules(
     _: bool = Depends(verify_api_token),
-    status: Optional[str] = Query(None, description="draft / active / disabled，缺省返回全部"),
+    status: Optional[str] = Query(None, description="兼容参数；正式规则仅有 active 状态"),
     module: Optional[str] = Query(None, description="风险点 / 合理性 / 内控 / 资信"),
-    enabled: Optional[bool] = Query(None, description="是否启用"),
+    enabled: Optional[bool] = Query(None, description="兼容参数；正式规则始终启用"),
 ):
-    """列出规则引擎库中的规则，供用户设定合同风险规则、供 AI 审查命中。"""
-    if status is not None and status not in RULE_STATUSES:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            "status 仅支持 draft / active / disabled",
-        )
-    if module is not None and module not in RULE_MODULES:
+    """返回正式 ``RuleBundle`` 的只读兼容投影。"""
+
+    if module is not None and module not in {"风险点", "合理性", "内控", "资信"}:
         raise AppError(
             400,
             "InvalidParameterValue.InvalidParameterValueLimit",
             "module 仅支持 风险点 / 合理性 / 内控 / 资信",
+    )
+    projection = await asyncio.to_thread(
+        project_rule_bundle,
+        await asyncio.to_thread(load_rule_bundle, rules_path()),
+    )
+    if status not in {None, "active"} or enabled is False:
+        return projection.model_copy(
+            update={
+                "rules": [],
+                "groups": [],
+                "packs": RulePacksProjection(
+                    approval=RulePackProjection(),
+                    ai=RulePackProjection(),
+                ),
+            }
         )
-    rules = await asyncio.to_thread(list_rules, status, module=module, enabled=enabled)
-    packs = split_rule_packs(rules)
-    return {
-        "modules": list(RULE_MODULES),
-        "topics": list(ENGINE_TOPIC_ORDER),
-        "rules": rules,
-        "groups": grouped_rules(rules),
-        "packs": {
-            "approval": {
-                "rules": packs["approval"],
-                "groups": grouped_rules(packs["approval"]),
-            },
-            "ai": {
-                "rules": packs["ai"],
-                "groups": grouped_rules(packs["ai"]),
-            },
-        },
-    }
-
-
-@router.post("/ai-rules", summary="新增规则（用户自定义风险规则）")
-async def create_ai_rule(
-    payload: dict,
-    _: bool = Depends(verify_api_token),
-):
-    """用户设定一条合同风险规则，默认立即启用并进入下次审查提示池。"""
-    try:
-        rule = await asyncio.to_thread(create_rule, payload or {})
-    except ValueError as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            str(exc),
-        ) from exc
-    return {"rule": rule}
-
-
-@router.put("/ai-rules/{rule_id}", summary="编辑规则")
-async def update_ai_rule(
-    rule_id: str,
-    payload: dict,
-    _: bool = Depends(verify_api_token),
-):
-    if not await asyncio.to_thread(rule_exists, rule_id):
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    try:
-        rule = await asyncio.to_thread(update_rule, rule_id, payload or {})
-    except ValueError as exc:
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            str(exc),
-        ) from exc
-    except KeyError:
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    return {"rule": rule}
-
-
-@router.post("/ai-rules/{rule_id}/enable", summary="启用规则")
-async def enable_ai_rule(
-    rule_id: str,
-    _: bool = Depends(verify_api_token),
-):
-    if not await asyncio.to_thread(rule_exists, rule_id):
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    rule = await asyncio.to_thread(set_rule_enabled, rule_id, True)
-    return {"rule_id": rule_id, "status": rule["status"], "enabled": True}
-
-
-@router.post("/ai-rules/{rule_id}/confirm", summary="确认启用 AI 规则（draft/disabled → active）")
-async def confirm_ai_rule(
-    rule_id: str,
-    _: bool = Depends(verify_api_token),
-):
-    """人工确认：规则进入 active 状态，下次审查自动注入提示池。"""
-    if not await asyncio.to_thread(rule_exists, rule_id):
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    await asyncio.to_thread(confirm_rule, rule_id)
-    return {"rule_id": rule_id, "status": "active", "enabled": True}
-
-
-@router.post("/ai-rules/{rule_id}/disable", summary="停用规则")
-async def disable_ai_rule(
-    rule_id: str,
-    _: bool = Depends(verify_api_token),
-):
-    """停用规则：不再注入审查提示池，但保留历史数据。"""
-    if not await asyncio.to_thread(rule_exists, rule_id):
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    await asyncio.to_thread(disable_rule, rule_id)
-    return {"rule_id": rule_id, "status": "disabled", "enabled": False}
-
-
-@router.delete("/ai-rules/{rule_id}", summary="删除规则")
-async def delete_ai_rule(
-    rule_id: str,
-    _: bool = Depends(verify_api_token),
-):
-    """删除规则：规则列表与规则引擎同步移除。"""
-    if not await asyncio.to_thread(rule_exists, rule_id):
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    try:
-        await asyncio.to_thread(delete_rule, rule_id)
-    except KeyError:
-        raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    return {"rule_id": rule_id, "deleted": True}
+    if module is None:
+        return projection
+    rules = [item for item in projection.rules if item.module == module]
+    groups = [
+        RuleGroupProjection(
+            name=group.name,
+            count=sum(1 for rule in rules if rule.topic == group.name),
+            rules=[rule for rule in rules if rule.topic == group.name],
+        )
+        for group in projection.groups
+        if any(rule.topic == group.name for rule in rules)
+    ]
+    return projection.model_copy(
+        update={
+            "rules": rules,
+            "groups": groups,
+            "packs": RulePacksProjection(
+                approval=RulePackProjection(rules=rules, groups=groups),
+                ai=RulePackProjection(),
+            ),
+        }
+    )

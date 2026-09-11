@@ -51,22 +51,6 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:
         logger.warning(f"OCR gateway health check skipped: {exc}")
 
-    from contract_review_app.services.element_schema import seed_default_fields
-    from contract_review_app.services.rule_evolution import seed_builtin_rules
-
-    try:
-        seeded = seed_builtin_rules()
-        if seeded:
-            logger.info(f"规则引擎库已写入 {seeded} 条内置内控规则")
-    except Exception as exc:
-        logger.warning(f"规则引擎库内置规则写入失败（不影响启动）: {exc}")
-    try:
-        seeded_fields = seed_default_fields()
-        if seeded_fields:
-            logger.info(f"合同要素定义已写入 {seeded_fields} 个默认字段")
-    except Exception as exc:
-        logger.warning(f"合同要素定义写入失败（不影响启动）: {exc}")
-
     logger.info(f"Service started: http://{settings.HOST}:{settings.PORT}")
     logger.info(f"Swagger docs: http://{settings.HOST}:{settings.PORT}/docs")
 

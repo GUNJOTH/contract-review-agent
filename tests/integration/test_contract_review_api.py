@@ -59,33 +59,48 @@ def test_contract_review_returns_evidence_first_result(monkeypatch):
     assert review["report"]["finding_counts"], "报告应有状态统计"
     assert review["evidence"], "应生成证据对象"
     assert review["run"]["status"] is not None
-    assert payload["ai_analysis"] is None  # 测试未配置模型端点
+    assert payload["ai_analysis"] is not None
+    assert payload["ai_analysis"]["projection_version"]
+    assert payload["ai_analysis"]["analysis_id"].startswith("review-")
+    assert payload["ai_analysis"]["provider"] == "deterministic-rule-engine"
+    assert payload["ai_analysis"]["items"]
 
 
-def test_contract_review_engine_rules_can_be_disabled(monkeypatch):
-    """关闭 50 条引擎规则时只解析合同，不逐条出结论。"""
+def test_revision_set_api_returns_evidence_bound_contract(monkeypatch):
+    """修订提案接口只生成结构化结果，不修改原始合同文件。"""
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
-    monkeypatch.setattr(settings, "CONTRACT_ENGINE_RULES_ENABLED", False)
+
     class _EmptyOCR:
         def recognize_seal(self, image_bytes, *, page_number=1):
             del image_bytes, page_number
             return None
+
     monkeypatch.setattr(
         "contract_review_app.services.seal_evidence.ocr_gateway_client",
         _EmptyOCR(),
     )
-    pdf = _make_contract_pdf()
-    response = client.post(
+    review_response = client.post(
         "/api/v1/contract-review",
         headers=_auth_headers(),
-        files=[("files", ("合同主文.pdf", pdf, "application/pdf"))],
-        data={"PackageId": "pkg-engine-off", "ContractType": "software"},
+        files=[("files", ("合同主文.pdf", _make_contract_pdf(), "application/pdf"))],
+        data={"PackageId": "pkg-revision-api", "ContractType": "software"},
     )
+    assert review_response.status_code == 200, review_response.text
+
+    response = client.post(
+        "/api/v1/contract-review/revision-set",
+        headers=_auth_headers(),
+        json=review_response.json()["review_result"],
+    )
+
     assert response.status_code == 200, response.text
-    review = response.json()["review_result"]
-    assert review["documents"][0]["parse_status"] == "parsed"
-    assert review["findings"] == []
-    assert len(review["rule_bundle"]["rules"]) == 1
+    revision_set = response.json()["revision_set"]
+    assert revision_set["run_id"] == review_response.json()["review_result"]["run"][
+        "run_id"
+    ]
+    assert revision_set["base_result_fingerprint"]
+    assert revision_set["revision_fingerprint"]
+    assert all(change["evidence_ids"] for change in revision_set["changes"])
 
 
 def test_contract_review_internal_failure_does_not_leak_exception(monkeypatch):
@@ -129,120 +144,32 @@ def test_contract_review_rejects_empty_package(monkeypatch):
     assert response.status_code == 422  # FastAPI 要求至少一个文件
 
 
-def test_ai_rules_management_api(monkeypatch, tmp_path):
-    """AI 规则库管理 API：列表 → 确认 → 停用 → 404。"""
-    monkeypatch.setattr(
-        settings, "CONTRACT_AI_RULES_DB_PATH", str(tmp_path / "ai_rules.db")
-    )
-    from contract_review_app.services.rule_evolution import (
-        confirm_rule,
-        list_rules,
-        save_candidate_rules,
-    )
-
-    save_candidate_rules(
-        [
-            {"title": "履行期限不得早于签订时间", "condition": "期限晚于签订日期", "risk_level": "BLOCK"},
-            {"title": "付款总额一致", "condition": "比例合计100%", "risk_level": "WARN"},
-        ],
-        analysis_id="analysis-api-test",
-        contract_type="软件开发/转让服务",
-    )
-    by_title = {rule["title"]: rule for rule in list_rules()}
-    confirm_rule(by_title["履行期限不得早于签订时间"]["id"])
-    rule_id = by_title["付款总额一致"]["id"]
-
-    # 列表（全部 + 按状态过滤）
-    resp = client.get("/api/v1/ai-rules", headers=_auth_headers())
-    assert resp.status_code == 200, resp.text
-    assert len(resp.json()["rules"]) == 2
-
-    resp = client.get("/api/v1/ai-rules?status=draft", headers=_auth_headers())
-    assert resp.status_code == 200
-    rules = resp.json()["rules"]
-    assert len(rules) == 1 and rules[0]["status"] == "draft"
-
-    resp = client.get("/api/v1/ai-rules?status=bogus", headers=_auth_headers())
-    assert resp.status_code == 400
-
-    # 确认启用 draft → active
-    resp = client.post(f"/api/v1/ai-rules/{rule_id}/confirm", headers=_auth_headers())
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "active"
-    assert rule_id in [r["id"] for r in list_rules("active")]
-
-    # 停用 active → disabled
-    resp = client.post(f"/api/v1/ai-rules/{rule_id}/disable", headers=_auth_headers())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "disabled"
-    assert len(list_rules("disabled")) == 1
-
-    # 不存在的规则 → 404
-    resp = client.post("/api/v1/ai-rules/no-such-id/confirm", headers=_auth_headers())
-    assert resp.status_code == 404
-
-
-def test_ai_rules_user_crud_and_module_filter(monkeypatch, tmp_path):
-    """用户可新增/编辑规则，按模块过滤，启用开关直接进审查池。"""
-    monkeypatch.setattr(
-        settings, "CONTRACT_AI_RULES_DB_PATH", str(tmp_path / "ai_rules.db")
-    )
+def test_formal_rule_bundle_is_read_only():
+    """规则目录由正式 RuleBundle 投影，应用层不再提供第二套 CRUD。"""
     headers = _auth_headers()
-    resp = client.post(
-        "/api/v1/ai-rules",
-        headers=headers,
-        json={
-            "title": "检验方式及程序是否具体",
-            "condition": "若合同未约定检验的具体标准、方法、程序则违规",
-            "topic": "合规性/交付问题",
-            "risk_level": "WARN",
-            "suggested_action": "补充检验标准",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    created = resp.json()["rule"]
-    assert created["topic"] == "合规性/交付问题"
-    assert created["status"] == "active"
-    assert created["enabled"] is True
-    assert created["code"].startswith("HTSP-")
-    assert created["weight"] == 12
-    assert created["high_standard"]
+    response = client.get("/api/v1/rules", headers=headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["read_only"] is True
+    assert payload["bundle_id"]
+    assert payload["rules"]
+    assert all(rule["read_only"] is True for rule in payload["rules"])
 
-    resp = client.get("/api/v1/ai-rules", headers=headers)
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert len(payload["rules"]) == 1
-    assert payload["modules"] == ["风险点", "合理性", "内控", "资信"]
-    assert payload["groups"][0]["name"] == "合规性/交付问题"
-    assert payload["packs"]["approval"]["rules"][0]["id"] == created["id"]
-    assert payload["packs"]["ai"]["rules"] == []
+    # 历史路径保留 GET 兼容投影，但过滤和写操作不再复活旧 SQLite 规则库。
+    alias = client.get("/api/v1/ai-rules", headers=headers)
+    assert alias.status_code == 200, alias.text
+    assert alias.json()["bundle_id"] == payload["bundle_id"]
+    draft = client.get("/api/v1/ai-rules?status=draft", headers=headers)
+    assert draft.status_code == 200
+    assert draft.json()["rules"] == []
+    assert draft.json()["packs"]["approval"]["rules"] == []
+    invalid_module = client.get("/api/v1/rules?module=不存在", headers=headers)
+    assert invalid_module.status_code == 400
 
-    resp = client.get("/api/v1/ai-rules?module=资信", headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["rules"] == []
-
-    resp = client.put(
-        f"/api/v1/ai-rules/{created['id']}",
-        headers=headers,
-        json={"title": "检验方式及程序是否具体", "risk_level": "BLOCK"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["rule"]["risk_level"] == "BLOCK"
-
-    resp = client.post(f"/api/v1/ai-rules/{created['id']}/disable", headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["enabled"] is False
-    resp = client.post(f"/api/v1/ai-rules/{created['id']}/enable", headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "active"
-
-    resp = client.request(
-        "DELETE", f"/api/v1/ai-rules/{created['id']}", headers=headers
-    )
-    assert resp.status_code == 200
-    assert resp.json()["deleted"] is True
-    resp = client.get("/api/v1/ai-rules", headers=headers)
-    assert resp.json()["rules"] == []
+    rule_id = payload["rules"][0]["rule_id"]
+    assert client.post("/api/v1/ai-rules", headers=headers, json={}).status_code == 405
+    assert client.put(f"/api/v1/ai-rules/{rule_id}", headers=headers, json={}).status_code in {404, 405}
+    assert client.delete(f"/api/v1/ai-rules/{rule_id}", headers=headers).status_code in {404, 405}
 
 
 def _make_element_pdf() -> bytes:
@@ -265,11 +192,8 @@ def _make_element_pdf() -> bytes:
     return data
 
 
-def test_contract_elements_extracts_fillable_fields(monkeypatch, tmp_path):
+def test_contract_elements_extracts_fillable_fields(monkeypatch):
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
-    monkeypatch.setattr(
-        settings, "CONTRACT_ELEMENT_SCHEMA_PATH", str(tmp_path / "element_fields.db")
-    )
     response = client.post(
         "/api/v1/contract-elements",
         headers=_auth_headers(),
@@ -290,38 +214,15 @@ def test_contract_elements_extracts_fillable_fields(monkeypatch, tmp_path):
     assert party_a["candidates"][0]["value"] == "某某科技有限公司"
 
 
-def test_contract_element_fields_can_be_customized(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        settings, "CONTRACT_ELEMENT_SCHEMA_PATH", str(tmp_path / "element_fields.db")
-    )
+def test_contract_element_fields_are_read_only():
     headers = _auth_headers()
     resp = client.get("/api/v1/contract-element-fields", headers=headers)
     assert resp.status_code == 200, resp.text
-    keys = {item["key"] for item in resp.json()["fields"]}
+    fields = resp.json()["fields"]
+    keys = {item["key"] for item in fields}
     assert "party_a" in keys
     assert "amount" in keys
-
-    resp = client.post(
-        "/api/v1/contract-element-fields",
-        headers=headers,
-        json={"label": "联系人", "aliases": ["联系人", "项目联系人"]},
-    )
-    assert resp.status_code == 200, resp.text
-    created = resp.json()["field"]
-    assert created["label"] == "联系人"
-    assert created["enabled"] is True
-
-    resp = client.put(
-        f"/api/v1/contract-element-fields/{created['key']}",
-        headers=headers,
-        json={"enabled": False},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["field"]["enabled"] is False
-
-    resp = client.delete(
-        f"/api/v1/contract-element-fields/{created['key']}",
-        headers=headers,
-    )
-    assert resp.status_code == 200
-    assert resp.json()["deleted"] is True
+    assert all(item["enabled"] is True for item in fields)
+    assert client.post("/api/v1/contract-element-fields", headers=headers, json={}).status_code == 405
+    assert client.put("/api/v1/contract-element-fields/party_a", headers=headers, json={}).status_code in {404, 405}
+    assert client.delete("/api/v1/contract-element-fields/party_a", headers=headers).status_code in {404, 405}

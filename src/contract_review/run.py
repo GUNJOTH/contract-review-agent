@@ -1,4 +1,4 @@
-"""Review-run creation and auditable state transitions."""
+"""审查运行的创建与统一阶段事件状态机。"""
 
 from __future__ import annotations
 
@@ -6,19 +6,19 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from uuid import uuid4
 
+from .event_store import StageEventStore
 from .models import (
     ContractPackage,
     Document,
     ReviewRun,
     ReviewStatus,
     StageEvent,
-    ReviewTransition,
     RuleBundle,
     utc_now,
 )
 from .replay import build_replay_fingerprint
 
-RUN_VERSION = "review-run-0.1.0"
+RUN_VERSION = "review-run-0.2.0"
 
 
 class ReviewRunError(ValueError):
@@ -32,7 +32,12 @@ _ALLOWED_TRANSITIONS: dict[ReviewStatus, frozenset[ReviewStatus]] = {
     ReviewStatus.INDEXED: frozenset({ReviewStatus.EXTRACTED, ReviewStatus.FAILED}),
     ReviewStatus.EXTRACTED: frozenset({ReviewStatus.RULE_CHECKED, ReviewStatus.FAILED}),
     ReviewStatus.RULE_CHECKED: frozenset(
-        {ReviewStatus.SEMANTIC_REVIEWED, ReviewStatus.HUMAN_REVIEW, ReviewStatus.FINALIZED, ReviewStatus.FAILED}
+        {
+            ReviewStatus.SEMANTIC_REVIEWED,
+            ReviewStatus.HUMAN_REVIEW,
+            ReviewStatus.FINALIZED,
+            ReviewStatus.FAILED,
+        }
     ),
     ReviewStatus.SEMANTIC_REVIEWED: frozenset(
         {ReviewStatus.HUMAN_REVIEW, ReviewStatus.FINALIZED, ReviewStatus.FAILED}
@@ -52,6 +57,7 @@ def create_review_run(
     model_version: str | None = None,
     configuration: Mapping[str, object] | None = None,
     run_id: str | None = None,
+    event_store: StageEventStore | None = None,
 ) -> ReviewRun:
     """Create a run snapshot without mutating source documents or rule data."""
 
@@ -73,26 +79,17 @@ def create_review_run(
         configuration=configuration,
     )
     resolved_run_id = run_id or f"run-{uuid4().hex}"
-    initial_transition = ReviewTransition(
-        from_status=None,
-        to_status=ReviewStatus.RECEIVED,
-        action="create_review_run",
-        actor="system",
-        reason="合同包、源文件哈希、解析器版本和规则快照已登记。",
-    )
     initial_event = StageEvent(
         event_id=f"event-{uuid4().hex}",
         subject_type="review_run",
         subject_id=resolved_run_id,
         from_stage=None,
         to_stage=ReviewStatus.RECEIVED.value,
-        action=initial_transition.action,
-        actor=initial_transition.actor,
-        reason=initial_transition.reason,
-        evidence_ids=list(initial_transition.evidence_ids),
-        occurred_at=initial_transition.occurred_at,
+        action="create_review_run",
+        actor="system",
+        reason="合同包、源文件哈希、解析器版本和规则快照已登记。",
     )
-    return ReviewRun(
+    run = ReviewRun(
         run_id=resolved_run_id,
         package_id=package.package_id,
         status=ReviewStatus.RECEIVED,
@@ -105,9 +102,11 @@ def create_review_run(
         model_version=model_version,
         configuration=dict(configuration or {}),
         configuration_fingerprint=fingerprint,
-        transitions=[initial_transition],
         stage_events=[initial_event],
     )
+    if event_store is not None:
+        event_store.append_stage_event(initial_event)
+    return run
 
 
 def advance_review_run(
@@ -119,20 +118,13 @@ def advance_review_run(
     actor: str = "system",
     evidence_ids: Sequence[str] = (),
     occurred_at: datetime | None = None,
+    event_store: StageEventStore | None = None,
 ) -> ReviewRun:
-    """Return a new run with one validated, append-only transition."""
+    """校验状态变化，并向唯一阶段事件模型追加一条事件。"""
 
     if to_status not in _ALLOWED_TRANSITIONS[run.status]:
         raise ReviewRunError(f"invalid review transition: {run.status} -> {to_status}")
-    transition = ReviewTransition(
-        from_status=run.status,
-        to_status=to_status,
-        action=action,
-        actor=actor,
-        reason=reason,
-        evidence_ids=list(evidence_ids),
-        occurred_at=occurred_at or utc_now(),
-    )
+    event_time = occurred_at or utc_now()
     event = StageEvent(
         event_id=f"event-{uuid4().hex}",
         subject_type="review_run",
@@ -143,13 +135,18 @@ def advance_review_run(
         actor=actor,
         reason=reason,
         evidence_ids=list(evidence_ids),
-        occurred_at=transition.occurred_at,
+        occurred_at=event_time,
     )
-    finished_at = transition.occurred_at if to_status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED} else run.finished_at
+    finished_at = (
+        event_time
+        if to_status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED}
+        else run.finished_at
+    )
+    if event_store is not None:
+        event_store.append_stage_event(event)
     return run.model_copy(
         update={
             "status": to_status,
-            "transitions": [*run.transitions, transition],
             "stage_events": [*run.stage_events, event],
             "finished_at": finished_at,
         }

@@ -14,14 +14,14 @@ client = TestClient(app)
 
 def test_protected_api_rejects_missing_and_invalid_tokens():
     request_id = "auth-regression-request"
-    missing = client.get("/api/v1/ai-rules", headers={"X-Request-ID": request_id})
+    missing = client.get("/api/v1/rules", headers={"X-Request-ID": request_id})
     assert missing.status_code == 401, missing.text
     assert missing.json()["Response"]["Error"]["Code"] == "AuthFailure.InvalidToken"
     assert missing.json()["Response"]["RequestId"] == request_id
     assert missing.headers["X-Request-ID"] == request_id
 
     invalid = client.get(
-        "/api/v1/ai-rules",
+        "/api/v1/rules",
         headers={settings.AUTH_HEADER_NAME: "incorrect-test-token"},
     )
     assert invalid.status_code == 401, invalid.text
@@ -31,7 +31,7 @@ def test_protected_api_rejects_missing_and_invalid_tokens():
 def test_protected_api_fails_closed_when_token_is_not_configured(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "")
     response = client.get(
-        "/api/v1/ai-rules",
+        "/api/v1/rules",
         headers={settings.AUTH_HEADER_NAME: "test-api-token"},
     )
     assert response.status_code == 503, response.text

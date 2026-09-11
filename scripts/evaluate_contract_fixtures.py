@@ -55,11 +55,20 @@ def evaluate_case(case: dict, bundle) -> dict:
     gate = gate_external_model_input([{"text": case["text"]}])
     evidence_types = {item.evidence_type.value for item in result.evidence}
     checks = {
+        "schema_v2": result.schema_version == "2.0",
         "audit": audit.passed,
         "result_replay": result.run.result_fingerprint == replay.run.result_fingerprint,
         "min_findings": len(result.findings) >= int(case.get("min_findings", 0)),
-        "report_status": result.report.overall_status.value == case["expected_report_status"],
-        "evidence_types": set(case.get("required_evidence_types", [])).issubset(evidence_types),
+        "min_clauses": len(result.clauses) >= int(case.get("min_clauses", 1)),
+        "min_obligations": len(result.obligations)
+        >= int(case.get("min_obligations", 0)),
+        "question_coverage": len(result.review_questions) == len(bundle.rules),
+        "assessment_coverage": len(result.question_assessments) == len(result.findings),
+        "report_status": result.report.overall_status.value
+        == case["expected_report_status"],
+        "evidence_types": set(case.get("required_evidence_types", [])).issubset(
+            evidence_types
+        ),
     }
     if "pii_gate_decision" in case:
         checks["pii_gate_decision"] = gate.decision == case["pii_gate_decision"]
@@ -76,6 +85,9 @@ def evaluate_case(case: dict, bundle) -> dict:
         "run_id": result.run.run_id,
         "result_fingerprint": result.run.result_fingerprint,
         "finding_count": len(result.findings),
+        "clause_count": len(result.clauses),
+        "obligation_count": len(result.obligations),
+        "assessment_count": len(result.question_assessments),
         "evidence_count": len(result.evidence),
         "report_status": result.report.overall_status.value,
         "pii_gate": gate.decision,
@@ -87,7 +99,11 @@ def main() -> int:
     cases = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     bundle = load_rule_bundle(settings.resolve_path(settings.CONTRACT_RULES_PATH))
     summaries = [evaluate_case(case, bundle) for case in cases]
-    print(json.dumps({"fixture_count": len(summaries), "cases": summaries}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"fixture_count": len(summaries), "cases": summaries}, ensure_ascii=False
+        )
+    )
     return 0
 
 

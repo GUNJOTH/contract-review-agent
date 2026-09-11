@@ -22,7 +22,12 @@ import httpx
 from loguru import logger
 
 from contract_review.knowledge import LexicalKnowledgeIndex
-from contract_review.models import KnowledgeChunk, RetrievalHit, RetrievalTrace
+from contract_review.models import (
+    KnowledgeChunk,
+    KnowledgeSourceKind,
+    RetrievalHit,
+    RetrievalTrace,
+)
 
 from contract_review_app.config import settings
 from contract_review_app.services.pii_gate import gate_external_model_input
@@ -89,7 +94,7 @@ class VectorKnowledgeIndex:
         self._retrievable = [
             chunk
             for chunk in self.chunks
-            if chunk.chunk_id.startswith("chunk-rule-")
+            if chunk.source_kind == KnowledgeSourceKind.RULE
             or len(chunk.content.strip()) >= MIN_DOCUMENT_CHUNK_CHARS
         ]
         self._lexical = LexicalKnowledgeIndex(self._retrievable)
@@ -127,7 +132,7 @@ class VectorKnowledgeIndex:
         for chunk, vector in zip(self._retrievable, self._vectors):
             score = round(max(0.0, _cosine(query_vector, vector)), 2)
             item = (chunk, score)
-            if chunk.chunk_id.startswith("chunk-rule-"):
+            if chunk.source_kind == KnowledgeSourceKind.RULE:
                 rule_scored.append(item)
             else:
                 doc_scored.append(item)
@@ -145,7 +150,7 @@ class VectorKnowledgeIndex:
             ]
 
         # 强制包含当前规则自身的定义块（引擎把 rule_id 传入 used_for_rule_ids，
-        # 规则块 metadata 也带 rule_id），避免"上下文中未找到该规则的定义块"。
+        # 规则块的业务来源和 metadata 都带规则身份），避免模型缺少规则定义。
         used_rule_ids = set(used_for_rule_ids)
         forced = [
             item

@@ -9,6 +9,8 @@ from contract_review.models import (
     EvidenceType,
     Finding,
     FindingStatus,
+    KnowledgeChunk,
+    KnowledgeSourceKind,
     RiskLevel,
     Rule,
     RuleBundle,
@@ -110,3 +112,26 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(
             bundle.rules[0].applicability["软件产品销售"].applicability, "required"
         )
+
+    def test_knowledge_chunk_has_explicit_business_source(self) -> None:
+        contract_chunk = KnowledgeChunk(
+            chunk_id="chunk-contract",
+            source_name="合同.pdf",
+            source_sha256="c" * 64,
+            source_version="parser-v1",
+            content="合同正文",
+            evidence_ids=["e-contract"],
+            metadata={"document_id": "document-1"},
+        )
+        legacy_rule_chunk = KnowledgeChunk(
+            chunk_id="chunk-rule-r1",
+            source_name="规则快照",
+            source_sha256="r" * 64,
+            source_version="rules-v1",
+            content="R1 | 规则定义",
+            evidence_ids=["e-rule"],
+            metadata={"rule_id": "R1"},
+        )
+
+        self.assertEqual(contract_chunk.source_kind, KnowledgeSourceKind.CONTRACT)
+        self.assertEqual(legacy_rule_chunk.source_kind, KnowledgeSourceKind.RULE)

@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from contract_review import KnowledgeSourceKind, project_review_analysis
 from contract_review_app.services.review_service import run_contract_review
 
 CONTRACT_TYPES = {
@@ -54,7 +55,7 @@ def main() -> int:
     except Exception as exc:
         print(f"审查失败: {exc}")
         print("常见原因：模型/embedding 服务超时或不可达（可在 .env 调大 "
-              "CONTRACT_REVIEW_TIMEOUT_SECONDS / CONTRACT_AI_ANALYSIS_TIMEOUT_SECONDS），"
+              "CONTRACT_REVIEW_TIMEOUT_SECONDS），"
               "或本地未配置模型端点（CONTRACT_REVIEW_ENDPOINT）。")
         return 2
     print(f"耗时: {time.time() - t0:.1f}s\n")
@@ -69,7 +70,7 @@ def main() -> int:
         1
         for trace in result.retrieval_traces
         for hit in trace.hits
-        if chunks_by_id[hit.chunk_id].chunk_id.startswith("chunk-document")
+        if chunks_by_id[hit.chunk_id].source_kind == KnowledgeSourceKind.CONTRACT
     )
     total = sum(len(trace.hits) for trace in result.retrieval_traces)
     versions = sorted({trace.index_version for trace in result.retrieval_traces})
@@ -82,30 +83,18 @@ def main() -> int:
         print(f"模型判断分布: {dict(Counter(item.status.value for item in items))}")
 
     print("\n" + "=" * 74)
-    from contract_review_app.services.ai_analysis import run_ai_analysis
+    analysis = project_review_analysis(result)
+    print(f"★ 风险清单投影（共 {len(analysis.items)} 项；来源为 ReviewResult）")
+    for item in analysis.items:
+        mark = "★" if item.risk_level in ("BLOCK", "WARN") else " "
+        print(f"{mark}[{item.risk_level:>14}] {item.title}")
+        print(f"         {item.reason[:110]}")
+        if item.quote:
+            print(f"         原文: {item.quote[:70]}")
+        if item.suggested_action:
+            print(f"         建议: {item.suggested_action[:80]}")
 
-    analysis = run_ai_analysis(result)
-    if analysis is not None:
-        print(f"★ 风险清单（共 {len(analysis.items)} 项）")
-        for item in analysis.items:
-            mark = "★" if item.risk_level in ("BLOCK", "WARN") else " "
-            print(f"{mark}[{item.risk_level:>14}] {item.title}")
-            print(f"         {item.reason[:110]}")
-            if item.quote:
-                print(f"         原文: {item.quote[:70]}")
-            if item.suggested_action:
-                print(f"         建议: {item.suggested_action[:80]}")
-    else:
-        print("AI 分析未启用（未配置 CONTRACT_REVIEW_ENDPOINT），仅显示规则层结论：")
-        for finding in result.findings:
-            mark = "★" if finding.status.value in ("BLOCK", "WARN") else " "
-            print(f"{mark}[{finding.status.value:>14}] {finding.reason[:100]}")
-
-    from contract_review_app.services.rule_evolution import count_rules, load_active_rules
-
-    active_rules = len(load_active_rules())
-    print(f"\nAI 自进化规则库: 共 {count_rules()} 条"
-          f"（active {active_rules} 条，将进入下次审查的提示池）")
+    print(f"\n正式规则包: {result.rule_bundle.bundle_id}（{len(result.rule_bundle.rules)} 条）")
     return 0
 
 

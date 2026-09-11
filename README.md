@@ -79,6 +79,8 @@ docker compose up --build
 
 当前采用证据优先的模块化单体：确定性审查引擎与 FastAPI/Celery 适配层分离，OCR、模型、Redis 和本地 SQLite 均可替换。组件职责、状态链、优秀项目借鉴和分阶段路线见 [架构说明](docs/ARCHITECTURE.md) 与 [ADR-001](docs/decisions/ADR-001-modular-evidence-first.md)。
 
+合同审查核心接口的业务前提通过 `ReviewContext` 统一传递：同步上传接口支持 `ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext` 和 `ReviewScope`，其中 `ReviewScope` 可填写规则 ID 或规则 category；缺省表示执行完整规则快照。结果中的 `ContractClause`、`ContractObligation`、`Finding`、`ReviewQuestion`、`QuestionAssessment` 和 `ContractRevisionSet` 均保留证据引用，规则适用性与 Playbook 动作由领域引擎统一判断。
+
 ## 测试
 
 ```bash
@@ -90,6 +92,14 @@ uv run python scripts/ci_api_smoke.py
 uv run python scripts/evaluate_contract_fixtures.py
 ```
 
+真实 Redis 验收不会在普通测试中自动连接外部服务；在验收机显式设置
+`CONTRACT_REVIEW_LIVE_REDIS_URL` 后运行下面的并发回归，验证幂等键、原子准入和阶段事件账本：
+
+```powershell
+$env:CONTRACT_REVIEW_LIVE_REDIS_URL = 'redis://<redis-host>:6380/2'
+uv run --no-sync pytest -q tests/integration/test_redis_task_store_live.py
+```
+
 测试默认把 pytest 缓存写入 `.test-work/pytest-cache`，不会依赖本机的隐藏缓存目录。覆盖率报告可以按 CI 命令生成：
 
 ```bash
@@ -99,5 +109,8 @@ uv run pytest --cov=contract_review --cov=contract_review_app --cov-report=term-
 `scripts/ci_api_smoke.py` 只启动本地 API 进程，验证根路径、未带 Token 的受保护接口和 OpenAPI 鉴权声明，不连接 Redis、OCR 网关或模型服务。Docker、Redis/Celery、OCR 和模型的真实联调仍需在具备对应运行环境时单独验收。
 
 异步接口支持 `Idempotency-Key` 请求头。相同键在保留期内返回同一个任务，
-不会重复落盘或入队；任务状态接口同时返回 append-only 阶段事件账本。固定的
+Redis 原子准入保证同一键只登记一条任务，只有胜者会落盘并入队。任务状态接口
+返回 append-only 阶段事件账本，审计结果另存独立事件 JSONL。审查结果采用
+`schema_version=2.0`，旧结果和旧审计存储版本会被明确拒绝，不再自动迁移。
+固定的
 离线合同夹具和评测约束见 [evals/README.md](evals/README.md)。

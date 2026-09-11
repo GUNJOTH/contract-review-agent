@@ -13,6 +13,7 @@ from .task_schemas import (
     TaskStatusData,
     TaskStatusResponse,
 )
+from .review_schemas import ContractReviewResponse, ContractRevisionSetResponse
 
 __all__ = [
     "AsyncTaskRecord",
@@ -26,4 +27,6 @@ __all__ = [
     "TaskListResponse",
     "TaskStatusData",
     "TaskStatusResponse",
+    "ContractReviewResponse",
+    "ContractRevisionSetResponse",
 ]

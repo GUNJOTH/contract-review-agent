@@ -8,7 +8,8 @@ from uuid import uuid4
 from typing import TYPE_CHECKING, Any
 
 from contract_review_app.config import settings
-from contract_review import StageEvent
+from contract_review.event_store import RedisStageEventStore
+from contract_review.models import StageEvent
 from contract_review_app.models import AsyncTaskRecord, AsyncTaskStage, AsyncTaskStatus
 
 if TYPE_CHECKING:
@@ -51,7 +52,10 @@ return {2, ARGV[2]}
 _ADMIT_IDEMPOTENT_SCRIPT = """
 local existing = redis.call('GET', KEYS[1])
 if existing then
-  if redis.call('EXISTS', KEYS[3]) == 1 then
+  -- 当前请求的 KEYS[3] 是新任务的 key，不能用它判断幂等键指向的旧任务。
+  -- 任务索引与任务记录在同一准入脚本中写入/删除，用 ZSET 成员判断旧任务
+  -- 是否仍处于可回放生命周期，同时避免在脚本内动态拼接任务 key。
+  if redis.call('ZSCORE', KEYS[4], existing) then
     return {1, existing}
   end
   -- 任务已清理但幂等键仍在，回收该键，避免返回幽灵任务。
@@ -145,15 +149,21 @@ class RedisTaskStore:
         )
 
     def _events(self, task_id: str) -> list[StageEvent]:
-        raw_events = self._get_client().lrange(self._events_key(task_id), 0, -1)
-        events: list[StageEvent] = []
-        for raw in raw_events:
-            try:
-                events.append(StageEvent.model_validate_json(raw))
-            except (TypeError, ValueError):
-                # 账本坏记录不应阻断状态查询；审计/修复工具会标记缺失序列。
-                continue
-        return events
+        return self.list_stage_events("async_task", task_id)
+
+    def _event_store(self, *, event_limit: int | None = None) -> RedisStageEventStore:
+        return RedisStageEventStore(
+            self._get_client(),
+            event_limit=event_limit or settings.TASK_STAGE_EVENT_LIMIT,
+        )
+
+    def append_stage_event(self, event: StageEvent) -> None:
+        """通过统一账本契约追加事件；状态变更事务使用 pipeline 变体。"""
+
+        self._event_store().append_stage_event(event)
+
+    def list_stage_events(self, subject_type: str, subject_id: str) -> list[StageEvent]:
+        return self._event_store().list_stage_events(subject_type, subject_id)
 
     def find_by_idempotency_key(self, idempotency_key: str) -> AsyncTaskRecord | None:
         task_id = self._get_client().get(self._idempotency_key(idempotency_key))
@@ -226,6 +236,38 @@ class RedisTaskStore:
         task.stage_events = [initial_event]
         return "created", task
 
+    def attach_input(
+        self,
+        task_id: str,
+        *,
+        input_mode: str,
+        input_path: str,
+        input_size: int,
+        input_filename: str | None,
+        input_content_type: str | None,
+    ) -> AsyncTaskRecord | None:
+        """把准入后的真实输入元数据绑定到唯一任务。
+
+        输入文件必须在原子准入胜出后才落盘；绑定阶段只更新任务元数据，
+        不产生新的业务阶段事件，避免把存储动作伪装成工作流迁移。
+        """
+
+        task = self.get(task_id)
+        if task is None:
+            return None
+        if (
+            task.status != AsyncTaskStatus.PENDING
+            or task.stage != AsyncTaskStage.QUEUED
+        ):
+            return None
+        task.input_mode = input_mode
+        task.input_path = input_path
+        task.input_size = input_size
+        task.input_filename = input_filename
+        task.input_content_type = input_content_type
+        self._write_task(task, keep_ttl=True)
+        return task
+
     def create(self, task: AsyncTaskRecord) -> None:
         client = self._get_client()
         pipe = client.pipeline()
@@ -244,8 +286,7 @@ class RedisTaskStore:
         ]
         task.stage_events = list(events)
         for event in events:
-            pipe.rpush(self._events_key(task.task_id), event.model_dump_json())
-        pipe.ltrim(self._events_key(task.task_id), -max(settings.TASK_STAGE_EVENT_LIMIT, 1), -1)
+            self._event_store().append_to_pipeline(pipe, event)
         pipe.execute()
 
     def get(self, task_id: str) -> AsyncTaskRecord | None:
@@ -290,13 +331,17 @@ class RedisTaskStore:
     def count_pending_by_queue(self, queue_name: str) -> int:
         client = self._get_client()
         count = 0
-        for task_id in client.smembers(self._task_status_key(AsyncTaskStatus.PENDING.value)):
+        for task_id in client.smembers(
+            self._task_status_key(AsyncTaskStatus.PENDING.value)
+        ):
             task = self.get(task_id)
             if task is not None and task.queue_name == queue_name:
                 count += 1
         return count
 
-    def mark_running(self, task_id: str, *, worker_id: str, started_at: str) -> AsyncTaskRecord | None:
+    def mark_running(
+        self, task_id: str, *, worker_id: str, started_at: str
+    ) -> AsyncTaskRecord | None:
         client = self._get_client()
         task = self.get(task_id)
         if task is None:
@@ -435,7 +480,9 @@ class RedisTaskStore:
         self._schedule_expiry(task_id, expires_at=expires_at)
         return task
 
-    def requeue(self, task_id: str, *, heartbeat_at: str | None = None) -> AsyncTaskRecord | None:
+    def requeue(
+        self, task_id: str, *, heartbeat_at: str | None = None
+    ) -> AsyncTaskRecord | None:
         task = self.get(task_id)
         if task is None:
             return None
@@ -467,7 +514,10 @@ class RedisTaskStore:
         body = json.dumps(payload, ensure_ascii=False)
         pipe = client.pipeline()
         pipe.rpush(TASK_DLQ_KEY, body)
-        pipe.zadd(TASK_DLQ_INDEX_KEY, {payload["task_id"]: self._to_score(payload["dead_lettered_at"])})
+        pipe.zadd(
+            TASK_DLQ_INDEX_KEY,
+            {payload["task_id"]: self._to_score(payload["dead_lettered_at"])},
+        )
         if settings.TASK_DLQ_MAX_LEN > 0:
             pipe.ltrim(TASK_DLQ_KEY, -settings.TASK_DLQ_MAX_LEN, -1)
         pipe.execute()
@@ -552,9 +602,15 @@ class RedisTaskStore:
         candidates.update(client.zrange(TASK_PURGE_KEY, 0, max(limit - 1, 0)))
         candidates.update(client.sscan_iter(TASK_RUNNING_KEY, count=limit))
         for status in AsyncTaskStatus:
-            candidates.update(client.sscan_iter(self._task_status_key(status.value), count=limit))
+            candidates.update(
+                client.sscan_iter(self._task_status_key(status.value), count=limit)
+            )
 
-        stale_ids = [task_id for task_id in candidates if not client.exists(self._task_key(task_id))]
+        stale_ids = [
+            task_id
+            for task_id in candidates
+            if not client.exists(self._task_key(task_id))
+        ]
         if not stale_ids:
             return 0
 
@@ -654,23 +710,24 @@ class RedisTaskStore:
             pipe.srem(self._task_status_key(previous_status), task.task_id)
             pipe.sadd(self._task_status_key(task.status.value), task.task_id)
         if event is not None:
-            pipe.rpush(self._events_key(task.task_id), event.model_dump_json())
-            pipe.ltrim(
-                self._events_key(task.task_id),
-                -max(settings.TASK_STAGE_EVENT_LIMIT, 1),
-                -1,
-            )
+            self._event_store().append_to_pipeline(pipe, event)
         pipe.execute()
 
     def _set_heartbeat(self, task_id: str, heartbeat_at: str) -> None:
         client = self._get_client()
-        client.set(self._heartbeat_key(task_id), heartbeat_at, ex=settings.TASK_HEARTBEAT_TIMEOUT_SECONDS)
+        client.set(
+            self._heartbeat_key(task_id),
+            heartbeat_at,
+            ex=settings.TASK_HEARTBEAT_TIMEOUT_SECONDS,
+        )
 
     def _get_client(self) -> "redis.Redis":
         if self._client is not None:
             return self._client
         if redis is None:
-            raise RuntimeError("redis dependency is not installed. Please install project dependencies before using async tasks.")
+            raise RuntimeError(
+                "redis dependency is not installed. Please install project dependencies before using async tasks."
+            )
         self._client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
         return self._client
 

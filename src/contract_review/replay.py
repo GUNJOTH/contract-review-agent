@@ -1,4 +1,4 @@
-"""Stable input fingerprints for reproducible contract-review runs."""
+"""用于复现合同审查运行的稳定输入指纹。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,14 @@ def _without_runtime_timestamps(value: Any) -> Any:
         return {
             key: _without_runtime_timestamps(item)
             for key, item in value.items()
-            if key not in {"created_at", "captured_at", "decided_at", "occurred_at", "generated_at"}
+            if key
+            not in {
+                "created_at",
+                "captured_at",
+                "decided_at",
+                "occurred_at",
+                "generated_at",
+            }
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_without_runtime_timestamps(item) for item in value]
@@ -62,6 +69,21 @@ def build_replay_fingerprint(
             "source_sha256": rule_bundle.source_sha256,
             "source_sheet": rule_bundle.source_sheet,
             "source_range": rule_bundle.source_range,
+            "rules": [
+                {
+                    "rule_id": rule.rule_id,
+                    "version": rule.version,
+                    "title": rule.title,
+                    "category": rule.category,
+                    "check_method": rule.check_method,
+                    "risk_level": rule.risk_level,
+                    "applicability": rule.applicability,
+                    "playbook": rule.playbook,
+                }
+                for rule in sorted(
+                    rule_bundle.rules, key=lambda item: item.rule_id
+                )
+            ],
         },
         "model_version": model_version,
         "configuration": _jsonable(configuration or {}),
@@ -109,14 +131,20 @@ def verify_replay_inputs(
 
 
 def build_result_fingerprint(result: ReviewResult) -> str:
-    """Hash review content while excluding wall-clock and run-instance IDs."""
+    """对审查内容做哈希，同时排除墙上时间和运行实例标识。"""
 
     payload = {
+        "schema_version": result.schema_version,
         "package": {
             "package_id": result.package.package_id,
             "document_ids": sorted(result.package.document_ids),
             "source_snapshot": result.package.source_snapshot,
         },
+        "review_context": (
+            result.review_context.model_dump(mode="json")
+            if result.review_context is not None
+            else None
+        ),
         "rule_bundle": {
             "bundle_id": result.rule_bundle.bundle_id,
             "source_sha256": result.rule_bundle.source_sha256,
@@ -131,8 +159,11 @@ def build_result_fingerprint(result: ReviewResult) -> str:
                     "check_method": rule.check_method,
                     "risk_level": rule.risk_level,
                     "applicability": rule.applicability,
+                    "playbook": rule.playbook,
                 }
-                for rule in sorted(result.rule_bundle.rules, key=lambda item: item.rule_id)
+                for rule in sorted(
+                    result.rule_bundle.rules, key=lambda item: item.rule_id
+                )
             ],
         },
         "documents": [
@@ -159,11 +190,15 @@ def build_result_fingerprint(result: ReviewResult) -> str:
         ],
         "knowledge_chunks": [
             item.model_dump(mode="json")
-            for item in sorted(result.knowledge_chunks, key=lambda value: value.chunk_id)
+            for item in sorted(
+                result.knowledge_chunks, key=lambda value: value.chunk_id
+            )
         ],
         "retrieval_traces": [
             item.model_dump(mode="json", exclude={"created_at"})
-            for item in sorted(result.retrieval_traces, key=lambda value: value.trace_id)
+            for item in sorted(
+                result.retrieval_traces, key=lambda value: value.trace_id
+            )
         ],
         "semantic_response": result.semantic_response.model_dump(
             mode="json", exclude={"created_at"}
@@ -177,11 +212,38 @@ def build_result_fingerprint(result: ReviewResult) -> str:
         else None,
         "attachment_references": [
             item.model_dump(mode="json")
-            for item in sorted(result.attachment_references, key=lambda value: value.reference_id)
+            for item in sorted(
+                result.attachment_references, key=lambda value: value.reference_id
+            )
         ],
         "facts": [
             item.model_dump(mode="json", exclude={"created_at"})
             for item in sorted(result.facts, key=lambda value: value.fact_id)
+        ],
+        "clauses": [
+            item.model_dump(mode="json")
+            for item in sorted(result.clauses, key=lambda value: value.clause_id)
+        ],
+        "obligations": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.obligations,
+                key=lambda value: value.obligation_id,
+            )
+        ],
+        "review_questions": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.review_questions,
+                key=lambda value: value.question_id,
+            )
+        ],
+        "question_assessments": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.question_assessments,
+                key=lambda value: value.assessment_id,
+            )
         ],
         "findings": [
             item.model_dump(mode="json", exclude={"created_at"})

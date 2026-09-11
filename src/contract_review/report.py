@@ -56,7 +56,9 @@ def _render_evidence(evidence: Evidence, filenames: dict[str, str]) -> list[str]
     return lines
 
 
-def _finding_evidence(finding: Finding, evidence_by_id: dict[str, Evidence], filenames: dict[str, str]) -> list[str]:
+def _finding_evidence(
+    finding: Finding, evidence_by_id: dict[str, Evidence], filenames: dict[str, str]
+) -> list[str]:
     lines = ["证据："]
     for evidence_id in finding.evidence_ids:
         evidence = evidence_by_id.get(evidence_id)
@@ -89,16 +91,49 @@ def render_markdown_report(result: ReviewResult) -> str:
     ]
     for status, count in sorted(result.report.finding_counts.items()):
         lines.append(f"- `{status}`：{count}")
+    lines.extend(
+        [
+            "",
+            "## 合同结构与履约义务",
+            "",
+            f"- 条款片段：{len(result.clauses)}",
+            f"- 履约义务：{len(result.obligations)}",
+            "",
+        ]
+    )
+    for obligation in result.obligations:
+        subject = obligation.obligor or "主体待确认"
+        deadline = obligation.deadline or "期限待确认"
+        lines.append(
+            f"- `{obligation.obligation_id}` · `{obligation.modality.value}` · "
+            f"{_markdown_text(subject)}：{_markdown_text(obligation.action)}；"
+            f"{_markdown_text(deadline)}；证据 "
+            f"{', '.join(f'`{item}`' for item in obligation.evidence_ids)}"
+        )
+    if not result.obligations:
+        lines.append("- 未识别到可由确定性规则确认的中文履约义务，需人工或模型复核。")
     lines.extend(["", "## 逐条发现", ""])
 
-    decisions_by_finding = {decision.finding_id: decision for decision in result.decisions}
+    decisions_by_finding = {
+        decision.finding_id: decision for decision in result.decisions
+    }
+    assessments_by_finding = {
+        assessment.finding_id: assessment for assessment in result.question_assessments
+    }
     for index, finding in enumerate(result.findings, start=1):
+        assessment = assessments_by_finding.get(finding.finding_id)
         lines.extend(
             [
-                f"### {index}. { _markdown_text(finding.title) }",
+                f"### {index}. {_markdown_text(finding.title)}",
                 "",
                 f"- 规则：`{finding.rule_id}` / `{finding.rule_version}`",
                 f"- 状态：`{finding.status.value}`",
+                "- 问题结论："
+                + (
+                    f"`{assessment.outcome.value}`"
+                    if assessment is not None
+                    else "缺失（审计应失败）"
+                ),
                 f"- 风险级别：`{finding.risk_level.value}`",
                 f"- 置信度：`{finding.confidence if finding.confidence is not None else '未提供'}`",
                 f"- 原因：{_markdown_text(finding.reason)}",
@@ -107,7 +142,9 @@ def render_markdown_report(result: ReviewResult) -> str:
         if finding.recommended_action:
             lines.append(f"- 建议动作：{_markdown_text(finding.recommended_action)}")
         if finding.fact_ids:
-            lines.append(f"- 事实：{', '.join(f'`{item}`' for item in finding.fact_ids)}")
+            lines.append(
+                f"- 事实：{', '.join(f'`{item}`' for item in finding.fact_ids)}"
+            )
         lines.extend(_finding_evidence(finding, evidence_by_id, filenames))
         decision = decisions_by_finding.get(finding.finding_id)
         if decision is not None:
@@ -130,12 +167,17 @@ def render_markdown_report(result: ReviewResult) -> str:
             f"- 输入指纹：`{result.run.configuration_fingerprint}`",
             f"- 结果指纹：`{result.run.result_fingerprint or '未生成'}`",
             f"- 证据数量：{len(result.evidence)}",
+            f"- 条款片段数量：{len(result.clauses)}",
+            f"- 履约义务数量：{len(result.obligations)}",
+            f"- 审查问题数量：{len(result.review_questions)}",
             f"- 知识片段数量：{len(result.knowledge_chunks)}",
             f"- 检索轨迹数量：{len(result.retrieval_traces)}",
         ]
     )
     if not audit.passed:
-        lines.extend(["", "### 审计问题", "", *[f"- {issue}" for issue in audit.issues]])
+        lines.extend(
+            ["", "### 审计问题", "", *[f"- {issue}" for issue in audit.issues]]
+        )
     return "\n".join(lines) + "\n"
 
 

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from contract_review.models import StageEvent
 from contract_review_app.models import AsyncTaskRecord
 
 
 class TaskStore(Protocol):
     def create(self, task: AsyncTaskRecord) -> None: ...
 
-    def find_by_idempotency_key(self, idempotency_key: str) -> AsyncTaskRecord | None: ...
+    def find_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> AsyncTaskRecord | None: ...
 
     def admit_and_create(
         self,
@@ -21,6 +24,23 @@ class TaskStore(Protocol):
         idempotency_ttl_seconds: int,
         event_limit: int,
     ) -> tuple[str, AsyncTaskRecord | None]: ...
+
+    def attach_input(
+        self,
+        task_id: str,
+        *,
+        input_mode: str,
+        input_path: str,
+        input_size: int,
+        input_filename: str | None,
+        input_content_type: str | None,
+    ) -> AsyncTaskRecord | None: ...
+
+    def append_stage_event(self, event: StageEvent) -> None: ...
+
+    def list_stage_events(
+        self, subject_type: str, subject_id: str
+    ) -> list[StageEvent]: ...
 
     def get(self, task_id: str) -> AsyncTaskRecord | None: ...
 
@@ -37,9 +57,13 @@ class TaskStore(Protocol):
 
     def count_pending(self) -> int: ...
 
-    def mark_running(self, task_id: str, *, worker_id: str, started_at: str) -> AsyncTaskRecord | None: ...
+    def mark_running(
+        self, task_id: str, *, worker_id: str, started_at: str
+    ) -> AsyncTaskRecord | None: ...
 
-    def heartbeat(self, task_id: str, *, heartbeat_at: str) -> AsyncTaskRecord | None: ...
+    def heartbeat(
+        self, task_id: str, *, heartbeat_at: str
+    ) -> AsyncTaskRecord | None: ...
 
     def update_progress(
         self,
@@ -70,13 +94,17 @@ class TaskStore(Protocol):
         expires_at: str,
     ) -> AsyncTaskRecord | None: ...
 
-    def requeue(self, task_id: str, *, heartbeat_at: str | None = None) -> AsyncTaskRecord | None: ...
+    def requeue(
+        self, task_id: str, *, heartbeat_at: str | None = None
+    ) -> AsyncTaskRecord | None: ...
 
     def push_dead_letter(self, payload: dict) -> None: ...
 
     def stale_running(self, *, heartbeat_before: str) -> list[AsyncTaskRecord]: ...
 
-    def mark_expired(self, task_id: str, *, expired_at: str) -> AsyncTaskRecord | None: ...
+    def mark_expired(
+        self, task_id: str, *, expired_at: str
+    ) -> AsyncTaskRecord | None: ...
 
     def list_due_expiring(self, *, expires_before: str, limit: int) -> list[str]: ...
 

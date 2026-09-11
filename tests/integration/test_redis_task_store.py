@@ -59,6 +59,7 @@ def test_admission_script_is_atomic_and_seeds_event_ledger():
     assert call[1] == 5
     assert str(call[2]).startswith("contract:task:idempotency:")
     assert "SCARD" in _ADMIT_IDEMPOTENT_SCRIPT
+    assert "ZSCORE" in _ADMIT_IDEMPOTENT_SCRIPT
     assert "SCARD" in _ADMIT_SCRIPT
 
 

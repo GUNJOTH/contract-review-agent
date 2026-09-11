@@ -117,6 +117,12 @@ def _casefold_span(text: str, query: str) -> tuple[int, int] | None:
     return original_indices[folded_start], original_indices[folded_end] + 1
 
 
+def _match_evidence_key(query: str) -> str:
+    """为同一文本块中的不同查询生成稳定且短的证据区分键。"""
+
+    return hashlib.sha256(query.casefold().encode("utf-8")).hexdigest()[:12]
+
+
 def parse_pdf(
     path: str | Path,
     *,
@@ -635,6 +641,7 @@ def find_text_evidence(
         return []
 
     normalized_query = query.casefold()
+    match_key = _match_evidence_key(query)
     evidence: list[Evidence] = []
     for parsed_page in parsed_document.pages:
         for block in parsed_page.blocks:
@@ -644,7 +651,10 @@ def find_text_evidence(
             if span is None:
                 continue
             page = parsed_page.page
-            evidence_id = f"{evidence_prefix}-{page.page_number}-{block.order}"
+            evidence_id = (
+                f"{evidence_prefix}-{parsed_document.document.document_id}-"
+                f"p{page.page_number}-b{block.order}-{match_key}"
+            )
             excerpt = block.text.strip()
             excerpt_sha256 = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
             evidence.append(
@@ -678,7 +688,10 @@ def find_text_evidence(
         if span is None:
             continue
         excerpt = node.text.strip()
-        evidence_id = f"{evidence_prefix}-{parsed_document.document.document_id}-node-{node.order}"
+        evidence_id = (
+            f"{evidence_prefix}-{parsed_document.document.document_id}-"
+            f"node-{node.order}-{match_key}"
+        )
         locator = node.locator.model_copy(update={"char_start": span[0], "char_end": span[1]})
         excerpt_sha256 = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
         evidence.append(

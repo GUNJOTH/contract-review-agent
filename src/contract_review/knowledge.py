@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Sequence
 from typing import Protocol
@@ -12,6 +13,7 @@ from .models import (
     Evidence,
     EvidenceType,
     KnowledgeChunk,
+    KnowledgeSourceKind,
     ParsedDocument,
     RetrievalHit,
     RetrievalTrace,
@@ -70,7 +72,7 @@ def build_knowledge_corpus(
     *,
     rule_bundle: RuleBundle | None = None,
 ) -> tuple[list[KnowledgeChunk], list[Evidence]]:
-    """Create source-linked chunks from documents and optional rule snapshots."""
+    """从合同文档和可选规则快照构建带来源绑定的知识块。"""
 
     chunks: list[KnowledgeChunk] = []
     evidence: dict[str, Evidence] = {}
@@ -87,6 +89,7 @@ def build_knowledge_corpus(
                     source_version=parsed_document.document.parser_version,
                     content=item.raw_excerpt or "",
                     evidence_ids=[item.evidence_id],
+                    source_kind=KnowledgeSourceKind.CONTRACT,
                     metadata={
                         "document_id": parsed_document.document.document_id,
                         "page_number": item.locator.page_number,
@@ -97,15 +100,28 @@ def build_knowledge_corpus(
     if rule_bundle is not None:
         for rule in rule_bundle.rules:
             # 规则块内容带 rule_id 前缀：语义模型收到的 context 是扁平列表，
-            # 只有把规则 ID 写进块内容，模型才能把"规则 ID ↔ 规则定义"对应起来。
+            # 只有把规则 ID 写进块内容，模型才能把"规则 ID ↔ 规则定义"对应起来；
+            # Playbook 也随规则快照进入上下文，避免模型在应用层复制企业立场。
             text = (
                 f"{rule.rule_id} | "
                 + " / ".join(
                     value
-                    for value in (rule.category, rule.title, rule.condition)
+                    for value in (
+                        f"version={rule.version}",
+                        rule.category,
+                        rule.title,
+                        rule.condition,
+                    )
                     if value
                 )
             )
+            if rule.playbook is not None:
+                text += " | playbook=" + json.dumps(
+                    rule.playbook.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             item = _rule_evidence(
                 rule.rule_id,
                 rule.source_locator,
@@ -122,6 +138,7 @@ def build_knowledge_corpus(
                     source_version=rule_bundle.bundle_id,
                     content=text,
                     evidence_ids=[item.evidence_id],
+                    source_kind=KnowledgeSourceKind.RULE,
                     metadata={"rule_id": rule.rule_id, "legacy_id": rule.legacy_id},
                 )
             )

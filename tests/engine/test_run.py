@@ -8,6 +8,7 @@ from contract_review.models import (
     Rule,
     RuleBundle,
 )
+from contract_review.event_store import InMemoryStageEventStore
 from contract_review.run import ReviewRunError, advance_review_run, create_review_run
 
 
@@ -46,7 +47,7 @@ class ReviewRunTests(unittest.TestCase):
             ],
         )
 
-    def test_run_records_inputs_and_append_only_transitions(self) -> None:
+    def test_run_records_inputs_and_append_only_stage_events(self) -> None:
         run = create_review_run(
             self.package,
             [self.document],
@@ -70,16 +71,19 @@ class ReviewRunTests(unittest.TestCase):
 
         self.assertEqual(run.input_document_sha256, {"doc-1": "a" * 64})
         self.assertEqual(run.status, ReviewStatus.QUALITY_GATED)
-        self.assertEqual(len(run.transitions), 3)
         self.assertEqual(len(run.stage_events), 3)
-        self.assertEqual(run.stage_events[-1].to_stage, ReviewStatus.QUALITY_GATED.value)
+        self.assertEqual(
+            run.stage_events[-1].to_stage, ReviewStatus.QUALITY_GATED.value
+        )
         self.assertEqual(run.stage_events[-1].subject_id, run.run_id)
-        self.assertEqual(run.transitions[-1].from_status, ReviewStatus.PARSED)
+        self.assertEqual(run.stage_events[-1].from_stage, ReviewStatus.PARSED.value)
         self.assertTrue(len(run.configuration_fingerprint) == 64)
         self.assertIsNone(run.finished_at)
 
     def test_invalid_transition_is_rejected(self) -> None:
-        run = create_review_run(self.package, [self.document], self.bundle, parser_version="test")
+        run = create_review_run(
+            self.package, [self.document], self.bundle, parser_version="test"
+        )
 
         with self.assertRaises(ReviewRunError):
             advance_review_run(
@@ -89,12 +93,40 @@ class ReviewRunTests(unittest.TestCase):
                 reason="不能跳过前置阶段。",
             )
 
-    def test_replay_fingerprint_changes_when_source_changes(self) -> None:
-        first = create_review_run(self.package, [self.document], self.bundle, parser_version="test")
-        changed = self.document.model_copy(update={"source_sha256": "c" * 64})
-        second = create_review_run(self.package, [changed], self.bundle, parser_version="test")
+    def test_run_stage_events_publish_to_shared_event_store(self) -> None:
+        event_store = InMemoryStageEventStore()
+        run = create_review_run(
+            self.package,
+            [self.document],
+            self.bundle,
+            parser_version="test",
+            run_id="run-ledger",
+            event_store=event_store,
+        )
+        run = advance_review_run(
+            run,
+            ReviewStatus.PARSED,
+            action="parse_documents",
+            reason="全部页面已解析。",
+            event_store=event_store,
+        )
 
-        self.assertNotEqual(first.configuration_fingerprint, second.configuration_fingerprint)
+        assert (
+            event_store.list_stage_events("review_run", run.run_id) == run.stage_events
+        )
+
+    def test_replay_fingerprint_changes_when_source_changes(self) -> None:
+        first = create_review_run(
+            self.package, [self.document], self.bundle, parser_version="test"
+        )
+        changed = self.document.model_copy(update={"source_sha256": "c" * 64})
+        second = create_review_run(
+            self.package, [changed], self.bundle, parser_version="test"
+        )
+
+        self.assertNotEqual(
+            first.configuration_fingerprint, second.configuration_fingerprint
+        )
 
     def test_empty_package_cannot_start_a_run(self) -> None:
         empty_package = self.package.model_copy(update={"document_ids": []})

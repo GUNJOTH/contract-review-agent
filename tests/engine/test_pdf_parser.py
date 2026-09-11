@@ -67,6 +67,25 @@ class PdfParserTests(unittest.TestCase):
         self.assertIn("source code", item.display_excerpt or "")
 
 
+    def test_find_text_evidence_ids_are_unique_for_documents_and_queries(self) -> None:
+        first_path = self.tmp_path / "first-contract.pdf"
+        second_path = self.tmp_path / "second-contract.pdf"
+        _write_text_pdf(first_path)
+        _write_text_pdf(second_path)
+        first = parse_pdf(first_path, package_id="package-1", document_id="doc-first")
+        second = parse_pdf(second_path, package_id="package-1", document_id="doc-second")
+
+        first_match = find_text_evidence(first, "source code", evidence_prefix="keyword")
+        second_match = find_text_evidence(second, "source code", evidence_prefix="keyword")
+        same_block_matches = [
+            *find_text_evidence(first, "Section", evidence_prefix="keyword"),
+            *find_text_evidence(first, "Payment", evidence_prefix="keyword"),
+        ]
+
+        self.assertNotEqual(first_match[0].evidence_id, second_match[0].evidence_id)
+        self.assertEqual(len({item.evidence_id for item in same_block_matches}), 2)
+
+
     def test_blank_text_page_is_explicitly_marked_for_ocr(self) -> None:
         pdf_path = self.tmp_path / "scanned-contract.pdf"
         pdf = fitz.open()

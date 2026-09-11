@@ -1,4 +1,4 @@
-"""Rule execution with explicit applicability and unsupported-check handling."""
+"""带有明确适用性和未实现检查处置的合同规则执行器。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pydantic import Field
 
 from .models import (
     AttachmentReference,
+    ContractClause,
     ContractFact,
     Evidence,
     EvidenceType,
@@ -21,9 +22,14 @@ from .models import (
     RuleBundle,
     RiskLevel,
     SourceLocator,
+    PlaybookAction,
+    ReviewContext,
 )
 from .parser import find_text_evidence
+from .playbook import evaluate_playbook_rule
 from .review import check_attachment_completeness
+from .review_context import resolve_review_context
+from .rules import expected_rule_value, resolve_rule_applicability, select_rules
 
 ENGINE_VERSION = "rule-engine-0.1.0"
 
@@ -65,6 +71,10 @@ def _finding(
     confidence: float | None = None,
     fact_ids: Sequence[str] = (),
     comparison: dict[str, object] | None = None,
+    action: PlaybookAction | None = None,
+    playbook_id: str | None = None,
+    clause_ids: Sequence[str] = (),
+    uncertainty_reason: str | None = None,
 ) -> Finding:
     unique_evidence_ids = list(dict.fromkeys(evidence_ids))
     if not unique_evidence_ids:
@@ -82,18 +92,11 @@ def _finding(
         comparison=comparison,
         confidence=confidence,
         recommended_action=recommended_action,
+        action=action,
+        playbook_id=playbook_id,
+        clause_ids=list(clause_ids),
+        uncertainty_reason=uncertainty_reason,
     )
-
-
-def _applicability(rule: Rule, contract_type: str | None) -> str:
-    if not contract_type:
-        return "unknown"
-    spec = rule.applicability.get(contract_type)
-    if spec is not None:
-        return spec.applicability
-    if contract_type in rule.applies_to:
-        return "required"
-    return "unknown"
 
 
 def execute_rule_bundle(
@@ -109,17 +112,33 @@ def execute_rule_bundle(
     attachment_references: Sequence[AttachmentReference] = (),
     documents: Sequence[Document] = (),
     visual_evidence: Sequence[Evidence] = (),
+    clauses: Sequence[ContractClause] = (),
+    clause_evidence: Sequence[Evidence] = (),
+    review_context: ReviewContext | None = None,
+    selected_rule_ids: Sequence[str] | None = None,
 ) -> RuleExecutionResult:
-    """Evaluate every rule and emit UNKNOWN for checks not yet implemented.
+    """执行所有规则，未实现的检查显式输出 UNKNOWN。
 
-    A missing implementation is a visible review queue item. It never becomes
-    an implicit PASS and therefore cannot disappear from a report.
+    缺少实现的规则必须进入可见复核队列，不能隐式变成 PASS 后从报告中消失。
     """
 
     if package_evidence.package_id != package_id:
         raise ValueError("package evidence belongs to a different package")
+    effective_context = resolve_review_context(
+        review_context,
+        contract_type=contract_type,
+    )
+    effective_contract_type = effective_context.contract_type
+    selected_ids = (
+        set(selected_rule_ids)
+        if selected_rule_ids is not None
+        else {rule.rule_id for rule in select_rules(rule_bundle, effective_context)}
+    )
 
-    evidence: dict[str, Evidence] = {package_evidence.evidence_id: package_evidence}
+    evidence: dict[str, Evidence] = {
+        package_evidence.evidence_id: package_evidence,
+        **{item.evidence_id: item for item in clause_evidence},
+    }
     findings: list[Finding] = []
     all_parsed = all(
         parsed.document.parse_status == "parsed" for parsed in parsed_documents
@@ -130,9 +149,14 @@ def execute_rule_bundle(
         facts_by_type.setdefault(fact.fact_type, []).append(fact)
 
     for rule in rule_bundle.rules:
+        if rule.rule_id not in selected_ids:
+            continue
         rule_evidence = _rule_source_evidence(rule, rule_bundle.source_sha256)
         evidence[rule_evidence.evidence_id] = rule_evidence
-        applicability = _applicability(rule, contract_type)
+        applicability = resolve_rule_applicability(
+            rule,
+            review_context=effective_context,
+        )
 
         if applicability == "not_applicable":
             findings.append(
@@ -159,8 +183,45 @@ def execute_rule_bundle(
             )
             continue
 
+        playbook_evaluation = evaluate_playbook_rule(
+            rule,
+            clauses,
+            default_evidence_ids=[rule_evidence.evidence_id, package_evidence.evidence_id],
+        )
+        if playbook_evaluation is not None:
+            findings.append(
+                _finding(
+                    rule,
+                    status=playbook_evaluation.status,
+                    reason=playbook_evaluation.reason,
+                    evidence_ids=playbook_evaluation.evidence_ids,
+                    recommended_action=(
+                        str(
+                            (playbook_evaluation.comparison or {}).get(
+                                "suggested_language"
+                            )
+                            or ""
+                        ).strip()
+                        or (
+                            playbook_evaluation.action.value
+                            if playbook_evaluation.action is not None
+                            else None
+                        )
+                    ),
+                    confidence=playbook_evaluation.confidence,
+                    comparison=playbook_evaluation.comparison,
+                    action=playbook_evaluation.action,
+                    playbook_id=(
+                        rule.playbook.playbook_id if rule.playbook is not None else None
+                    ),
+                    clause_ids=playbook_evaluation.clause_ids,
+                    uncertainty_reason=playbook_evaluation.uncertainty_reason,
+                )
+            )
+            continue
+
         if rule.check_method == "classification":
-            if not contract_type or not contract_type_fact:
+            if not effective_contract_type or not contract_type_fact:
                 findings.append(
                     _finding(
                         rule,
@@ -171,12 +232,12 @@ def execute_rule_bundle(
                         confidence=0.0,
                     )
                 )
-            elif rule.title == contract_type:
+            elif rule.title == effective_contract_type:
                 findings.append(
                     _finding(
                         rule,
                         status=FindingStatus.PASS,
-                        reason=f"已确认合同类型为“{contract_type}”。",
+                        reason=f"已确认合同类型为“{effective_contract_type}”。",
                         evidence_ids=[rule_evidence.evidence_id, *contract_type_evidence_ids],
                         confidence=contract_type_fact.confidence,
                         fact_ids=[contract_type_fact.fact_id],
@@ -187,7 +248,7 @@ def execute_rule_bundle(
                     _finding(
                         rule,
                         status=FindingStatus.NOT_APPLICABLE,
-                        reason=f"当前合同类型为“{contract_type}”，不是本规则对应类型。",
+                        reason=f"当前合同类型为“{effective_contract_type}”，不是本规则对应类型。",
                         evidence_ids=[rule_evidence.evidence_id, *contract_type_evidence_ids],
                         confidence=contract_type_fact.confidence,
                         fact_ids=[contract_type_fact.fact_id],
@@ -259,7 +320,10 @@ def execute_rule_bundle(
 
         if rule.check_method == "deterministic" and rule.title == "税率":
             rate_facts = facts_by_type.get("tax_rate", [])
-            expected = rule.applicability.get(contract_type).expected_value if contract_type and rule.applicability.get(contract_type) else None
+            expected = expected_rule_value(
+                rule,
+                review_context=effective_context,
+            )
             if not rate_facts:
                 findings.append(
                     _finding(

@@ -345,7 +345,7 @@ const TASK_TYPE_LABELS = {
 };
 
 /* ---------------- 导航 ---------------- */
-const PAGES = { review: renderReviewPage, "element-fill": renderElementFillPage, "ai-rules": renderAiRulesPage, tasks: renderTasksPage };
+const PAGES = { review: renderReviewPage, "element-fill": renderElementFillPage, rules: renderRulesPage, tasks: renderTasksPage };
 let currentPage = null;
 
 function pageHead(kicker, title, desc) {
@@ -1052,7 +1052,15 @@ function newPackageId() {
   return `pkg-${date}-${time}-${rand}`;
 }
 
-let reviewState = { files: [], packageId: newPackageId(), contractType: "" };
+let reviewState = {
+  files: [],
+  packageId: newPackageId(),
+  contractType: "",
+  partyPosition: "",
+  jurisdiction: "",
+  transactionContext: "",
+  reviewScope: "",
+};
 
 function renderReviewPage(content) {
   content.appendChild(pageHead("CONTRACT REVIEW", "合同审查", "上传合同后按风险点 / 合理性 / 内控 / 资信四栏展示，规则来自规则引擎库（内置提示词 + 用户自定义）"));
@@ -1075,6 +1083,33 @@ function renderReviewPage(content) {
         el("label", { text: "合同类型（ContractType）" }),
         el("select", { class: "select", id: "review-type", onchange: (e) => (reviewState.contractType = e.target.value) },
           CONTRACT_TYPES.map((t) => el("option", { value: t, text: t || "— 不指定 —", selected: t === reviewState.contractType ? "" : null }))),
+      ]),
+    ]),
+
+    el("div", { class: "grid grid-2" }, [
+      el("div", { class: "form-row" }, [
+        el("label", { text: "本方交易立场（PartyPosition）" }),
+        el("select", { class: "select", onchange: (e) => (reviewState.partyPosition = e.target.value) }, [
+          el("option", { value: "", text: "— 不指定 —", selected: !reviewState.partyPosition ? "" : null }),
+          el("option", { value: "buyer", text: "甲方 / 买方", selected: reviewState.partyPosition === "buyer" ? "" : null }),
+          el("option", { value: "seller", text: "乙方 / 卖方", selected: reviewState.partyPosition === "seller" ? "" : null }),
+          el("option", { value: "both", text: "双方", selected: reviewState.partyPosition === "both" ? "" : null }),
+        ]),
+      ]),
+      el("div", { class: "form-row" }, [
+        el("label", { text: "适用法域（Jurisdiction）" }),
+        el("input", { class: "input", placeholder: "如：中国大陆", value: reviewState.jurisdiction, oninput: (e) => (reviewState.jurisdiction = e.target.value.trim()) }),
+      ]),
+    ]),
+
+    el("div", { class: "grid grid-2" }, [
+      el("div", { class: "form-row" }, [
+        el("label", { text: "交易背景（TransactionContext）" }),
+        el("textarea", { class: "input", rows: "3", placeholder: "如：软件开发项目采购，重点关注付款与验收", oninput: (e) => (reviewState.transactionContext = e.target.value.trim()) }),
+      ]),
+      el("div", { class: "form-row" }, [
+        el("label", { text: "审查范围（ReviewScope）" }),
+        el("input", { class: "input", placeholder: "规则 category 或 ID，逗号分隔；缺省为全部", value: reviewState.reviewScope, oninput: (e) => (reviewState.reviewScope = e.target.value.trim()) }),
       ]),
     ]),
 
@@ -1257,35 +1292,24 @@ async function loadElementSchema() {
     const fields = data.fields || [];
     wrap.appendChild(el("div", { class: "schema-block" }, [
       el("div", { class: "card-title" }, [
-        el("span", { text: "自定义抽取要素" }),
-        el("span", { class: "hint", text: `共 ${fields.length} 项 · 启用后才会抽取` }),
-        el("span", { class: "grow" }),
-        el("button", { class: "btn btn-primary btn-sm", text: "新增要素", onclick: () => openElementFieldForm() }),
+        el("span", { text: "标准要素目录" }),
+        el("span", { class: "hint", text: `共 ${fields.length} 项 · 结果写入核心 ReviewResult.facts` }),
       ]),
       el("div", { class: "table-wrap" }, [
         el("table", { class: "table" }, [
           el("thead", {}, [el("tr", {}, [
             el("th", { text: "要素名称" }),
             el("th", { text: "字段键" }),
-            el("th", { text: "别名/提示词" }),
-            el("th", { text: "是否启用" }),
-            el("th", { text: "操作" }),
+            el("th", { text: "别名" }),
+            el("th", { text: "是否必需" }),
+            el("th", { text: "识别方式" }),
           ])]),
           el("tbody", {}, fields.map((field) => el("tr", {}, [
             el("td", { class: "rule-title", text: field.label }),
             el("td", { class: "mono", text: field.key }),
             el("td", { class: "muted", text: (field.aliases || []).join("、") || "-" }),
-            el("td", {}, [
-              el("button", {
-                class: "enable-toggle" + (field.enabled ? " on" : ""),
-                text: field.enabled ? "是" : "否",
-                onclick: () => toggleElementField(field, !field.enabled),
-              }),
-            ]),
-            el("td", {}, [
-              el("button", { class: "link-btn", text: "编辑", onclick: () => openElementFieldForm(field) }),
-              el("button", { class: "link-btn danger", text: "删除", onclick: () => deleteElementField(field) }),
-            ]),
+            el("td", {}, [field.required ? el("span", { class: "badge orange", text: "是" }) : el("span", { class: "muted", text: "否" })]),
+            el("td", { class: "muted", text: field.pattern ? "确定性正则 + 原文证据" : "标准目录" }),
           ]))),
         ]),
       ]),
@@ -1294,83 +1318,6 @@ async function loadElementSchema() {
     wrap.appendChild(el("div", { class: "card" }, [
       el("p", { class: "muted", text: "加载要素定义失败：" + (e?.message || e) }),
     ]));
-  }
-}
-
-function openElementFieldForm(field) {
-  const editing = !!(field && field.key);
-  const form = el("div", { class: "rule-form" }, [
-    el("div", { class: "form-row" }, [
-      el("label", { text: "要素名称" }),
-      el("input", { class: "input", id: "el-label", value: field?.label || "", placeholder: "如 质保期" }),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "字段键（可空，自动生成）" }),
-      el("input", { class: "input", id: "el-key", value: field?.key || "", placeholder: "如 warranty_period", disabled: editing ? "" : null }),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "别名/提示词（逗号分隔）" }),
-      el("input", { class: "input", id: "el-aliases", value: (field?.aliases || []).join("、"), placeholder: "如 质保期,质量保证期" }),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "自定义正则（可空）" }),
-      el("input", { class: "input", id: "el-pattern", value: field?.pattern || "", placeholder: "如 质保期[:：]\\s*([^\\n]{2,40})" }),
-    ]),
-    el("div", { class: "action-bar mt-8" }, [
-      el("button", { class: "btn btn-primary", text: editing ? "保存" : "新增", onclick: () => saveElementField(field) }),
-      el("button", { class: "btn btn-ghost", text: "取消", onclick: closeModal }),
-    ]),
-  ]);
-  openModal(editing ? "编辑要素" : "新增要素", form);
-}
-
-async function saveElementField(field) {
-  const payload = {
-    label: $("#el-label")?.value?.trim(),
-    key: $("#el-key")?.value?.trim() || undefined,
-    aliases: ($("#el-aliases")?.value || "").split(/[,，、]/).map((item) => item.trim()).filter(Boolean),
-    pattern: $("#el-pattern")?.value?.trim() || "",
-    enabled: true,
-  };
-  if (!payload.label) { toast("请填写要素名称", "warn"); return; }
-  try {
-    if (field?.key) {
-      await api.request("PUT", `/contract-element-fields/${field.key}`, {
-        body: JSON.stringify(payload),
-        headers: { "Content-Type": "application/json" },
-      });
-      toast("要素已更新", "ok");
-    } else {
-      await api.postJson("/contract-element-fields", payload);
-      toast("要素已新增", "ok");
-    }
-    closeModal();
-    await loadElementSchema();
-  } catch (e) {
-    toast("保存失败：" + (e?.message || e), "err");
-  }
-}
-
-async function toggleElementField(field, enabled) {
-  try {
-    await api.request("PUT", `/contract-element-fields/${field.key}`, {
-      body: JSON.stringify({ enabled }),
-      headers: { "Content-Type": "application/json" },
-    });
-    await loadElementSchema();
-  } catch (e) {
-    toast("操作失败：" + (e?.message || e), "err");
-  }
-}
-
-async function deleteElementField(field) {
-  if (!window.confirm(`确定删除要素「${field.label}」？之后将不再抽取该字段。`)) return;
-  try {
-    await api.request("DELETE", `/contract-element-fields/${field.key}`);
-    toast("要素已删除", "ok");
-    await loadElementSchema();
-  } catch (e) {
-    toast("删除失败：" + (e?.message || e), "err");
   }
 }
 
@@ -1601,10 +1548,70 @@ function partyValue(key) {
 }
 
 function reviewItems(resp) {
-  const ai = resp?.ai_analysis;
-  const findings = resp?.review_result?.findings || [];
-  if (ai && ai.items && ai.items.length) return ai.items;
-  return findings.filter((item) => item.status !== "PASS" && item.status !== "NOT_APPLICABLE");
+  const rr = resp?.review_result;
+  return (rr?.findings || [])
+    .filter((finding) => finding.status !== "PASS" && finding.status !== "NOT_APPLICABLE")
+    .map((finding) => projectReviewFinding(finding, rr))
+    .sort((left, right) => findingSeverity(right.risk_level) - findingSeverity(left.risk_level));
+}
+
+function projectReviewFinding(finding, rr) {
+  const rules = rr?.rule_bundle?.rules || [];
+  const rule = rules.find((item) => item.rule_id === finding.rule_id);
+  const evidenceById = Object.fromEntries((rr?.evidence || []).map((item) => [item.evidence_id, item]));
+  const factsById = Object.fromEntries((rr?.facts || []).map((item) => [item.fact_id, item]));
+  const clausesById = Object.fromEntries((rr?.clauses || []).map((item) => [item.clause_id, item]));
+  const status = finding.status || "UNKNOWN";
+  const text = `${finding.title || ""} ${finding.reason || ""}`;
+  const clause = (finding.clause_ids || []).map((id) => clausesById[id]).find((item) => item?.clause_number);
+  const quote = (finding.evidence_ids || [])
+    .map((id) => evidenceById[id])
+    .find((item) => item && item.evidence_type !== "missing_artifact" && (item.display_excerpt || item.raw_excerpt));
+  const semanticRuleIds = new Set((rr?.semantic_response?.items || []).map((item) => item.rule_id));
+  return {
+    ...finding,
+    risk_id: finding.finding_id,
+    risk_level: status,
+    suggested_action: finding.recommended_action,
+    quote: quote?.display_excerpt || quote?.raw_excerpt || null,
+    source: semanticRuleIds.has(finding.rule_id) ? "ai" : "rule",
+    module: reviewModule(rule, text),
+    category: rule?.category || null,
+    metric: reviewMetric(text),
+    value: (finding.fact_ids || [])
+      .map((id) => factsById[id]?.value)
+      .find((value) => value !== undefined && value !== null && value !== "")
+      ?.toString() || null,
+    section: clause?.clause_number || null,
+  };
+}
+
+function reviewModule(rule, text) {
+  const category = rule?.category || "";
+  if (category === "合同类型" || text.includes("合同类型")) return "风险点";
+  if (category.startsWith("Qx") || /合理性|信创|国产化|云架构|数据治理/.test(text)) return "合理性";
+  if (["资信", "客户资信风险"].includes(category) || /资信|征信|注册资本|诉讼/.test(text)) return "资信";
+  return "内控";
+}
+
+function reviewMetric(text) {
+  const mappings = [
+    ["利润率", /利润/],
+    ["资金要求", /资金/],
+    ["项目预算", /预算/],
+    ["收款进度", /收款|进度/],
+    ["履行期限", /期限|工期|签订时间/],
+    ["权属范围", /权属|知识产权|源代码/],
+    ["注册资本", /注册资本/],
+    ["合作历史", /合作历史/],
+    ["当前合同", /当前合同/],
+    ["经营状况", /经营状况|经营/],
+  ];
+  return mappings.find(([, pattern]) => pattern.test(text))?.[0] || null;
+}
+
+function findingSeverity(status) {
+  return { BLOCK: 5, WARN: 4, INFO: 3, UNKNOWN: 2, PASS: 1 }[status] || 0;
 }
 
 function itemsByModule(resp, module) {
@@ -1641,6 +1648,7 @@ async function runContractReviewForFill() {
   reviewState.files.forEach((file) => fd.append("files", file));
   fd.append("PackageId", reviewState.packageId);
   if (reviewState.contractType) fd.append("ContractType", reviewState.contractType);
+  appendReviewContext(fd);
   const resp = await api.upload("/contract-review", fd);
   elementsState.reviewResult = resp;
   renderCreditRiskPanel();
@@ -1654,7 +1662,7 @@ function openAiReviewDialog() {
   ]);
   openModal("AI审查", body, { wide: true });
   if (elementsState.reviewResult) {
-    renderAiReviewWorkspace(elementsState.reviewResult);
+    renderReviewWorkspace(elementsState.reviewResult);
   } else {
     renderAiReviewStart();
   }
@@ -1683,17 +1691,13 @@ function renderAiReviewStart() {
   ]));
 }
 
-function renderAiReviewWorkspace(resp) {
+function renderReviewWorkspace(resp) {
   const wrap = $("#review-result");
   if (!wrap) return;
   wrap.innerHTML = "";
   const rr = resp?.review_result || {};
-  const ai = resp?.ai_analysis;
-  const findings = rr.findings || [];
-  const items = (ai && ai.items && ai.items.length)
-    ? ai.items
-    : findings.filter((item) => item.status !== "PASS" && item.status !== "NOT_APPLICABLE");
-  wrap.appendChild(buildReviewPanels(items, ai, rr, rr.run || {}, rr.report || {}, rr.evidence || [], rr.documents || [], { compact: true }));
+  const items = reviewItems(resp);
+  wrap.appendChild(buildReviewPanels(items, rr, rr.run || {}, rr.report || {}, rr.evidence || [], rr.documents || [], { compact: true }));
 }
 
 async function submitFillReview() {
@@ -1710,7 +1714,7 @@ async function submitFillReview() {
   }
   try {
     const resp = await runContractReviewForFill();
-    renderAiReviewWorkspace(resp);
+    renderReviewWorkspace(resp);
     toast("AI审查完成", "ok");
   } catch (e) {
     if (wrap) wrap.innerHTML = "";
@@ -1975,6 +1979,18 @@ function validateReview() {
   return true;
 }
 
+function appendReviewContext(formData) {
+  const fields = [
+    ["PartyPosition", reviewState.partyPosition],
+    ["Jurisdiction", reviewState.jurisdiction],
+    ["TransactionContext", reviewState.transactionContext],
+    ["ReviewScope", reviewState.reviewScope],
+  ];
+  fields.forEach(([name, value]) => {
+    if (value) formData.append(name, value);
+  });
+}
+
 async function submitReviewSync() {
   if (!validateReview()) return;
   const btn = $("#btn-review-sync");
@@ -1992,6 +2008,7 @@ async function submitReviewSync() {
     reviewState.files.forEach((f) => fd.append("files", f));
     fd.append("PackageId", reviewState.packageId);
     if (reviewState.contractType) fd.append("ContractType", reviewState.contractType);
+    appendReviewContext(fd);
     const resp = await api.upload("/contract-review", fd);
     wrap.innerHTML = "";
     renderReviewResult(resp);
@@ -2012,6 +2029,7 @@ async function submitReviewAsync() {
     reviewState.files.forEach((f) => fd.append("files", f));
     fd.append("PackageId", reviewState.packageId);
     if (reviewState.contractType) fd.append("ContractType", reviewState.contractType);
+    appendReviewContext(fd);
     const resp = await api.upload("/contract-review-async", fd);
     const taskId = resp?.Response?.task_id;
     toast(`异步审查任务已创建: ${taskId}`, "ok");
@@ -2033,7 +2051,6 @@ function renderReviewResult(resp) {
 /** 把审查结果渲染进指定容器（主页面 / 任务结果模态框共用） */
 function renderReviewViews(wrap, resp) {
   const rr = resp?.review_result;
-  const ai = resp?.ai_analysis;
   if (!rr) {
     wrap.appendChild(el("div", { class: "card" }, [
       el("div", { class: "card-title", text: "审查结果" }),
@@ -2051,17 +2068,13 @@ function renderReviewViews(wrap, resp) {
 
   const report = rr.report || {};
   const run = rr.run || {};
-  const findings = rr.findings || [];
   const evidence = rr.evidence || [];
   const documents = rr.documents || [];
   const overall = report.overall_status || "UNKNOWN";
   const fm = FINDING_META[overall] || FINDING_META.UNKNOWN;
 
-  // 单一融合清单：后端已将 AI 分析与规则层结论合并（PASS/不适用已隐藏）
-  const aiEnabled = !!(ai && ai.items && ai.items.length);
-  const items = aiEnabled
-    ? ai.items
-    : findings.filter((f) => f.status !== "PASS" && f.status !== "NOT_APPLICABLE");
+  // 单一核心清单：所有展示项都从 ReviewResult.findings 投影而来。
+  const items = reviewItems(resp);
   const blocked = items.some((it) => (it.risk_level || it.status) === "BLOCK");
 
   // 摘要
@@ -2106,7 +2119,7 @@ function renderReviewViews(wrap, resp) {
     wrap.appendChild(docCard);
   }
 
-  wrap.appendChild(buildReviewPanels(items, ai, rr, run, report, evidence, documents));
+  wrap.appendChild(buildReviewPanels(items, rr, run, report, evidence, documents));
 }
 
 const REVIEW_PANELS = [
@@ -2131,7 +2144,7 @@ function itemModule(item) {
   return "内控";
 }
 
-function buildReviewPanels(items, ai, rr, run, report, evidence, documents, options = {}) {
+function buildReviewPanels(items, rr, run, report, evidence, documents, options = {}) {
   const grouped = {};
   REVIEW_PANELS.forEach(([name]) => { grouped[name] = []; });
   items.forEach((item) => grouped[itemModule(item)].push(item));
@@ -2538,395 +2551,64 @@ function buildFinding(f, evById, docById) {
 }
 
 /* ============================================================
- * 规则引擎库（用户设定合同风险规则，供 AI 审查命中）
+ * 正式规则包（只读）
  * ============================================================ */
-const AI_RULE_STATUS_META = {
-  draft: { label: "待确认", cls: "orange" },
-  active: { label: "已启用", cls: "green" },
-  disabled: { label: "已停用", cls: "gray" },
-};
-const RULE_MODULES = ["风险点", "合理性", "内控", "资信"];
-const RULE_TOPICS = ["合同类型", "金额", "付款", "发票", "源代码相关（按关键字搜索）", "知识产权", "Qx新技术架构描述相关", "合同主体", "合规性/交付问题", "软件开发服务合同（0税率）重点检查项"];
-const RULE_PAGE_SIZES = [10, 20, 50];
-let aiRulesState = { topics: RULE_TOPICS, pager: {} };
 
-function isRuleEnabled(rule) {
-  return rule.enabled !== false && rule.status === "active";
+async function renderRulesPage(content) {
+  content.appendChild(pageHead("RULE BUNDLE", "正式规则包", "当前审查使用的版本化规则目录；规则随 ReviewResult 固化，应用层不再维护第二套规则库。"));
+  content.appendChild(el("div", { id: "rules-list" }));
+  await loadRuleCatalog();
 }
 
-async function renderAiRulesPage(content) {
-  content.appendChild(pageHead("RULE ENGINE", "规则引擎库", "每套规则都有两部分：上方规则列表，下方规则引擎按 PPT 评分矩阵展示（权重 + 高/中/低分标准）"));
-  content.appendChild(el("div", { id: "ai-rules-list" }));
-  await loadAiRules();
-}
-
-async function loadAiRules() {
-  const wrap = $("#ai-rules-list");
+async function loadRuleCatalog() {
+  const wrap = $("#rules-list");
   if (!wrap) return;
   wrap.innerHTML = "";
   wrap.appendChild(el("p", { class: "muted", text: "加载中…" }));
   try {
-    const data = await api.get("/ai-rules");
-    aiRulesState.topics = data.topics && data.topics.length ? data.topics : RULE_TOPICS;
-    const packs = data.packs || {};
-    const approval = (packs.approval && packs.approval.rules) || [];
-    const aiRules = (packs.ai && packs.ai.rules) || [];
+    const data = await api.get("/rules");
+    const rules = data.rules || [];
     wrap.innerHTML = "";
-    wrap.appendChild(buildRulePack({
-      mark: "HT",
-      title: "合同审批检查标准",
-      hint: `共 ${approval.length} 条`,
-      empty: "暂无合同审批规则。服务启动后会写入检查标准，也可手动新增。",
-      rules: approval,
-      groups: (packs.approval && packs.approval.groups) || groupRulesByTopic(approval),
-      engineTitle: "规则引擎",
-      engineHint: "按检查维度分类，展示权重和高中低分标准",
-      guide: "列表中新增、编辑、启用或删除后，规则引擎评分矩阵同步更新。",
-      defaultTopic: "合规性/交付问题",
-    }));
-    wrap.appendChild(buildRulePack({
-      mark: "AI",
-      title: "AI 自进化规则",
-      hint: `共 ${aiRules.length} 条 · 审查后由模型提炼，待确认后生效`,
-      empty: "暂无 AI 规则。完成一次合同审查后，模型提炼的检查点会出现在这里。",
-      rules: aiRules,
-      groups: (packs.ai && packs.ai.groups) || groupRulesByTopic(aiRules),
-      engineTitle: "AI 规则引擎",
-      engineHint: "与上方同一批 AI 规则，按维度展示评分标准",
-      guide: "确认启用后进入审查提示池；规则引擎按同一批规则分维度展示。",
-      defaultTopic: "其他检查",
-      hideCreate: true,
-    }));
+    wrap.appendChild(el("div", { class: "card" }, [
+      el("div", { class: "card-title" }, [
+        el("span", { text: data.bundle_id || "正式规则包" }),
+        el("span", { class: "hint", text: `共 ${rules.length} 条` }),
+        el("span", { class: "grow" }),
+        el("span", { class: "badge gray", text: "只读" }),
+        el("button", { class: "btn btn-secondary btn-sm", text: "刷新", onclick: loadRuleCatalog }),
+      ]),
+      data.source_filename ? el("p", { class: "muted", text: `来源：${data.source_filename} · 版本：${data.bundle?.bundle_id || data.bundle_id || "-"}` }) : null,
+      rules.length ? el("div", { class: "table-wrap" }, [buildFormalRuleTable(rules)]) : el("p", { class: "muted", text: "暂无正式规则。" }),
+    ]));
   } catch (e) {
     wrap.innerHTML = "";
     wrap.appendChild(el("div", { class: "card" }, [
-      el("p", { class: "muted", text: "加载失败：" + (e?.message || e) + "（请确认右上角已填写 X-API-Token）" }),
+      el("p", { class: "muted", text: "加载失败：" + (e?.message || e) }),
     ]));
   }
 }
 
-function groupRulesByTopic(rules) {
-  const buckets = {};
-  for (const rule of rules) {
-    const topic = rule.topic || "其他检查";
-    buckets[topic] = buckets[topic] || [];
-    buckets[topic].push(rule);
-  }
-  const names = [...aiRulesState.topics.filter((name) => buckets[name]), ...Object.keys(buckets).filter((name) => !aiRulesState.topics.includes(name))];
-  return names.map((name) => ({ name, count: buckets[name].length, rules: buckets[name] }));
-}
-
-function rulePager(key) {
-  if (!aiRulesState.pager[key]) aiRulesState.pager[key] = { page: 1, size: 10 };
-  return aiRulesState.pager[key];
-}
-
-function pagedSlice(items, pager) {
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / pager.size) || 1);
-  if (pager.page > pages) pager.page = pages;
-  if (pager.page < 1) pager.page = 1;
-  const start = (pager.page - 1) * pager.size;
-  return { total, pages, start, rows: items.slice(start, start + pager.size) };
-}
-
-function buildTablePager(pager, total, onChange) {
-  const pages = Math.max(1, Math.ceil(total / pager.size) || 1);
-  const from = total ? (pager.page - 1) * pager.size + 1 : 0;
-  const to = Math.min(total, pager.page * pager.size);
-  const numbers = [];
-  const windowStart = Math.max(1, Math.min(pager.page - 2, pages - 4));
-  const windowEnd = Math.min(pages, windowStart + 4);
-  for (let i = windowStart; i <= windowEnd; i++) numbers.push(i);
-  return el("div", { class: "table-pager" }, [
-    el("span", { class: "pager-info", text: `显示 ${from} 到 ${to} 条，共 ${total} 条` }),
-    el("div", { class: "pager-controls" }, [
-      el("select", {
-        class: "pager-size",
-        onchange: (e) => { pager.size = Number(e.target.value) || 10; pager.page = 1; onChange(); },
-      }, RULE_PAGE_SIZES.map((size) => el("option", { value: String(size), text: `${size}条/页`, selected: pager.size === size ? "" : null }))),
-      el("button", { class: "pager-btn", text: "‹", disabled: pager.page <= 1 ? "" : null, onclick: () => { if (pager.page > 1) { pager.page -= 1; onChange(); } } }),
-      ...numbers.map((num) => el("button", {
-        class: "pager-btn" + (num === pager.page ? " active" : ""),
-        text: String(num),
-        onclick: () => { pager.page = num; onChange(); },
-      })),
-      el("button", { class: "pager-btn", text: "›", disabled: pager.page >= pages ? "" : null, onclick: () => { if (pager.page < pages) { pager.page += 1; onChange(); } } }),
-    ]),
-  ]);
-}
-
-function buildRulePack(pack) {
-  const listHost = el("div", { class: "rule-table-host" });
-  const renderList = () => {
-    const pager = rulePager(`${pack.mark}-list`);
-    const slice = pagedSlice(pack.rules, pager);
-    listHost.innerHTML = "";
-    if (!pack.rules.length) {
-      listHost.appendChild(el("p", { class: "muted", text: pack.empty }));
-      return;
-    }
-    listHost.appendChild(el("div", { class: "table-wrap" }, [buildApprovalRuleTable(slice.rows, slice.start)]));
-    listHost.appendChild(buildTablePager(pager, slice.total, renderList));
-  };
-  renderList();
-  return el("div", { class: "rule-pack" }, [
-    el("div", { class: "card" }, [
-      el("div", { class: "card-title" }, [
-        el("span", { class: "rule-pack-mark", text: pack.mark }),
-        el("span", { text: pack.title }),
-        el("span", { class: "hint", text: pack.hint }),
-        el("span", { class: "grow" }),
-        pack.hideCreate ? null : el("button", { class: "btn btn-primary btn-sm", text: "新增规则", onclick: () => openRuleForm({ topic: pack.defaultTopic }) }),
-        el("button", { class: "btn btn-secondary btn-sm", text: "刷新", onclick: loadAiRules }),
-      ]),
-      listHost,
-    ]),
-    buildScoreMatrixCard(pack),
-  ]);
-}
-
-function buildApprovalRuleTable(rules, start = 0) {
-  const head = el("tr", {}, [
-    el("th", { class: "col-index", text: "" }),
-    el("th", { text: "规则编号" }),
-    el("th", { text: "规则名称" }),
-    el("th", { text: "规则内容" }),
-    el("th", { text: "是否启用" }),
-    el("th", { text: "操作" }),
-  ]);
-  const body = rules.map((rule, index) => {
-    const enabled = isRuleEnabled(rule);
-    return el("tr", {}, [
-      el("td", { class: "muted", text: String(start + index + 1) }),
-      el("td", { class: "mono", text: rule.code || "-" }),
-      el("td", {}, [
-        el("div", { class: "rule-title", text: rule.title }),
-        rule.status === "draft" ? el("span", { class: "badge orange", text: "待确认" }) : null,
-      ]),
-      el("td", { class: "rule-condition", text: rule.condition || "-" }),
-      el("td", {}, [
-        el("button", {
-          class: "enable-toggle" + (enabled ? " on" : ""),
-          text: enabled ? "是" : "否",
-          onclick: () => toggleRuleEnabled(rule, !enabled),
-        }),
-      ]),
-      el("td", {}, [
-        el("button", { class: "link-btn", text: "编辑", onclick: () => openRuleForm(rule) }),
-        el("button", { class: "link-btn danger", text: "删除", onclick: () => deleteRule(rule) }),
-      ]),
-    ]);
-  });
+function buildFormalRuleTable(rules) {
   return el("table", { class: "table rule-engine-table" }, [
-    el("thead", {}, [head]),
-    el("tbody", {}, body),
+    el("thead", {}, [el("tr", {}, [
+      el("th", { text: "规则编号" }),
+      el("th", { text: "规则名称" }),
+      el("th", { text: "分类 / 模块" }),
+      el("th", { text: "检查方式" }),
+      el("th", { text: "风险等级" }),
+      el("th", { text: "适用范围" }),
+      el("th", { text: "人工复核" }),
+    ])]),
+    el("tbody", {}, rules.map((rule) => el("tr", {}, [
+      el("td", { class: "mono", text: rule.rule_id || rule.code || "-" }),
+      el("td", {}, [el("div", { class: "rule-title", text: rule.title || "-" }), el("div", { class: "muted", text: rule.condition || "" })]),
+      el("td", { text: `${rule.category || "-"} / ${rule.module || "-"}` }),
+      el("td", { class: "mono", text: rule.check_method || "-" }),
+      el("td", { text: rule.risk_level || "UNKNOWN" }),
+      el("td", { class: "muted", text: (rule.applies_to || []).join("、") || "全部" }),
+      el("td", {}, [rule.human_review ? el("span", { class: "badge orange", text: "是" }) : el("span", { class: "muted", text: "否" })]),
+    ]))),
   ]);
-}
-
-function flattenScoreRows(groups) {
-  const rows = [];
-  (groups || []).forEach((group) => {
-    (group.rules || []).forEach((rule) => rows.push({ group: group.name, rule }));
-  });
-  return rows;
-}
-
-function regroupScoreRows(rows) {
-  const groups = [];
-  rows.forEach((row) => {
-    const last = groups[groups.length - 1];
-    if (!last || last.name !== row.group) groups.push({ name: row.group, rules: [row.rule] });
-    else last.rules.push(row.rule);
-  });
-  return groups;
-}
-
-function buildScoreMatrixCard(pack) {
-  const host = el("div", { class: "score-matrix-host" });
-  const allRows = flattenScoreRows(pack.groups);
-  const renderMatrix = () => {
-    const pager = rulePager(`${pack.mark}-matrix`);
-    const slice = pagedSlice(allRows, pager);
-    const groups = regroupScoreRows(slice.rows);
-    const rows = [];
-    let rowNo = slice.start + 2;
-    groups.forEach((group) => {
-      (group.rules || []).forEach((rule, index) => {
-        const cells = [el("td", { class: "muted col-index", text: String(rowNo) })];
-        if (index === 0) {
-          cells.push(el("td", { class: "score-group", rowspan: String(group.rules.length), text: group.name }));
-        }
-        cells.push(
-          el("td", { text: rule.title }),
-          el("td", { class: "score-weight", text: String(rule.weight ?? 10) }),
-          el("td", { class: "score-high", text: rule.high_standard || "-" }),
-          el("td", { class: "score-mid", text: rule.mid_standard || "-" }),
-          el("td", { class: "score-low", text: rule.low_standard || "-" }),
-        );
-        rows.push(el("tr", {}, cells));
-        rowNo += 1;
-      });
-    });
-    host.innerHTML = "";
-    if (!allRows.length) {
-      host.appendChild(el("p", { class: "muted", text: "暂无规则可展示。" }));
-      return;
-    }
-    host.appendChild(el("div", { class: "table-wrap" }, [
-      el("table", { class: "table score-matrix" }, [
-        el("thead", {}, [
-          el("tr", { class: "score-letters" }, [
-            el("th", { class: "col-index" }),
-            el("th", { text: "A" }),
-            el("th", { text: "B" }),
-            el("th", { text: "C" }),
-            el("th", { text: "D" }),
-            el("th", { text: "E" }),
-            el("th", { text: "F" }),
-          ]),
-          el("tr", {}, [
-            el("th", { class: "col-index", text: "1" }),
-            el("th", { text: "检查维度" }),
-            el("th", { text: "规则名称" }),
-            el("th", { text: "权重" }),
-            el("th", { text: "高分标准 (8-10 分)" }),
-            el("th", { text: "中等标准 (4-7 分)" }),
-            el("th", { text: "低分标准 (0-3 分)" }),
-          ]),
-        ]),
-        el("tbody", {}, rows),
-      ]),
-    ]));
-    host.appendChild(buildTablePager(pager, slice.total, renderMatrix));
-  };
-  renderMatrix();
-  return el("div", { class: "card" }, [
-    el("div", { class: "card-title" }, [
-      el("span", { text: pack.engineTitle }),
-      el("span", { class: "hint", text: `${pack.engineHint} · 共 ${pack.rules.length} 条` }),
-    ]),
-    el("div", { class: "score-guide" }, [
-      el("b", { text: "操作指引" }),
-      el("span", { text: pack.guide }),
-    ]),
-    host,
-  ]);
-}
-
-function openRuleForm(rule) {
-  const editing = !!(rule && rule.id);
-  const topics = aiRulesState.topics.length ? aiRulesState.topics : RULE_TOPICS;
-  const currentTopic = rule?.topic || topics[0];
-  const form = el("div", { class: "rule-form" }, [
-    el("div", { class: "form-row" }, [
-      el("label", { text: "规则名称" }),
-      el("input", { class: "input", id: "rule-title", value: rule?.title || "", placeholder: "如 金额大小写一致" }),
-    ]),
-    el("div", { class: "grid grid-2" }, [
-      el("div", { class: "form-row" }, [
-        el("label", { text: "规则编号（可空，自动生成）" }),
-        el("input", { class: "input", id: "rule-code", value: rule?.code || "", placeholder: "如 HTSP-202511-006" }),
-      ]),
-      el("div", { class: "form-row" }, [
-        el("label", { text: "检查维度" }),
-        el("select", { class: "select", id: "rule-topic" },
-          topics.map((name) => el("option", { value: name, text: name, selected: currentTopic === name ? "" : null }))),
-      ]),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "风险等级" }),
-      el("select", { class: "select", id: "rule-level" },
-        [["WARN", "需关注"], ["BLOCK", "重大风险"], ["INFO", "提示"]].map(([v, t]) =>
-          el("option", { value: v, text: t, selected: (rule?.risk_level || "WARN") === v ? "" : null }))),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "规则内容" }),
-      el("textarea", { class: "input", id: "rule-condition", rows: "4", placeholder: "判定条件，例如：合同金额大小写必须一致", text: rule?.condition || "" }),
-    ]),
-    el("div", { class: "grid grid-2" }, [
-      el("div", { class: "form-row" }, [
-        el("label", { text: "权重" }),
-        el("input", { class: "input", id: "rule-weight", type: "number", min: "1", max: "100", value: String(rule?.weight || 10) }),
-      ]),
-      el("div", { class: "form-row" }, [
-        el("label", { text: "建议动作（可空）" }),
-        el("input", { class: "input", id: "rule-action", value: rule?.suggested_action || "", placeholder: "如 核对金额大小写" }),
-      ]),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "高分标准 (8-10 分)" }),
-      el("input", { class: "input", id: "rule-high", value: rule?.high_standard || "", placeholder: "如 约定完整、口径一致" }),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "中等标准 (4-7 分)" }),
-      el("input", { class: "input", id: "rule-mid", value: rule?.mid_standard || "", placeholder: "如 约定不完整或口径不清" }),
-    ]),
-    el("div", { class: "form-row" }, [
-      el("label", { text: "低分标准 (0-3 分)" }),
-      el("input", { class: "input", id: "rule-low", value: rule?.low_standard || "", placeholder: "如 未约定或明显不符" }),
-    ]),
-    el("div", { class: "action-bar mt-8" }, [
-      el("button", { class: "btn btn-primary", text: editing ? "保存修改" : "创建并启用", onclick: () => saveRuleForm(rule) }),
-      el("button", { class: "btn btn-ghost", text: "取消", onclick: closeModal }),
-    ]),
-  ]);
-  openModal(editing ? "编辑规则" : "新增规则", form);
-}
-
-async function saveRuleForm(rule) {
-  const payload = {
-    title: $("#rule-title")?.value?.trim(),
-    code: $("#rule-code")?.value?.trim() || undefined,
-    topic: $("#rule-topic")?.value,
-    risk_level: $("#rule-level")?.value,
-    condition: $("#rule-condition")?.value?.trim(),
-    suggested_action: $("#rule-action")?.value?.trim() || null,
-    weight: Number($("#rule-weight")?.value || 10),
-    high_standard: $("#rule-high")?.value?.trim() || null,
-    mid_standard: $("#rule-mid")?.value?.trim() || null,
-    low_standard: $("#rule-low")?.value?.trim() || null,
-    enabled: true,
-    status: "active",
-  };
-  if (!payload.title) { toast("请填写规则名称", "warn"); return; }
-  try {
-    if (rule?.id) {
-      await api.request("PUT", `/ai-rules/${rule.id}`, {
-        body: JSON.stringify(payload),
-        headers: { "Content-Type": "application/json" },
-      });
-      toast("规则已更新", "ok");
-    } else {
-      await api.postJson("/ai-rules", payload);
-      toast("规则已创建并启用", "ok");
-    }
-    closeModal();
-    await loadAiRules();
-  } catch (e) {
-    toast("保存失败：" + (e?.message || e), "err");
-  }
-}
-
-async function toggleRuleEnabled(rule, enabled) {
-  try {
-    await api.postJson(`/ai-rules/${rule.id}/${enabled ? "enable" : "disable"}`, {});
-    toast(enabled ? "规则已启用，下次审查生效" : "规则已停用", "ok");
-    await loadAiRules();
-  } catch (e) {
-    toast("操作失败：" + (e?.message || e), "err");
-  }
-}
-
-async function deleteRule(rule) {
-  if (!window.confirm(`确定删除规则「${rule.title}」？列表和规则引擎会同步移除。`)) return;
-  try {
-    await api.request("DELETE", `/ai-rules/${rule.id}`);
-    toast("规则已删除", "ok");
-    await loadAiRules();
-  } catch (e) {
-    toast("删除失败：" + (e?.message || e), "err");
-  }
 }
 
 /* ============================================================
@@ -3079,7 +2761,7 @@ function openTaskDetail(taskId) {
 async function openTaskResult(taskId) {
   try {
     const resp = await api.get(`/tasks/${taskId}/result`);
-    if (resp && (resp.review_result || resp.ai_analysis)) {
+    if (resp && resp.review_result) {
       const body = el("div", {});
       openModal("任务结果（合同审查）", body);
       renderReviewViews(body, resp);

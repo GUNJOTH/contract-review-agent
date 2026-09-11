@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -50,6 +50,13 @@ class EvidenceType(StrEnum):
     MISSING_ARTIFACT = "missing_artifact"
     COMPARISON = "comparison"
     EXTERNAL_REFERENCE = "external_reference"
+
+
+class KnowledgeSourceKind(StrEnum):
+    """知识块的业务来源，区分合同事实与规则依据。"""
+
+    CONTRACT = "contract"
+    RULE = "rule"
 
 
 class FindingStatus(StrEnum):
@@ -152,7 +159,10 @@ class SourceLocator(ModelBase):
                 raise ValueError("char_end must be greater than or equal to char_start")
         if self.locator_type in {"bbox", "text_span"} and self.bbox is None:
             raise ValueError("bbox or text_span locator requires bbox")
-        if self.locator_type in {"page", "bbox", "text_span"} and self.page_number is None:
+        if (
+            self.locator_type in {"page", "bbox", "text_span"}
+            and self.page_number is None
+        ):
             raise ValueError("page-based locator requires page_number")
         if self.locator_type == "document_block" and self.paragraph_index is None:
             raise ValueError("document_block locator requires paragraph_index")
@@ -242,6 +252,76 @@ class ContractPackage(ModelBase):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class PartyPosition(StrEnum):
+    """合同审查发起方在交易中的立场。"""
+
+    BUYER = "buyer"
+    SELLER = "seller"
+    BOTH = "both"
+    UNKNOWN = "unknown"
+
+
+class ReviewContext(ModelBase):
+    """一次合同审查的业务上下文。
+
+    上下文只描述本次审查的业务前提，不承载规则正文。规则正文、版本和
+    企业可接受立场仍由 ``RuleBundle`` 与 ``PlaybookSpec`` 负责，避免把
+    合同类型、交易立场等请求参数散落到各个检查器中。
+    """
+
+    context_version: Literal["1.0"] = "1.0"
+    contract_type: str | None = Field(
+        default=None,
+        max_length=128,
+        description="合同类型；必须与规则快照中的适用性键一致才会触发类型规则。",
+    )
+    party_position: PartyPosition = Field(
+        default=PartyPosition.UNKNOWN,
+        description="本方在交易中的立场：buyer、seller、both 或 unknown。",
+    )
+    jurisdiction: str | None = Field(
+        default=None,
+        max_length=128,
+        description="适用法域或地区，当前作为可追溯上下文保留。",
+    )
+    transaction_context: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="交易背景和本次审查需要关注的业务前提。",
+    )
+    review_scope: list[str] = Field(
+        default_factory=list,
+        max_length=64,
+        description="规则 ID 或规则 category 白名单；为空表示审查全部规则。",
+    )
+
+    @field_validator("contract_type", "jurisdiction", "transaction_context", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("审查上下文文本字段必须是字符串")
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("review_scope", mode="before")
+    @classmethod
+    def normalize_review_scope(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("review_scope 必须是规则 ID 或 category 字符串数组")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("review_scope 的每一项必须是字符串")
+            scope_item = item.strip()
+            if scope_item and scope_item not in normalized:
+                normalized.append(scope_item)
+        return normalized
+
+
 class AttachmentReference(ModelBase):
     reference_id: str
     referenced_name: str
@@ -274,17 +354,25 @@ class Evidence(ModelBase):
         if self.source_document_ids and set(self.source_document_ids) != set(
             self.source_document_sha256
         ):
-            raise ValueError("source_document_ids and source_document_sha256 must match")
-        if self.evidence_type in {
-            EvidenceType.TEXT,
-            EvidenceType.TABLE_CELL,
-            EvidenceType.VISUAL_REGION,
-        } and not self.document_id:
+            raise ValueError(
+                "source_document_ids and source_document_sha256 must match"
+            )
+        if (
+            self.evidence_type
+            in {
+                EvidenceType.TEXT,
+                EvidenceType.TABLE_CELL,
+                EvidenceType.VISUAL_REGION,
+            }
+            and not self.document_id
+        ):
             raise ValueError("source evidence requires document_id")
         if self.evidence_type == EvidenceType.COMPARISON and not (
             self.package_id or self.document_id or self.source_document_ids
         ):
-            raise ValueError("comparison evidence requires a package or source document")
+            raise ValueError(
+                "comparison evidence requires a package or source document"
+            )
         return self
 
 
@@ -295,7 +383,21 @@ class KnowledgeChunk(ModelBase):
     source_version: str
     content: str = Field(min_length=1)
     evidence_ids: list[str] = Field(min_length=1)
+    # 默认合同正文，兼容尚未带来源字段的结果；规则导入会显式写入 RULE。
+    source_kind: KnowledgeSourceKind = KnowledgeSourceKind.CONTRACT
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_rule_source(cls, value: Any) -> Any:
+        """为旧规则知识块从 rule_id 元数据补齐来源类型。"""
+
+        if not isinstance(value, dict) or "source_kind" in value:
+            return value
+        metadata = value.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("rule_id"):
+            return {**value, "source_kind": KnowledgeSourceKind.RULE}
+        return value
 
 
 class RetrievalHit(ModelBase):
@@ -325,6 +427,7 @@ class SemanticModelRequest(ModelBase):
     context_chunks: list[KnowledgeChunk] = Field(default_factory=list)
     system_instruction: str = Field(min_length=1)
     configuration: dict[str, Any] = Field(default_factory=dict)
+    review_context: ReviewContext | None = None
 
 
 class SemanticReviewItem(ModelBase):
@@ -358,8 +461,138 @@ class ContractFact(ModelBase):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ClauseKind(StrEnum):
+    """合同文本片段的结构类型。"""
+
+    NUMBERED = "numbered"
+    UNNUMBERED = "unnumbered"
+    TABLE = "table"
+
+
+class ContractClause(ModelBase):
+    """可回指原文的合同条款或最小审查片段。"""
+
+    clause_id: str
+    document_id: str
+    clause_kind: ClauseKind
+    clause_number: str | None = None
+    title: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    order: int = Field(ge=0)
+    source_chunk_ids: list[str] = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+    extractor_version: str
+
+
+class ObligationModality(StrEnum):
+    REQUIRED = "required"
+    PROHIBITED = "prohibited"
+
+
+class ContractObligation(ModelBase):
+    """从条款中保守识别的履约义务，未知字段保持空值。"""
+
+    obligation_id: str
+    clause_id: str
+    obligor: str | None = None
+    modality: ObligationModality
+    action: str = Field(min_length=1)
+    deadline: str | None = None
+    evidence_ids: list[str] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    extractor_version: str
+
+
+class ReviewQuestion(ModelBase):
+    """由正式规则快照派生的、可独立回答的审查问题。"""
+
+    question_id: str
+    rule_id: str
+    rule_version: str
+    question: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    expected_value: Any | None = None
+    risk_level: RiskLevel
+    required_evidence: list[str] = Field(default_factory=list)
+    source_snapshot: str
+
+
+class AssessmentOutcome(StrEnum):
+    SUPPORTED = "SUPPORTED"
+    CONTRADICTED = "CONTRADICTED"
+    NOT_MENTIONED = "NOT_MENTIONED"
+    UNKNOWN = "UNKNOWN"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class PlaybookAction(StrEnum):
+    """Playbook 判断完成后可执行的审查动作。"""
+
+    ACCEPT = "ACCEPT"
+    REJECT = "REJECT"
+    REVISE = "REVISE"
+    ESCALATE = "ESCALATE"
+    REQUEST_INFORMATION = "REQUEST_INFORMATION"
+
+
+class MissingClausePolicy(StrEnum):
+    """Playbook 找不到目标条款时采用的处置策略。"""
+
+    WARN = "WARN"
+    BLOCK = "BLOCK"
+    UNKNOWN = "UNKNOWN"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class PlaybookSpec(ModelBase):
+    """企业审查立场与动作的版本化配置。
+
+    Playbook 与自由文本规则条件分开保存：condition 说明为什么设置规则，
+    本对象说明合同中哪些立场可接受、哪些需要修改以及下一步动作。
+    """
+
+    playbook_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    clause_types: list[str] = Field(default_factory=list)
+    preferred_position: str | None = None
+    fallback_positions: list[str] = Field(default_factory=list)
+    prohibited_positions: list[str] = Field(default_factory=list)
+    missing_clause_policy: MissingClausePolicy = MissingClausePolicy.UNKNOWN
+    action_on_preferred: PlaybookAction = PlaybookAction.ACCEPT
+    action_on_fallback: PlaybookAction = PlaybookAction.REVISE
+    action_on_prohibited: PlaybookAction = PlaybookAction.REJECT
+    suggested_language: str | None = None
+    escalation_condition: str | None = None
+
+    @property
+    def has_deterministic_positions(self) -> bool:
+        """判断 Playbook 是否配置了可由原文证据直接判断的立场。"""
+
+        return bool(
+            self.clause_types
+            or self.preferred_position
+            or self.fallback_positions
+            or self.prohibited_positions
+        )
+
+
+class QuestionAssessment(ModelBase):
+    """审查问题的证据化结论，不把未知或未提及伪装成通过。"""
+
+    assessment_id: str
+    question_id: str
+    finding_id: str
+    outcome: AssessmentOutcome
+    reason: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    assessed_by: str = Field(min_length=1)
+
+
 class ApplicabilitySpec(ModelBase):
-    applicability: Literal["required", "not_applicable", "expected_value", "unspecified"]
+    applicability: Literal[
+        "required", "not_applicable", "expected_value", "unspecified"
+    ]
     expected_value: Any | None = None
     note: str | None = None
 
@@ -384,6 +617,7 @@ class Rule(ModelBase):
     source_locator: SourceLocator | None = None
     effective_from: datetime | None = None
     effective_to: datetime | None = None
+    playbook: PlaybookSpec | None = None
 
 
 class RuleBundle(ModelBase):
@@ -410,6 +644,10 @@ class Finding(ModelBase):
     comparison: dict[str, Any] | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     recommended_action: str | None = None
+    action: PlaybookAction | None = None
+    playbook_id: str | None = None
+    clause_ids: list[str] = Field(default_factory=list)
+    uncertainty_reason: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -432,6 +670,41 @@ class ReviewDecision(ModelBase):
     decided_at: datetime = Field(default_factory=utc_now)
 
 
+class RevisionOperation(StrEnum):
+    """人工复核修订提案中允许的有限操作。"""
+
+    INSERT = "INSERT"
+    DELETE = "DELETE"
+    REPLACE = "REPLACE"
+    COMMENT = "COMMENT"
+
+
+class RevisionChange(ModelBase):
+    """一条绑定原文证据的条款级修订提案。"""
+
+    change_id: str
+    finding_id: str
+    clause_id: str | None = None
+    operation: RevisionOperation
+    original_text: str = ""
+    proposed_text: str = ""
+    reason: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+
+
+class ContractRevisionSet(ModelBase):
+    """从一次审查结果确定性生成、可供人工复核的变更集合。"""
+
+    revision_id: str
+    run_id: str
+    base_result_fingerprint: str
+    source_version: str
+    status: Literal["PROPOSED", "CONFIRMED", "REJECTED"] = "PROPOSED"
+    changes: list[RevisionChange] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+    revision_fingerprint: str | None = None
+
+
 class ReviewReport(ModelBase):
     report_id: str
     run_id: str
@@ -443,16 +716,6 @@ class ReviewReport(ModelBase):
     generated_by: str
     report_version: str
     generated_at: datetime = Field(default_factory=utc_now)
-
-
-class ReviewTransition(ModelBase):
-    from_status: ReviewStatus | None = None
-    to_status: ReviewStatus
-    action: str
-    actor: str
-    reason: str
-    evidence_ids: list[str] = Field(default_factory=list)
-    occurred_at: datetime = Field(default_factory=utc_now)
 
 
 class StageEvent(ModelBase):
@@ -489,14 +752,15 @@ class ReviewRun(ModelBase):
     decision_ids: list[str] = Field(default_factory=list)
     report_id: str | None = None
     result_fingerprint: str | None = None
-    transitions: list[ReviewTransition] = Field(default_factory=list)
-    stage_events: list[StageEvent] = Field(default_factory=list)
+    stage_events: list[StageEvent] = Field(min_length=1)
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
 
 
 class ReviewResult(ModelBase):
+    schema_version: Literal["2.0"]
     package: ContractPackage
+    review_context: ReviewContext | None = None
     documents: list[Document] = Field(min_length=1)
     rule_bundle: RuleBundle
     parsed_documents: list[ParsedDocument] = Field(min_length=1)
@@ -507,6 +771,10 @@ class ReviewResult(ModelBase):
     semantic_response: SemanticReviewResponse | None = None
     attachment_references: list[AttachmentReference] = Field(default_factory=list)
     facts: list[ContractFact] = Field(default_factory=list)
+    clauses: list[ContractClause]
+    obligations: list[ContractObligation]
+    review_questions: list[ReviewQuestion]
+    question_assessments: list[QuestionAssessment]
     findings: list[Finding] = Field(default_factory=list)
     decisions: list[ReviewDecision] = Field(default_factory=list)
     run: ReviewRun

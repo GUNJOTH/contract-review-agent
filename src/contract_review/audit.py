@@ -8,15 +8,44 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from .models import FindingStatus, ModelBase, ReviewResult, ReviewStatus, RiskLevel
+from .models import (
+    AssessmentOutcome,
+    EvidenceType,
+    FindingStatus,
+    KnowledgeSourceKind,
+    ModelBase,
+    ReviewResult,
+    ReviewStatus,
+    RiskLevel,
+)
 from .replay import build_replay_fingerprint, build_result_fingerprint
-from .semantic import build_semantic_batch_request_fingerprint
+from .rules import is_rule_in_scope
+from .semantic import build_semantic_batch_request_fingerprint, is_model_judged_rule
 
 
 class AuditReport(ModelBase):
     passed: bool
     checks: dict[str, bool] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
+
+
+def _selected_rule_ids(
+    result: ReviewResult,
+    available_rule_ids: set[str],
+) -> tuple[set[str], bool]:
+    """读取并校验本次运行的规则白名单。"""
+
+    configured = result.run.configuration.get("selected_rule_ids")
+    if configured is None:
+        return available_rule_ids, True
+    if not isinstance(configured, list) or not all(
+        isinstance(rule_id, str) for rule_id in configured
+    ):
+        return set(), False
+    selected = set(configured)
+    return selected, len(selected) == len(configured) and selected.issubset(
+        available_rule_ids
+    )
 
 
 def audit_result(result: ReviewResult) -> AuditReport:
@@ -29,14 +58,18 @@ def audit_result(result: ReviewResult) -> AuditReport:
     checks["unique_document_ids"] = len(document_id_list) == len(document_ids)
     if not checks["unique_document_ids"]:
         issues.append("duplicate document IDs")
-    checks["package_documents"] = (
-        document_ids == set(result.package.document_ids)
-        and all(document.package_id == result.package.package_id for document in result.documents)
+    checks["package_documents"] = document_ids == set(
+        result.package.document_ids
+    ) and all(
+        document.package_id == result.package.package_id
+        for document in result.documents
     )
     if not checks["package_documents"]:
         issues.append("package document manifest does not match result documents")
 
-    parsed_document_ids = [parsed.document.document_id for parsed in result.parsed_documents]
+    parsed_document_ids = [
+        parsed.document.document_id for parsed in result.parsed_documents
+    ]
     checks["parsed_documents"] = (
         len(parsed_document_ids) == len(set(parsed_document_ids))
         and set(parsed_document_ids) == document_ids
@@ -94,8 +127,20 @@ def audit_result(result: ReviewResult) -> AuditReport:
     )
     missing_references.update(
         evidence_id
-        for transition in result.run.transitions
-        for evidence_id in transition.evidence_ids
+        for clause in result.clauses
+        for evidence_id in clause.evidence_ids
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
+        for obligation in result.obligations
+        for evidence_id in obligation.evidence_ids
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
+        for assessment in result.question_assessments
+        for evidence_id in assessment.evidence_ids
         if evidence_id not in evidence_set
     )
     missing_references.update(
@@ -133,6 +178,14 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["unique_fact_ids"]:
         issues.append("duplicate fact IDs")
 
+    checks["contract_domain"] = _contract_domain_integrity_is_valid(
+        result,
+        evidence_set,
+        document_ids,
+    )
+    if not checks["contract_domain"]:
+        issues.append("条款、义务、审查问题或问题结论的引用关系不完整")
+
     attachment_ids = [item.reference_id for item in result.attachment_references]
     checks["attachment_integrity"] = len(attachment_ids) == len(set(attachment_ids))
     if not checks["attachment_integrity"]:
@@ -149,7 +202,11 @@ def audit_result(result: ReviewResult) -> AuditReport:
     ) == len(result.findings)
     if not checks["unique_finding_ids"]:
         issues.append("duplicate finding IDs")
-    checks["rule_coverage"] = set(finding_rule_ids) == rule_ids
+    selected_rule_ids, selection_is_valid = _selected_rule_ids(result, rule_ids)
+    checks["rule_coverage"] = (
+        selection_is_valid
+        and set(finding_rule_ids) == selected_rule_ids
+    )
     if not checks["rule_coverage"]:
         issues.append("rule coverage is incomplete or contains duplicate findings")
 
@@ -157,16 +214,11 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["finding_integrity"]:
         issues.append("findings do not match their rules, facts, or evidence")
 
-    checks["finding_report_alignment"] = (
-        result.report.finding_ids == [finding.finding_id for finding in result.findings]
-        and result.run.finding_ids == [finding.finding_id for finding in result.findings]
-    )
+    checks["finding_report_alignment"] = result.report.finding_ids == [
+        finding.finding_id for finding in result.findings
+    ] and result.run.finding_ids == [finding.finding_id for finding in result.findings]
     if not checks["finding_report_alignment"]:
         issues.append("finding IDs are inconsistent between report and run")
-
-    checks["transition_chain"] = _transition_chain_is_valid(result, evidence_set)
-    if not checks["transition_chain"]:
-        issues.append("review transition chain is not append-only or does not end at run status")
 
     checks["stage_event_ledger"] = _stage_event_ledger_is_valid(result, evidence_set)
     if not checks["stage_event_ledger"]:
@@ -201,7 +253,8 @@ def audit_result(result: ReviewResult) -> AuditReport:
         result.report.run_id == result.run.run_id
         and result.report.finding_counts == expected_counts
         and result.report.overall_status == _overall_status(result.findings)
-        and result.report.review_required == (result.run.status != ReviewStatus.FINALIZED)
+        and result.report.review_required
+        == (result.run.status != ReviewStatus.FINALIZED)
     )
     if not checks["report_integrity"]:
         issues.append("review report status or counts do not match findings/run")
@@ -240,12 +293,21 @@ def _evidence_provenance_issues(
         if item.document_id:
             document = documents_by_id.get(item.document_id)
             if document is None:
-                issues.append(f"evidence {item.evidence_id} references an unknown document")
+                issues.append(
+                    f"evidence {item.evidence_id} references an unknown document"
+                )
             elif item.source_sha256 != document.source_sha256:
-                issues.append(f"evidence {item.evidence_id} has a mismatched document hash")
+                issues.append(
+                    f"evidence {item.evidence_id} has a mismatched document hash"
+                )
             if item.locator.page_number is not None and document is not None:
-                if document.page_count and item.locator.page_number > document.page_count:
-                    issues.append(f"evidence {item.evidence_id} points beyond the document page count")
+                if (
+                    document.page_count
+                    and item.locator.page_number > document.page_count
+                ):
+                    issues.append(
+                        f"evidence {item.evidence_id} points beyond the document page count"
+                    )
         for document_id, source_sha256 in item.source_document_sha256.items():
             if document_id not in document_hashes:
                 issues.append(
@@ -256,7 +318,9 @@ def _evidence_provenance_issues(
                     f"evidence {item.evidence_id} comparison hash does not match its document"
                 )
         if item.raw_excerpt is not None and item.excerpt_sha256:
-            actual_excerpt_hash = hashlib.sha256(item.raw_excerpt.strip().encode("utf-8")).hexdigest()
+            actual_excerpt_hash = hashlib.sha256(
+                item.raw_excerpt.strip().encode("utf-8")
+            ).hexdigest()
             if actual_excerpt_hash != item.excerpt_sha256:
                 issues.append(f"evidence {item.evidence_id} excerpt hash is invalid")
     return issues
@@ -305,11 +369,19 @@ def _knowledge_integrity_is_valid(
         if not set(chunk.evidence_ids).issubset(evidence_set):
             return False
         document_id = chunk.metadata.get("document_id")
+        rule_id = chunk.metadata.get("rule_id")
+        if chunk.source_kind == KnowledgeSourceKind.CONTRACT:
+            if document_id is None or rule_id is not None:
+                return False
+        elif chunk.source_kind == KnowledgeSourceKind.RULE:
+            if document_id is not None or rule_id is None:
+                return False
+        else:
+            return False
         if document_id is not None:
             document = documents_by_id.get(str(document_id))
             if document is None or chunk.source_sha256 != document.source_sha256:
                 return False
-        rule_id = chunk.metadata.get("rule_id")
         if rule_id is not None:
             if not any(rule.rule_id == rule_id for rule in result.rule_bundle.rules):
                 return False
@@ -319,7 +391,20 @@ def _knowledge_integrity_is_valid(
             evidence = evidence_by_id.get(evidence_id)
             if evidence is None:
                 return False
-            if evidence.raw_excerpt is not None and evidence.raw_excerpt.strip() not in chunk.content:
+            if (
+                evidence.raw_excerpt is not None
+                and evidence.raw_excerpt.strip() not in chunk.content
+            ):
+                return False
+            if (
+                chunk.source_kind == KnowledgeSourceKind.CONTRACT
+                and evidence.evidence_type == EvidenceType.EXTERNAL_REFERENCE
+            ):
+                return False
+            if (
+                chunk.source_kind == KnowledgeSourceKind.RULE
+                and evidence.evidence_type != EvidenceType.EXTERNAL_REFERENCE
+            ):
                 return False
 
     trace_ids = [trace.trace_id for trace in result.retrieval_traces]
@@ -382,14 +467,18 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         return True
     if request is None or response is None:
         return False
-    semantic_rules = [
+    candidate_semantic_rules = [
         rule
         for rule in result.rule_bundle.rules
-        if rule.check_method in {"semantic", "human", "visual"}
+        if is_model_judged_rule(rule)
+        and is_rule_in_scope(rule, result.review_context)
     ]
-    rule_ids = {rule.rule_id for rule in semantic_rules}
-    if set(request.rule_ids) != rule_ids:
+    candidate_rule_ids = {rule.rule_id for rule in candidate_semantic_rules}
+    if not set(request.rule_ids).issubset(candidate_rule_ids):
         return False
+    semantic_rules = [
+        rule for rule in candidate_semantic_rules if rule.rule_id in set(request.rule_ids)
+    ]
     if request.request_fingerprint != response.request_fingerprint:
         return False
     if request.model_version != response.model_version:
@@ -398,7 +487,9 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         return False
     if request.provider != response.provider:
         return False
-    if set(item.rule_id for item in response.items) - rule_ids:
+    if request.review_context != result.review_context:
+        return False
+    if set(item.rule_id for item in response.items) - set(request.rule_ids):
         return False
     if not set(
         evidence_id
@@ -411,11 +502,22 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         for chunk in request.context_chunks
         for evidence_id in chunk.evidence_ids
     }
+    contract_context_evidence_ids = {
+        evidence_id
+        for chunk in request.context_chunks
+        if chunk.source_kind == KnowledgeSourceKind.CONTRACT
+        for evidence_id in chunk.evidence_ids
+    }
     response_rule_ids = [item.rule_id for item in response.items]
     if len(response_rule_ids) != len(set(response_rule_ids)):
         return False
     if any(
         not set(item.evidence_ids).issubset(context_evidence_ids)
+        for item in response.items
+    ):
+        return False
+    if any(
+        not set(item.evidence_ids).issubset(contract_context_evidence_ids)
         for item in response.items
     ):
         return False
@@ -433,9 +535,7 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
                 if chunk not in chunks_by_rule[rule_id]:
                     chunks_by_rule[rule_id].append(chunk)
     expected_context = {
-        chunk.chunk_id: chunk
-        for chunks in chunks_by_rule.values()
-        for chunk in chunks
+        chunk.chunk_id: chunk for chunks in chunks_by_rule.values() for chunk in chunks
     }
     actual_context = {chunk.chunk_id: chunk for chunk in request.context_chunks}
     if actual_context != expected_context:
@@ -447,63 +547,119 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         model_version=request.model_version,
         system_instruction=request.system_instruction,
         configuration=request.configuration,
+        review_context=request.review_context,
     )
     return request.request_fingerprint == expected
 
 
-def _transition_chain_is_valid(result: ReviewResult, evidence_set: set[str]) -> bool:
-    if not result.run.transitions:
+def _contract_domain_integrity_is_valid(
+    result: ReviewResult,
+    evidence_set: set[str],
+    document_ids: set[str],
+) -> bool:
+    clause_ids = [item.clause_id for item in result.clauses]
+    if len(clause_ids) != len(set(clause_ids)):
         return False
-    previous = None
-    for index, transition in enumerate(result.run.transitions):
-        if not set(transition.evidence_ids).issubset(evidence_set):
+    chunks_by_id = {item.chunk_id: item for item in result.knowledge_chunks}
+    clauses_by_id = {item.clause_id: item for item in result.clauses}
+    for clause in result.clauses:
+        if clause.document_id not in document_ids:
             return False
-        if index == 0:
-            if transition.from_status is not None or transition.to_status != ReviewStatus.RECEIVED:
+        if not set(clause.evidence_ids).issubset(evidence_set):
+            return False
+        for chunk_id in clause.source_chunk_ids:
+            chunk = chunks_by_id.get(chunk_id)
+            if chunk is None or chunk.metadata.get("document_id") != clause.document_id:
                 return False
-        elif transition.from_status != previous:
-            return False
-        previous = transition.to_status
-    if previous != result.run.status:
+            if not set(chunk.evidence_ids).issubset(clause.evidence_ids):
+                return False
+
+    obligation_ids = [item.obligation_id for item in result.obligations]
+    if len(obligation_ids) != len(set(obligation_ids)):
         return False
-    if result.run.status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED}:
-        return result.run.finished_at is not None
-    return result.run.finished_at is None
+    for obligation in result.obligations:
+        clause = clauses_by_id.get(obligation.clause_id)
+        if clause is None or not set(obligation.evidence_ids).issubset(
+            clause.evidence_ids
+        ):
+            return False
+
+    question_ids = [item.question_id for item in result.review_questions]
+    if len(question_ids) != len(set(question_ids)):
+        return False
+    questions_by_id = {item.question_id: item for item in result.review_questions}
+    rules_by_id = {item.rule_id: item for item in result.rule_bundle.rules}
+    expected_rule_ids, selection_is_valid = _selected_rule_ids(
+        result, set(rules_by_id)
+    )
+    if not selection_is_valid:
+        return False
+    if {item.rule_id for item in result.review_questions} != expected_rule_ids:
+        return False
+    for question in result.review_questions:
+        rule = rules_by_id.get(question.rule_id)
+        if (
+            rule is None
+            or question.rule_version != rule.version
+            or question.category != rule.category
+            or question.expected_value != rule.expected_value
+            or question.risk_level != (rule.risk_level or RiskLevel.UNCLASSIFIED)
+            or question.source_snapshot != rule.source_snapshot
+        ):
+            return False
+
+    assessment_ids = [item.assessment_id for item in result.question_assessments]
+    if len(assessment_ids) != len(set(assessment_ids)):
+        return False
+    findings_by_id = {item.finding_id: item for item in result.findings}
+    if {item.finding_id for item in result.question_assessments} != set(findings_by_id):
+        return False
+    expected_outcomes = {
+        FindingStatus.PASS: {AssessmentOutcome.SUPPORTED},
+        FindingStatus.WARN: {AssessmentOutcome.CONTRADICTED},
+        FindingStatus.BLOCK: {AssessmentOutcome.CONTRADICTED},
+        FindingStatus.UNKNOWN: {
+            AssessmentOutcome.NOT_MENTIONED,
+            AssessmentOutcome.UNKNOWN,
+        },
+        FindingStatus.NOT_APPLICABLE: {AssessmentOutcome.NOT_APPLICABLE},
+    }
+    for assessment in result.question_assessments:
+        question = questions_by_id.get(assessment.question_id)
+        finding = findings_by_id.get(assessment.finding_id)
+        if question is None or finding is None or question.rule_id != finding.rule_id:
+            return False
+        if assessment.reason != finding.reason:
+            return False
+        if set(assessment.evidence_ids) != set(finding.evidence_ids):
+            return False
+        if assessment.outcome not in expected_outcomes[finding.status]:
+            return False
+    return True
 
 
 def _stage_event_ledger_is_valid(result: ReviewResult, evidence_set: set[str]) -> bool:
-    """校验存在时的统一阶段事件账本。
-
-    旧版持久化结果没有事件账本，仍通过状态迁移链保持可审计；新建运行
-    则为每次状态迁移生成一条事件。
-    """
+    """校验唯一的统一阶段事件账本。"""
 
     events = result.run.stage_events
     if not events:
-        return True
-    if len(events) != len(result.run.transitions):
         return False
     if len({event.event_id for event in events}) != len(events):
         return False
     previous_stage: str | None = None
     previous_time = None
     for index, event in enumerate(events):
-        transition = result.run.transitions[index]
-        expected_from = transition.from_status.value if transition.from_status else None
         if (
             event.subject_type != "review_run"
             or event.subject_id != result.run.run_id
-            or event.from_stage != expected_from
-            or event.to_stage != transition.to_status.value
-            or event.action != transition.action
-            or event.actor != transition.actor
-            or event.reason != transition.reason
             or not set(event.evidence_ids).issubset(evidence_set)
-            or event.occurred_at != transition.occurred_at
         ):
             return False
         if index == 0:
-            if event.from_stage is not None or event.to_stage != ReviewStatus.RECEIVED.value:
+            if (
+                event.from_stage is not None
+                or event.to_stage != ReviewStatus.RECEIVED.value
+            ):
                 return False
         elif event.from_stage != previous_stage:
             return False
@@ -511,4 +667,8 @@ def _stage_event_ledger_is_valid(result: ReviewResult, evidence_set: set[str]) -
             return False
         previous_stage = event.to_stage
         previous_time = event.occurred_at
-    return previous_stage == result.run.status.value
+    if previous_stage != result.run.status.value:
+        return False
+    if result.run.status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED}:
+        return result.run.finished_at == events[-1].occurred_at
+    return result.run.finished_at is None

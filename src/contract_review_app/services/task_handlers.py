@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from fastapi import UploadFile
+from pydantic import ValidationError
 from starlette.datastructures import Headers
 
-from contract_review_app.services.ai_analysis import run_ai_analysis
-from contract_review_app.services.element_extraction import extract_contract_elements
+from contract_review import project_element_extraction, project_review_analysis
+from contract_review.models import ReviewContext as ReviewContextModel
+from contract_review_app.services.review_context import build_review_context
 from contract_review_app.services.review_service import run_contract_review
 
 
@@ -29,6 +31,7 @@ async def handle_contract_review_task(
     files: list[UploadFile] | None = None,
     PackageId: str | None = None,
     ContractType: str | None = None,
+    ReviewContextPayload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """合同审查任务：读取包内文件，在独立线程运行审查。"""
     del request
@@ -38,16 +41,20 @@ async def handle_contract_review_task(
         payloads.append((upload.filename or f"file-{len(payloads)}", content))
     if not payloads:
         raise ValueError("合同包至少需要一个文件")
+    review_context = _resolve_task_review_context(
+        ReviewContextPayload,
+        contract_type=ContractType,
+    )
     result = await asyncio.to_thread(
         run_contract_review,
         payloads,
         package_id=PackageId,
-        contract_type=ContractType,
+        review_context=review_context,
     )
-    ai_analysis = await asyncio.to_thread(run_ai_analysis, result)
     return {
         "review_result": result.model_dump(mode="json"),
-        "ai_analysis": ai_analysis.model_dump(mode="json") if ai_analysis else None,
+        # 历史任务消费者仍可读取该字段；它只是核心结果的兼容投影。
+        "ai_analysis": project_review_analysis(result).model_dump(mode="json"),
     }
 
 
@@ -58,7 +65,7 @@ async def handle_contract_elements_task(
     ContractType: str | None = None,
 ) -> dict[str, Any]:
     """合同要素提取任务。"""
-    del request, ContractType
+    del request
     payloads: list[tuple[str, bytes]] = []
     for upload in files or []:
         content = await upload.read()
@@ -66,11 +73,13 @@ async def handle_contract_elements_task(
     if not payloads:
         raise ValueError("合同包至少需要一个文件")
     result = await asyncio.to_thread(
-        extract_contract_elements,
+        run_contract_review,
         payloads,
         package_id=PackageId or "pkg-extract",
+        contract_type=ContractType,
+        allow_semantic=False,
     )
-    return result.model_dump(mode="json")
+    return project_element_extraction(result).model_dump(mode="json")
 
 
 _TASK_HANDLERS: dict[str, TaskHandlerSpec] = {
@@ -84,6 +93,26 @@ class _TaskRequest:
 
     async def json(self) -> dict[str, Any]:
         return {}
+
+
+def _resolve_task_review_context(
+    payload: dict[str, Any] | None,
+    *,
+    contract_type: str | None,
+) -> ReviewContextModel:
+    """校验持久化任务中的上下文，并兼容旧任务的合同类型选项。"""
+
+    if payload is not None:
+        try:
+            context = ReviewContextModel.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError("异步审查任务的 ReviewContextPayload 无效") from exc
+        if contract_type and context.contract_type and contract_type != context.contract_type:
+            raise ValueError("异步任务的 ContractType 与 ReviewContextPayload 不一致")
+        if contract_type and context.contract_type is None:
+            context = context.model_copy(update={"contract_type": contract_type})
+        return context
+    return build_review_context(contract_type=contract_type)
 
 
 async def run_task_handler(task_type: str, manifest: dict[str, Any]) -> dict[str, Any]:

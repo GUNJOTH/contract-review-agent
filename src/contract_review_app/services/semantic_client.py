@@ -48,8 +48,20 @@ class RelaySemanticReviewer:
             raise SemanticClientError(
                 "request model_version does not match client configuration"
             )
+        context_payload = (
+            request.review_context.model_dump(mode="json")
+            if request.review_context is not None
+            else None
+        )
         pii_gate = gate_external_model_input(
-            [{"text": chunk.content} for chunk in request.context_chunks]
+            [
+                *({"text": chunk.content} for chunk in request.context_chunks),
+                *(
+                    [{"text": json.dumps(context_payload, ensure_ascii=False)}]
+                    if context_payload is not None
+                    else []
+                ),
+            ]
         )
         if pii_gate.blocked:
             raise SemanticClientError("外部模型调用被 PII 门禁阻止")
@@ -64,6 +76,7 @@ class RelaySemanticReviewer:
                         {
                             "request_fingerprint": request.request_fingerprint,
                             "rule_ids": request.rule_ids,
+                            "review_context": context_payload,
                             "context_chunks": [
                                 {
                                     "chunk_id": chunk.chunk_id,
@@ -71,6 +84,7 @@ class RelaySemanticReviewer:
                                     "evidence_ids": chunk.evidence_ids,
                                     "source_name": chunk.source_name,
                                     "source_version": chunk.source_version,
+                                    "source_kind": chunk.source_kind.value,
                                 }
                                 for chunk in request.context_chunks
                             ],
