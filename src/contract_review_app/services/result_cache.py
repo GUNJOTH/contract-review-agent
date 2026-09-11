@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from loguru import logger
@@ -38,14 +40,30 @@ def cache_get(key: str) -> dict | None:
 def cache_set(key: str, payload: dict) -> None:
     if not settings.CONTRACT_REVIEW_CACHE_ENABLED:
         return
+    temporary_path: str | None = None
     try:
         directory = _cache_dir()
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{key}.json").write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        # Write next to the target and replace it in one filesystem operation.
+        # Readers therefore observe either the previous complete JSON document
+        # or the new one, never a half-written cache entry after a crash.
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=f".{key}.", suffix=".tmp", dir=directory
         )
-    except OSError as exc:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, directory / f"{key}.json")
+        temporary_path = None
+    except (OSError, TypeError, ValueError) as exc:
         logger.debug(f"审查结果缓存写入失败（忽略）: {exc}")
+    finally:
+        if temporary_path is not None:
+            try:
+                Path(temporary_path).unlink(missing_ok=True)
+            except OSError:
+                logger.debug("审查结果缓存临时文件清理失败")
 
 
 def _cache_dir() -> Path:

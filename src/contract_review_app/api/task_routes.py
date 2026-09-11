@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from enum import StrEnum
 from typing import Any, Optional
 
@@ -64,12 +65,12 @@ async def create_task(
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse, summary="查询异步任务状态")
 async def get_task_status(task_id: str, _: bool = Depends(verify_api_token)):
-    return task_service.get_task_status(task_id)
+    return await asyncio.to_thread(task_service.get_task_status, task_id)
 
 
 @router.get("/tasks/{task_id}/result", summary="获取异步任务结果")
 async def get_task_result(task_id: str, _: bool = Depends(verify_api_token)):
-    return task_service.get_task_result(task_id)
+    return await asyncio.to_thread(task_service.get_task_result, task_id)
 
 
 @router.get("/tasks", response_model=TaskListResponse, summary="查询异步任务列表")
@@ -82,7 +83,8 @@ async def list_tasks(
     created_from: Optional[str] = None,
     created_to: Optional[str] = None,
 ):
-    return task_service.list_tasks(
+    return await asyncio.to_thread(
+        task_service.list_tasks,
         page=page,
         size=size,
         status=status,

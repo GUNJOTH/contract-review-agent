@@ -1,6 +1,7 @@
 """审查结果缓存测试（临时缓存目录）。"""
 
 from contract_review_app.config import settings
+import contract_review_app.services.result_cache as result_cache
 from contract_review_app.services.result_cache import cache_get, cache_set, fingerprint
 
 
@@ -33,3 +34,18 @@ def test_cache_disabled(monkeypatch, tmp_path):
     key = fingerprint(["pkg-1"])
     cache_set(key, {"result": "{}"})
     assert cache_get(key) is None
+
+
+def test_cache_write_failure_cleans_temporary_file(monkeypatch, tmp_path):
+    _mock_cache(monkeypatch, tmp_path)
+    key = fingerprint(["atomic-write"])
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(result_cache.os, "replace", fail_replace)
+    cache_set(key, {"result": "{}"})
+
+    cache_dir = tmp_path / "cache"
+    assert cache_get(key) is None
+    assert list(cache_dir.glob("*.tmp")) == []

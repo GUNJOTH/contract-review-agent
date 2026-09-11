@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
@@ -75,7 +74,7 @@ async def review_contract(
     通用 OCR 补识别并保留坐标。未配置 LLM 时，语义/视觉/人工规则显式
     输出 UNKNOWN 并进入人工复核队列。
     """
-    request_id = str(uuid.uuid4())
+    request_id = getattr(request.state, "request_id", None) or "unknown-request"
     endpoint = "/contract-review"
     start_time = time.time()
 
@@ -201,7 +200,7 @@ async def review_contract(
         raise AppError(
             500,
             "FailedOperation.ContractReviewFailed",
-            f"合同审查失败: {exc}",
+            "合同审查失败，请稍后重试。",
         )
 
 
@@ -210,8 +209,9 @@ async def get_contract_element_fields(
     _: bool = Depends(verify_api_token),
     enabled: Optional[bool] = Query(None, description="是否只返回启用字段"),
 ):
-    seed_default_fields()
-    return {"fields": list_element_fields(enabled=enabled)}
+    await asyncio.to_thread(seed_default_fields)
+    fields = await asyncio.to_thread(list_element_fields, enabled=enabled)
+    return {"fields": fields}
 
 
 @router.post("/contract-element-fields", summary="新增合同要素")
@@ -220,7 +220,7 @@ async def add_contract_element_field(
     _: bool = Depends(verify_api_token),
 ):
     try:
-        field = create_element_field(payload or {})
+        field = await asyncio.to_thread(create_element_field, payload or {})
     except ValueError as exc:
         raise AppError(
             400,
@@ -242,12 +242,12 @@ async def edit_contract_element_field(
     payload: dict,
     _: bool = Depends(verify_api_token),
 ):
-    if get_element_field(key) is None:
+    if await asyncio.to_thread(get_element_field, key) is None:
         raise AppError(
             404, "ResourceNotFound.ElementFieldNotFound", f"要素 {key} 不存在"
         )
     try:
-        field = update_element_field(key, payload or {})
+        field = await asyncio.to_thread(update_element_field, key, payload or {})
     except ValueError as exc:
         raise AppError(
             400,
@@ -268,11 +268,11 @@ async def remove_contract_element_field(
     key: str,
     _: bool = Depends(verify_api_token),
 ):
-    if get_element_field(key) is None:
+    if await asyncio.to_thread(get_element_field, key) is None:
         raise AppError(
             404, "ResourceNotFound.ElementFieldNotFound", f"要素 {key} 不存在"
         )
-    delete_element_field(key)
+    await asyncio.to_thread(delete_element_field, key)
     return {"key": key, "deleted": True}
 
 
@@ -301,7 +301,7 @@ async def preview_contract(
         raise AppError(
             500,
             "FailedOperation.ContractPreviewFailed",
-            f"打开合同原文失败: {exc}",
+            "打开合同原文失败，请检查文件后重试。",
         ) from exc
 
 
@@ -352,7 +352,7 @@ async def compare_contract(
         raise AppError(
             500,
             "FailedOperation.ContractCompareFailed",
-            f"合同文档对比失败: {exc}",
+            "合同文档对比失败，请检查文件后重试。",
         ) from exc
 
 
@@ -364,7 +364,7 @@ async def extract_contract_fields(
     PackageId: str = Form(..., description="合同包 ID"),
 ):
     """上传合同后抽取关键字段，供修改确认后填充到合同模块。"""
-    request_id = str(uuid.uuid4())
+    request_id = getattr(request.state, "request_id", None) or "unknown-request"
     endpoint = "/contract-elements"
     start_time = time.time()
     log_request_start(
@@ -430,7 +430,7 @@ async def extract_contract_fields(
         raise AppError(
             500,
             "FailedOperation.ContractElementExtractFailed",
-            f"合同要素提取失败: {exc}",
+            "合同要素提取失败，请稍后重试。",
         )
 
 
@@ -495,7 +495,7 @@ async def get_ai_rules(
             "InvalidParameterValue.InvalidParameterValueLimit",
             "module 仅支持 风险点 / 合理性 / 内控 / 资信",
         )
-    rules = list_rules(status, module=module, enabled=enabled)
+    rules = await asyncio.to_thread(list_rules, status, module=module, enabled=enabled)
     packs = split_rule_packs(rules)
     return {
         "modules": list(RULE_MODULES),
@@ -522,7 +522,7 @@ async def create_ai_rule(
 ):
     """用户设定一条合同风险规则，默认立即启用并进入下次审查提示池。"""
     try:
-        rule = create_rule(payload or {})
+        rule = await asyncio.to_thread(create_rule, payload or {})
     except ValueError as exc:
         raise AppError(
             400,
@@ -538,10 +538,10 @@ async def update_ai_rule(
     payload: dict,
     _: bool = Depends(verify_api_token),
 ):
-    if not rule_exists(rule_id):
+    if not await asyncio.to_thread(rule_exists, rule_id):
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
     try:
-        rule = update_rule(rule_id, payload or {})
+        rule = await asyncio.to_thread(update_rule, rule_id, payload or {})
     except ValueError as exc:
         raise AppError(
             400,
@@ -558,9 +558,9 @@ async def enable_ai_rule(
     rule_id: str,
     _: bool = Depends(verify_api_token),
 ):
-    if not rule_exists(rule_id):
+    if not await asyncio.to_thread(rule_exists, rule_id):
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    rule = set_rule_enabled(rule_id, True)
+    rule = await asyncio.to_thread(set_rule_enabled, rule_id, True)
     return {"rule_id": rule_id, "status": rule["status"], "enabled": True}
 
 
@@ -570,9 +570,9 @@ async def confirm_ai_rule(
     _: bool = Depends(verify_api_token),
 ):
     """人工确认：规则进入 active 状态，下次审查自动注入提示池。"""
-    if not rule_exists(rule_id):
+    if not await asyncio.to_thread(rule_exists, rule_id):
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    confirm_rule(rule_id)
+    await asyncio.to_thread(confirm_rule, rule_id)
     return {"rule_id": rule_id, "status": "active", "enabled": True}
 
 
@@ -582,9 +582,9 @@ async def disable_ai_rule(
     _: bool = Depends(verify_api_token),
 ):
     """停用规则：不再注入审查提示池，但保留历史数据。"""
-    if not rule_exists(rule_id):
+    if not await asyncio.to_thread(rule_exists, rule_id):
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
-    disable_rule(rule_id)
+    await asyncio.to_thread(disable_rule, rule_id)
     return {"rule_id": rule_id, "status": "disabled", "enabled": False}
 
 
@@ -594,10 +594,10 @@ async def delete_ai_rule(
     _: bool = Depends(verify_api_token),
 ):
     """删除规则：规则列表与规则引擎同步移除。"""
-    if not rule_exists(rule_id):
+    if not await asyncio.to_thread(rule_exists, rule_id):
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
     try:
-        delete_rule(rule_id)
+        await asyncio.to_thread(delete_rule, rule_id)
     except KeyError:
         raise AppError(404, "ResourceNotFound.AiRuleNotFound", f"规则 {rule_id} 不存在")
     return {"rule_id": rule_id, "deleted": True}

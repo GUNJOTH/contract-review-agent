@@ -164,21 +164,52 @@ app.include_router(router, prefix=settings.API_PREFIX, tags=["合同审查"])
 
 
 @app.exception_handler(AppError)
-async def contract_review_app_error_handler(_request: Request, exc: AppError):
-    return JSONResponse(status_code=exc.status_code, content=make_error_response(exc.error_code, exc.message))
+async def contract_review_app_error_handler(request: Request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=make_error_response(
+            exc.error_code,
+            exc.message,
+            request_id=_request_id(request),
+        ),
+    )
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_error_handler(_request: Request, exc: HTTPException):
+async def http_exception_error_handler(request: Request, exc: HTTPException):
     detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
     code, message = infer_error_code_from_detail(exc.status_code, detail)
-    return JSONResponse(status_code=exc.status_code, content=make_error_response(code, message))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=make_error_response(code, message, request_id=_request_id(request)),
+    )
 
 
 @app.exception_handler(Exception)
-async def general_exception_handler(_request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(status_code=500, content=make_error_response("FailedOperation.UnKnowError", str(exc)))
+async def general_exception_handler(request: Request, exc: Exception):
+    """Return a stable public error while retaining the diagnostic server log.
+
+    Exception text can contain file paths, provider responses, SQL details, or
+    other implementation data.  It is useful for operators but is not a safe
+    API response.  The request ID lets callers correlate the generic response
+    with the structured log entry without exposing the underlying exception.
+    """
+
+    request_id = _request_id(request)
+    logger.opt(exception=exc).error("Unhandled exception", request_id=request_id)
+    return JSONResponse(
+        status_code=500,
+        content=make_error_response(
+            "FailedOperation.UnKnowError",
+            request_id=request_id,
+        ),
+    )
+
+
+def _request_id(request: Request) -> str | None:
+    """Read the correlation ID installed by ``RequestContextMiddleware``."""
+
+    return getattr(request.state, "request_id", None)
 
 
 @app.get("/", tags=["root"])

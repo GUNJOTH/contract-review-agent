@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import UploadFile
+from loguru import logger
 
 from contract_review_app.api.errors import AppError
 from contract_review_app.config import settings
@@ -45,27 +47,38 @@ class TaskService:
         image_url: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> TaskCreateAcceptedResponse:
-        if self._store.count_pending() >= settings.TASK_PENDING_LIMIT:
+        if await asyncio.to_thread(self._store.count_pending) >= settings.TASK_PENDING_LIMIT:
             raise AppError(409, "LimitExceeded.QueueFull")
 
         normalized_options = options or {}
         task_id = f"cr_{uuid.uuid4().hex}"
-        input_mode, input_path, input_size, input_filename, input_content_type = await self._persist_input(
-            task_id=task_id,
-            file=file,
-            files=files,
-            image_base64=image_base64,
-            image_url=image_url,
-            options=normalized_options,
-        )
+
+        # Validate the dispatch contract before writing any upload bytes.  An
+        # invalid task type must not leave an orphaned task directory behind.
+        input_filename_hint, input_content_type_hint = _input_metadata(file, files)
         try:
             dispatch = get_dispatch_config(
                 task_type,
-                input_filename=input_filename,
-                input_content_type=input_content_type,
+                input_filename=input_filename_hint,
+                input_content_type=input_content_type_hint,
             )
         except ValueError as exc:
             raise AppError(400, "InvalidParameterValue.InvalidTaskType", str(exc)) from exc
+
+        try:
+            input_mode, input_path, input_size, input_filename, input_content_type = (
+                await self._persist_input(
+                    task_id=task_id,
+                    file=file,
+                    files=files,
+                    image_base64=image_base64,
+                    image_url=image_url,
+                    options=normalized_options,
+                )
+            )
+        except Exception:
+            await self._cleanup_input(task_id)
+            raise
 
         created_at = _now_iso()
         record = AsyncTaskRecord(
@@ -84,9 +97,23 @@ class TaskService:
             options=normalized_options,
             created_at=created_at,
         )
-        self._store.create(record)
+        try:
+            # Redis and filesystem operations are synchronous adapters.  Keep
+            # them off the FastAPI event loop so a slow broker cannot stall
+            # unrelated requests.
+            await asyncio.to_thread(self._store.create, record)
+        except Exception as exc:
+            await self._cleanup_input(task_id)
+            raise AppError(
+                503,
+                "FailedOperation.UnOpenError",
+                "任务状态保存失败，请稍后重试。",
+            ) from exc
         metrics.record_async_task_created(task_type, dispatch.queue_name)
-        metrics.set_async_queue_depth(dispatch.queue_name, self._queue_depth(dispatch.queue_name))
+        metrics.set_async_queue_depth(
+            dispatch.queue_name,
+            await asyncio.to_thread(self._queue_depth, dispatch.queue_name),
+        )
         log_async_task_event(
             task_id=task_id,
             task_type=task_type,
@@ -97,7 +124,7 @@ class TaskService:
             progress=record.progress,
         )
 
-        self._enqueue_task(task_id, task_type, dispatch.queue_name)
+        await asyncio.to_thread(self._enqueue_task, task_id, task_type, dispatch.queue_name)
 
         return TaskCreateAcceptedResponse(
             Response=TaskCreateAccepted(
@@ -224,11 +251,12 @@ class TaskService:
 
             execute_ocr_task.apply_async(args=[task_id], queue=queue_name)
         except Exception as exc:
+            logger.exception("任务入队失败", task_id=task_id, task_type=task_type)
             failed_at = _now_iso()
             self._store.mark_failed(
                 task_id,
                 error_code="FailedOperation.UnOpenError",
-                error_message=f"任务入队失败: {exc}",
+                error_message="任务入队失败，请稍后重试。",
                 stage=AsyncTaskStage.FAILED.value,
                 finished_at=failed_at,
                 expires_at=_future_iso(settings.TASK_RESULT_TTL_FAILED),
@@ -240,7 +268,11 @@ class TaskService:
                 0.0,
             )
             metrics.set_async_queue_depth(queue_name, self._queue_depth(queue_name))
-            raise AppError(503, "FailedOperation.UnOpenError", f"任务入队失败: {exc}") from exc
+            raise AppError(
+                503,
+                "FailedOperation.UnOpenError",
+                "任务入队失败，请稍后重试。",
+            ) from exc
 
     async def _persist_input(
         self,
@@ -270,7 +302,8 @@ class TaskService:
                     "InvalidParameterValue.InvalidParameterValueLimit",
                     "合同包至少需要一个文件",
                 )
-            input_path = self._file_store.save_files(
+            input_path = await asyncio.to_thread(
+                self._file_store.save_files,
                 task_id=task_id,
                 files=payloads,
                 options=options,
@@ -278,7 +311,8 @@ class TaskService:
             return "files", input_path, total_size, first_name, first_content_type
         if file is not None:
             data = await file.read()
-            input_path = self._file_store.save_file(
+            input_path = await asyncio.to_thread(
+                self._file_store.save_file,
                 task_id=task_id,
                 filename=file.filename,
                 content_type=file.content_type,
@@ -287,14 +321,16 @@ class TaskService:
             )
             return "file", input_path, len(data), file.filename, file.content_type
         if image_base64:
-            input_path = self._file_store.save_base64(
+            input_path = await asyncio.to_thread(
+                self._file_store.save_base64,
                 task_id=task_id,
                 encoded=image_base64,
                 options=options,
             )
             return "base64", input_path, len(image_base64.encode("utf-8")), None, None
         if image_url:
-            input_path = self._file_store.save_url(
+            input_path = await asyncio.to_thread(
+                self._file_store.save_url,
                 task_id=task_id,
                 url=image_url,
                 options=options,
@@ -308,6 +344,14 @@ class TaskService:
 
     def _queue_depth(self, queue_name: str) -> int:
         return self._store.count_pending_by_queue(queue_name)
+
+    async def _cleanup_input(self, task_id: str) -> None:
+        """Best-effort cleanup for input written before a task was accepted."""
+
+        try:
+            await asyncio.to_thread(self._file_store.delete_task_files, task_id)
+        except Exception as exc:  # pragma: no cover - defensive cleanup path
+            logger.warning("任务输入清理失败", task_id=task_id, error=str(exc))
 
 
 def parse_options(raw: str | dict[str, Any] | None) -> dict[str, Any]:
@@ -338,6 +382,20 @@ def _now_iso() -> str:
 
 def _future_iso(seconds: int) -> str:
     return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat()
+
+
+def _input_metadata(
+    file: UploadFile | None,
+    files: list[UploadFile] | None,
+) -> tuple[str | None, str | None]:
+    """Return upload metadata without consuming the request body."""
+
+    if file is not None:
+        return file.filename, file.content_type
+    if files:
+        first = files[0]
+        return first.filename, first.content_type
+    return None, None
 
 
 task_service = TaskService()

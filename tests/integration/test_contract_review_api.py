@@ -88,6 +88,28 @@ def test_contract_review_engine_rules_can_be_disabled(monkeypatch):
     assert len(review["rule_bundle"]["rules"]) == 1
 
 
+def test_contract_review_internal_failure_does_not_leak_exception(monkeypatch):
+    def fail_review(*_args, **_kwargs):
+        raise RuntimeError("provider response contains internal secret")
+
+    monkeypatch.setattr(
+        "contract_review_app.api.review_routes.run_contract_review",
+        fail_review,
+    )
+    request_id = "review-failure-request"
+    response = client.post(
+        "/api/v1/contract-review",
+        headers={**_auth_headers(), "X-Request-ID": request_id},
+        files=[("files", ("合同主文.pdf", _make_contract_pdf(), "application/pdf"))],
+        data={"PackageId": "pkg-failure", "ContractType": "software"},
+    )
+
+    assert response.status_code == 500, response.text
+    assert "provider response contains internal secret" not in response.text
+    assert response.json()["Response"]["Error"]["Code"] == "FailedOperation.ContractReviewFailed"
+    assert response.json()["Response"]["RequestId"] == request_id
+
+
 def test_contract_review_rejects_empty_package(monkeypatch):
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
     class _EmptyOCR:

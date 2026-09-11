@@ -72,6 +72,10 @@ docker compose up --build
 - 规则引擎库
 - 任务中心
 
+## 架构与演进
+
+当前采用证据优先的模块化单体：确定性审查引擎与 FastAPI/Celery 适配层分离，OCR、模型、Redis 和本地 SQLite 均可替换。组件职责、状态链、优秀项目借鉴和分阶段路线见 [架构说明](docs/ARCHITECTURE.md) 与 [ADR-001](docs/decisions/ADR-001-modular-evidence-first.md)。
+
 ## 测试
 
 ```bash
