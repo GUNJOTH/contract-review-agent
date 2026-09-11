@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>合同审查控制台</title>
+  <link rel="stylesheet" href="/static/css/app.css?v=20260908b" />
+</head>
+<body>
+  <div id="app">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">审</div>
+        <div class="brand-text">
+          <div class="brand-name">合同审查控制台</div>
+          <div class="brand-version" id="brand-version">v-</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-page="review">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
+          <span>合同审查</span>
+        </button>
+        <button class="nav-item" data-page="element-fill">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/></svg>
+          <span>合同拟定</span>
+        </button>
+        <button class="nav-item" data-page="ai-rules">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          <span>规则引擎库</span>
+        </button>
+        <button class="nav-item" data-page="tasks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <span>任务中心</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <a class="nav-item link" href="/docs" target="_blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span>API 文档</span>
+        </a>
+        <a class="nav-item link" href="/api/v1/metrics" target="_blank">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+          <span>Prometheus 指标</span>
+        </a>
+      </div>
+    </aside>
+
+    <!-- 主区域 -->
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="health-dot" id="health-dot"></span>
+          <span id="health-text">检测中…</span>
+        </div>
+        <div class="topbar-right">
+          <input class="input input-sm api-base" id="api-base" placeholder="API 地址（默认 /api/v1）" />
+          <input class="input input-sm api-token" id="token-input" type="password" autocomplete="off" placeholder="API Token（必填）" aria-label="API Token" />
+          <button class="btn btn-ghost btn-sm" id="save-config" title="保存配置">保存</button>
+        </div>
+      </header>
+
+      <main class="content" id="content">
+        <!-- 各页面由 app.js 渲染 -->
+      </main>
+    </div>
+  </div>
+
+  <!-- 模态框 -->
+  <div class="modal-mask hidden" id="modal-mask">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <span class="modal-title" id="modal-title">标题</span>
+        <button class="modal-close" id="modal-close">×</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-wrap" id="toast-wrap"></div>
+
+  <script src="/static/js/app.js?v=20260908d"></script>
+</body>
+</html>

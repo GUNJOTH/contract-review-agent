@@ -1,8 +1,26 @@
-.venv/
-.uv-cache/
-node_modules/
+# Python-generated files
 __pycache__/
-*.py[cod]
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Runtime / secrets
+.env
+runtime/
+.pytest_cache/
 .test-work/
-.tmp-smoke/
-tmp*/
+*.egg-info/
+
+# Local contract samples / customer documents
+*.docx
+*.pdf
+
+# Local runtime databases and diagnostics
+data/ai_rules.db
+data/element_fields.db
+gcm-diagnose.log

@@ -24,11 +24,26 @@ from .models import (
 )
 
 SEMANTIC_GATE_VERSION = "semantic-evidence-gate-0.1.0"
-MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS = 0.75
+MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS = 0.5
 DEFAULT_SYSTEM_INSTRUCTION = (
     "你是合同条款审查模型。只能依据给定上下文判断；每条结论必须引用上下文中的 evidence_id。"
     "无法确定时返回 UNKNOWN，不得补造事实或法律依据。请仅返回 JSON。"
 )
+
+
+def is_model_judged_rule(rule: "Rule") -> bool:
+    """规则是否由语义模型逐条判断。
+
+    语义/视觉/人工规则由模型判断；确定性规则中只有已实现计算器的
+    （税率、不含税）不走模型，其余未实现的确定性规则也交给模型判断，
+    保证每条规则都有结论而不是停留在"未配置检查器"。
+    """
+
+    if rule.check_method in {"semantic", "human", "visual"}:
+        return True
+    if rule.check_method == "deterministic":
+        return rule.title not in {"税率", "不含税"}
+    return False
 
 
 class SemanticClientError(RuntimeError):
@@ -144,7 +159,7 @@ def build_semantic_model_request(
     rules = [
         rule
         for rule in result.rule_bundle.rules
-        if rule.check_method in {"semantic", "human", "visual"}
+        if is_model_judged_rule(rule)
     ]
     chunks_by_id = {chunk.chunk_id: chunk for chunk in result.knowledge_chunks}
     chunks_by_rule: dict[str, list[KnowledgeChunk]] = {}

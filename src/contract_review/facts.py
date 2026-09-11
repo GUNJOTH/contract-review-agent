@@ -58,6 +58,11 @@ def extract_keyword_facts(
 
 _TAX_RATE_PATTERN = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)\s*[％%]")
 
+# 百分比只有当附近出现税务语境时才作为税率候选，避免把付款比例、
+# 违约金比例等误提取为税率（0.9 的付款比例曾被当成 90% 税率）。
+_TAX_CONTEXT_KEYWORDS = ("税率", "增值税", "含税", "不含税", "税额", "发票", "开票", "税")
+_TAX_CONTEXT_WINDOW = 10
+
 
 def extract_tax_rate_facts(
     parsed_documents: Sequence[ParsedDocument],
@@ -73,6 +78,12 @@ def extract_tax_rate_facts(
     for parsed_document in parsed_documents:
         for block_id, block_text in _text_blocks(parsed_document):
             for match in _TAX_RATE_PATTERN.finditer(block_text):
+                window = block_text[
+                    max(0, match.start() - _TAX_CONTEXT_WINDOW) :
+                    match.end() + _TAX_CONTEXT_WINDOW
+                ]
+                if not any(keyword in window for keyword in _TAX_CONTEXT_KEYWORDS):
+                    continue
                 value = float(match.group(1)) / 100
                 matches = [
                     item
@@ -110,8 +121,40 @@ def extract_tax_rate_facts(
 
 
 _ATTACHMENT_PATTERN = re.compile(
-    r"(?:详见|见|参见|随附|附件(?:为|：|:)?)[\s\"“”']*([^，。；;\n\"“”']{2,40})"
+    r"(?:详见|参见|随附|附件(?:为|：|:)?)[\s\"“”']*([^，。；;\n\"“”']{2,40})"
 )
+
+# 模板套话过滤：合同效力/不可抗力等格式条款中的"附件"表述不是真实附件引用。
+_ATTACHMENT_BOILERPLATE_MARKERS = (
+    "不能",
+    "不可",
+    "作为",
+    "本合",
+    "其",
+    "补充协议",
+    "具有",
+    "以及",
+    "未尽事宜",
+    "同等效力",
+)
+_ATTACHMENT_TRAILING_NOISE = ("相关内容", "内容", "文件")
+
+
+def _normalize_attachment_name(name: str) -> str | None:
+    """清洗附件名：优先取《》内名称，剔除模板套话与过长片段。"""
+    bracket = re.search(r"[《]([^》]{2,40})[》]", name)
+    if bracket:
+        name = bracket.group(1)
+    for noise in _ATTACHMENT_TRAILING_NOISE:
+        if name.endswith(noise):
+            name = name[: -len(noise)]
+            break
+    name = name.strip(" ：:、（）()")
+    if len(name) < 2 or len(name) > 30:
+        return None
+    if any(marker in name for marker in _ATTACHMENT_BOILERPLATE_MARKERS):
+        return None
+    return name
 
 
 def extract_attachment_references(
@@ -128,8 +171,8 @@ def extract_attachment_references(
             + [node.text for node in parsed_document.nodes]
         )
         for match in _ATTACHMENT_PATTERN.finditer(source_text):
-            name = match.group(1).strip(" ：:、")
-            if not name or len(name) > 40:
+            name = _normalize_attachment_name(match.group(1))
+            if not name:
                 continue
             matches = find_text_evidence(parsed_document, name, evidence_prefix="attachment")
             if not matches:
