@@ -64,6 +64,9 @@ jobs:
       - name: Run process-level API smoke test
         run: uv run python scripts/ci_api_smoke.py
 
+      - name: Run fixed offline contract evaluation set
+        run: uv run python scripts/evaluate_contract_fixtures.py
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4

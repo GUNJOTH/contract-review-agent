@@ -91,8 +91,8 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
 本项目只吸收与证据边界相容的模式，不复制整套框架：
 
 - [OpenAI Agents SDK guardrails](https://github.com/openai/openai-agents-python/blob/main/docs/guardrails.md) 的输入/输出/工具门禁启发了“在外部副作用前校验结构和权限”的边界；当前对应实现是语义响应的规则 ID、指纹和证据 ID 校验。
-- [OpenAI Agents SDK tracing](https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md) 和 [OpenTelemetry 语义约定](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) 说明了应以 trace/span 关联阶段、模型、工具和耗时，同时默认过滤敏感内容；当前先保留请求 ID、结构化日志和指标，后续再接可选 OTEL exporter。
-- [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 的 thread-scoped checkpoint 与 durable store 对应本项目已有的 `ReviewRun.transitions` 和 Redis 任务记录；下一阶段补充独立事件账本，而不是替换领域引擎。
+- [OpenAI Agents SDK tracing](https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md) 和 [OpenTelemetry 语义约定](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) 说明了应以 trace/span 关联阶段、模型、工具和耗时，同时默认过滤敏感内容；当前已提供可选 OTEL span，白名单只保留 ID、阶段、状态、模型和计数，不写入合同正文、提示词或密钥。
+- [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) 的 thread-scoped checkpoint 与 durable store 对应本项目已有的 `ReviewRun.transitions`、统一 `StageEvent` 账本和 Redis 任务记录；当前以独立事件账本增强现有领域引擎，而不是替换它。
 - [openreview-cli 的流水线设计](https://github.com/mohamed-benoughidene/openreview-cli/blob/main/ARCHITECTURE.md) 将解析、隐私门、条款抽取、QA、引用核验和报告拆成可恢复阶段；本项目沿用“先质量门、再检索/规则、最后模型与人工”的顺序。
 - [legal.ai 的 provenance 与人工门](https://github.com/saiabhinav001/legal.ai/blob/main/README.md) 强调每个字段回指源文档片段，低置信度进入人工确认；这与本项目的 `Evidence`、`Finding`、`ReviewDecision` 和 `HUMAN_REVIEW` 状态一致。
 - [Docling Graph provenance](https://docling-project.github.io/docling-graph/fundamentals/graph-management/provenance/) 的“来源账本是事实源、无法确定时留空”原则，强化了本项目 `fail-closed` 的证据绑定约束。
@@ -100,21 +100,21 @@ RECEIVED → PARSED → QUALITY_GATED → INDEXED → EXTRACTED
 
 ## 6. 分阶段演进路线
 
-### P1：边界契约（下一步）
+### P1：边界契约（幂等与事件核心已落地）
 
-- 为任务创建、规则编辑、要素编辑和 AI 合同类型增加 `extra="forbid"` 的 Pydantic DTO；保留表单兼容层，但让 JSON/OpenAPI 契约可生成。
-- 为任务创建增加 `Idempotency-Key` 和 Redis 原子 admission；同一请求重试只返回原任务，不重复入队。
-- 把 `ReviewRun.transitions` 和异步任务状态抽象为统一的阶段事件模型，保留当前 Redis/JSON 适配器。
+- 为异步任务创建增加 `Idempotency-Key` 和 Redis Lua 原子 admission；同一键在 TTL 内只返回原任务，不重复落盘或入队，待处理上限检查与首条事件写入在同一脚本中完成。
+- 把 `ReviewRun.transitions` 和异步任务状态抽象为统一的 `StageEvent` 形状，保留当前 Redis/JSON 适配器；旧结果没有事件账本时仍可按迁移链审计。
+- 规则编辑、要素编辑和 AI 合同类型的严格 JSON DTO 仍可作为后续收紧项，不把本轮未实现的范围计入验收。
 
-### P2：生产可观测与隐私
+### P2：生产可观测与隐私（已落地基础能力）
 
-- 在不记录合同正文/Token 的前提下增加可选 OpenTelemetry trace，关联 `request_id`、`run_id`、task、model、tool 和 token/耗时摘要。
-- 外部模型/OCR 调用前增加可配置的 PII/敏感字段门；无权发送或无法脱敏时 fail-closed，并说明人工处理路径。
-- 为每个阶段记录重试、耗时、输入/输出指纹和降级原因，形成可查询的运行报表。
+- 在不记录合同正文/Token 的前提下增加可选 OpenTelemetry trace，关联阶段、`run_id`、task、provider/model 和数量摘要；SDK 未安装或追踪异常时自动 no-op。
+- 在语义、AI 风险分析、要素抽取和 embedding 外发前增加默认 `block` 的高置信度 PII 门；扫描器异常、配置异常和无法读取文字时 fail-closed，并返回本地确定性/词法降级结果。
+- 下一步为每个阶段补充重试、耗时、输入/输出指纹和降级原因的聚合报表；本轮先保留结构化日志和安全 span 属性。
 
-### P3：质量与部署
+### P3：质量与部署（离线质量门已落地，真实联调待环境）
 
-- 建立带固定合同夹具的离线评测：证据召回、规则覆盖、模型 JSON 合规、重放一致性和人工决定完整性。
+- 建立带固定合同夹具的离线评测：证据类型、规则结果、PII 门禁、阶段账本审计和重放指纹均在 CI 中执行。
 - 在具备 Docker daemon、Redis、OCR 和模型环境的 CI/验收机上补运行验证；本机未具备这些依赖时只能报告阻塞，不能伪造通过。
 - 需要独立扩缩容时再拆 worker 或检索服务，先用接口/事件契约隔离，避免把共享事务状态拆散。
 

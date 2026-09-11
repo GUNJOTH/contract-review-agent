@@ -455,6 +455,26 @@ class ReviewTransition(ModelBase):
     occurred_at: datetime = Field(default_factory=utc_now)
 
 
+class StageEvent(ModelBase):
+    """统一的阶段事件账本条目。
+
+    审查运行与异步任务共用同一事件形状；事件只记录状态、操作者和证据
+    引用，不携带合同正文或凭据，便于持久化、回放和脱敏导出。
+    """
+
+    event_id: str
+    subject_type: Literal["review_run", "async_task"]
+    subject_id: str
+    from_stage: str | None = None
+    to_stage: str
+    action: str
+    actor: str
+    reason: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime = Field(default_factory=utc_now)
+
+
 class ReviewRun(ModelBase):
     run_id: str
     package_id: str
@@ -470,6 +490,7 @@ class ReviewRun(ModelBase):
     report_id: str | None = None
     result_fingerprint: str | None = None
     transitions: list[ReviewTransition] = Field(default_factory=list)
+    stage_events: list[StageEvent] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
 

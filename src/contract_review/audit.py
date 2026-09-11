@@ -98,6 +98,12 @@ def audit_result(result: ReviewResult) -> AuditReport:
         for evidence_id in transition.evidence_ids
         if evidence_id not in evidence_set
     )
+    missing_references.update(
+        evidence_id
+        for event in result.run.stage_events
+        for evidence_id in event.evidence_ids
+        if evidence_id not in evidence_set
+    )
     if result.semantic_request is not None:
         missing_references.update(
             evidence_id
@@ -161,6 +167,10 @@ def audit_result(result: ReviewResult) -> AuditReport:
     checks["transition_chain"] = _transition_chain_is_valid(result, evidence_set)
     if not checks["transition_chain"]:
         issues.append("review transition chain is not append-only or does not end at run status")
+
+    checks["stage_event_ledger"] = _stage_event_ledger_is_valid(result, evidence_set)
+    if not checks["stage_event_ledger"]:
+        issues.append("阶段事件账本不是追加式，或与状态迁移不一致")
 
     expected_input = build_replay_fingerprint(
         package_id=result.package.package_id,
@@ -459,3 +469,46 @@ def _transition_chain_is_valid(result: ReviewResult, evidence_set: set[str]) -> 
     if result.run.status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED}:
         return result.run.finished_at is not None
     return result.run.finished_at is None
+
+
+def _stage_event_ledger_is_valid(result: ReviewResult, evidence_set: set[str]) -> bool:
+    """校验存在时的统一阶段事件账本。
+
+    旧版持久化结果没有事件账本，仍通过状态迁移链保持可审计；新建运行
+    则为每次状态迁移生成一条事件。
+    """
+
+    events = result.run.stage_events
+    if not events:
+        return True
+    if len(events) != len(result.run.transitions):
+        return False
+    if len({event.event_id for event in events}) != len(events):
+        return False
+    previous_stage: str | None = None
+    previous_time = None
+    for index, event in enumerate(events):
+        transition = result.run.transitions[index]
+        expected_from = transition.from_status.value if transition.from_status else None
+        if (
+            event.subject_type != "review_run"
+            or event.subject_id != result.run.run_id
+            or event.from_stage != expected_from
+            or event.to_stage != transition.to_status.value
+            or event.action != transition.action
+            or event.actor != transition.actor
+            or event.reason != transition.reason
+            or not set(event.evidence_ids).issubset(evidence_set)
+            or event.occurred_at != transition.occurred_at
+        ):
+            return False
+        if index == 0:
+            if event.from_stage is not None or event.to_stage != ReviewStatus.RECEIVED.value:
+                return False
+        elif event.from_stage != previous_stage:
+            return False
+        if previous_time is not None and event.occurred_at < previous_time:
+            return False
+        previous_stage = event.to_stage
+        previous_time = event.occurred_at
+    return previous_stage == result.run.status.value

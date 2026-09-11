@@ -10,6 +10,18 @@ from contract_review_app.models import AsyncTaskRecord
 class TaskStore(Protocol):
     def create(self, task: AsyncTaskRecord) -> None: ...
 
+    def find_by_idempotency_key(self, idempotency_key: str) -> AsyncTaskRecord | None: ...
+
+    def admit_and_create(
+        self,
+        task: AsyncTaskRecord,
+        *,
+        idempotency_key: str | None,
+        pending_limit: int,
+        idempotency_ttl_seconds: int,
+        event_limit: int,
+    ) -> tuple[str, AsyncTaskRecord | None]: ...
+
     def get(self, task_id: str) -> AsyncTaskRecord | None: ...
 
     def list_tasks(

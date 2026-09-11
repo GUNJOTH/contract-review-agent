@@ -25,6 +25,8 @@ from contract_review.knowledge import LexicalKnowledgeIndex
 from contract_review.models import KnowledgeChunk, RetrievalHit, RetrievalTrace
 
 from contract_review_app.config import settings
+from contract_review_app.services.pii_gate import gate_external_model_input
+from contract_review_app.telemetry.tracing import start_span
 
 VECTOR_INDEX_VERSION = "vector-knowledge-0.1.0"
 
@@ -186,20 +188,30 @@ class VectorKnowledgeIndex:
 
 
 def _call_embedding_api(texts: list[str]) -> list[list[float]]:
+    gate = gate_external_model_input(texts)
+    if gate.blocked:
+        raise ValueError("embedding 输入被 PII 门禁阻止")
     headers = {"Content-Type": "application/json"}
     if settings.CONTRACT_REVIEW_EMBEDDING_API_KEY:
         headers["Authorization"] = (
             f"Bearer {settings.CONTRACT_REVIEW_EMBEDDING_API_KEY}"
         )
-    response = httpx.post(
-        settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
-        json={
-            "model": settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
-            "input": texts,
+    with start_span(
+        "external_model.embedding",
+        attributes={
+            "model_version": settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
+            "context_count": len(texts),
         },
-        headers=headers,
-        timeout=120.0,
-    )
+    ):
+        response = httpx.post(
+            settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
+            json={
+                "model": settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
+                "input": texts,
+            },
+            headers=headers,
+            timeout=120.0,
+        )
     response.raise_for_status()
     payload = response.json()
     data = sorted(payload["data"], key=lambda item: item["index"])

@@ -23,6 +23,7 @@ from contract_review_app.config import settings
 from contract_review_app.services.element_schema import list_element_fields
 from contract_review_app.services.result_cache import cache_get, cache_set, fingerprint
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
+from contract_review_app.services.pii_gate import gate_external_model_input
 from contract_review_app.services.triton_ocr_provider import TritonOCRProvider
 
 ELEMENT_PROMPT_VERSION = "contract-element-extract-v2"
@@ -154,6 +155,9 @@ class ElementExtractionResult(BaseModel):
     fields: list[ContractElement] = Field(default_factory=list)
     fillable: dict[str, str] = Field(default_factory=dict)
     suggestions: dict[str, list[str]] = Field(default_factory=dict)
+    external_model_blocked: bool = False
+    external_model_block_reason: str | None = None
+    external_model_pii_types: list[str] = Field(default_factory=list)
 
 
 def extract_contract_elements(
@@ -174,10 +178,17 @@ def extract_contract_elements(
     documents, filenames = _parse_documents(files, package_id=package_id)
     text = "\n".join(item["text"] for item in documents)
     fields = _rule_extract(text, schema)
-    if settings.CONTRACT_REVIEW_ENDPOINT:
+    pii_gate = gate_external_model_input(documents)
+    if settings.CONTRACT_REVIEW_ENDPOINT and not pii_gate.blocked:
         ai_fields = _ai_extract(documents, schema)
         if ai_fields:
             fields = _merge_fields(fields, ai_fields)
+    if pii_gate.blocked and settings.CONTRACT_REVIEW_ENDPOINT:
+        logger.warning(
+            "PII 门禁阻止合同要素模型抽取",
+            package_id=package_id,
+            finding_types=[item.kind for item in pii_gate.findings],
+        )
     fillable = {item.key: item.value for item in fields if item.value}
     suggestions = {
         item.key: [candidate.value for candidate in item.candidates]
@@ -192,6 +203,15 @@ def extract_contract_elements(
         fields=fields,
         fillable=fillable,
         suggestions=suggestions,
+        external_model_blocked=bool(settings.CONTRACT_REVIEW_ENDPOINT and pii_gate.blocked),
+        external_model_block_reason=(
+            pii_gate.reason if settings.CONTRACT_REVIEW_ENDPOINT and pii_gate.blocked else None
+        ),
+        external_model_pii_types=(
+            [item.kind for item in pii_gate.findings]
+            if settings.CONTRACT_REVIEW_ENDPOINT and pii_gate.blocked
+            else []
+        ),
     )
     cache_set(cache_key, {"extraction": result.model_dump_json()})
     return result
@@ -212,6 +232,9 @@ def _extract_fingerprint(files: list[tuple[str, bytes]], *, package_id: str) -> 
         package_id,
         ELEMENT_PROMPT_VERSION,
         settings.CONTRACT_REVIEW_MODEL,
+        str(settings.CONTRACT_AI_PII_GATE_ENABLED),
+        settings.CONTRACT_AI_PII_MODE,
+        settings.CONTRACT_PII_SCANNER_VERSION,
         json.dumps(identity, ensure_ascii=False, sort_keys=True),
     ]
     for filename, content in files:

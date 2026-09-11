@@ -32,12 +32,15 @@ cp .env.example .env
 | `OCR_GATEWAY_TOKEN` | OCR 网关鉴权（网关开了鉴权才需要） | 扫描件/印章识别 401 |
 | `API_TOKEN` | 本服务 API 鉴权 Token | 未配置时受保护 API 返回 503；缺少或错误 Token 返回 401 |
 | `REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | 异步任务队列 | 默认同步审查仍可用；`--role all`（默认）会再拉 worker/beat，没 Redis 时子进程会退出 |
+| `TASK_IDEMPOTENCY_TTL_SECONDS` / `TASK_STAGE_EVENT_LIMIT` | 幂等键保留时间 / 阶段事件账本长度 | 默认 72 小时 / 256 条；Redis 原子脚本负责最终待处理上限准入 |
+| `CONTRACT_AI_PII_GATE_ENABLED` / `CONTRACT_AI_PII_MODE` | 外部模型 PII 门禁 | 默认 `true` / `block`；发现手机号、身份证号、邮箱、账号等高置信度信息，模型调用 fail-closed |
 
 可选但建议一并填：
 
 - `CONTRACT_REVIEW_EMBEDDING_ENDPOINT` / `CONTRACT_REVIEW_EMBEDDING_MODEL` / `CONTRACT_REVIEW_EMBEDDING_API_KEY`：启用向量检索；不填则退回引擎词法检索
 - `CONTRACT_REVIEW_PROVIDER`：默认 `openai-compatible`
 - `AUTH_HEADER_NAME`：本服务鉴权请求头名称，默认 `X-API-Token`
+- `OTEL_ENABLED` / `OTEL_SERVICE_NAME`：可选 OpenTelemetry 链路追踪；先执行 `uv sync --frozen --extra otel`，未安装 SDK 或未开启时为 no-op，span 不包含合同正文、提示词或密钥
 
 没有 `.env` 时，`pydantic-settings` 会用 `src/contract_review_app/config/settings.py` 里的默认值启动（端口 `8090`、回环监听、内网 OCR 地址等）。服务仍可启动，但因为没有配置 `API_TOKEN`，受保护 API 会 fail-closed 返回 503，不能用于实际审查。
 
@@ -84,6 +87,7 @@ uv run ruff check src tests
 uv run python -m compileall -q src tests
 node --check src/contract_review_app/static/js/app.js
 uv run python scripts/ci_api_smoke.py
+uv run python scripts/evaluate_contract_fixtures.py
 ```
 
 测试默认把 pytest 缓存写入 `.test-work/pytest-cache`，不会依赖本机的隐藏缓存目录。覆盖率报告可以按 CI 命令生成：
@@ -93,3 +97,7 @@ uv run pytest --cov=contract_review --cov=contract_review_app --cov-report=term-
 ```
 
 `scripts/ci_api_smoke.py` 只启动本地 API 进程，验证根路径、未带 Token 的受保护接口和 OpenAPI 鉴权声明，不连接 Redis、OCR 网关或模型服务。Docker、Redis/Celery、OCR 和模型的真实联调仍需在具备对应运行环境时单独验收。
+
+异步接口支持 `Idempotency-Key` 请求头。相同键在保留期内返回同一个任务，
+不会重复落盘或入队；任务状态接口同时返回 append-only 阶段事件账本。固定的
+离线合同夹具和评测约束见 [evals/README.md](evals/README.md)。

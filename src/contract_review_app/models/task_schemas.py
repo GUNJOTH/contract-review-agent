@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from contract_review.models import StageEvent
+
 
 class AsyncTaskStatus(StrEnum):
     PENDING = "PENDING"
@@ -36,6 +38,7 @@ class AsyncTaskRecord(BaseModel):
     progress: int = 0
     queue_name: str
     request_id: str
+    idempotency_key: str | None = None
     input_mode: str
     input_path: str
     input_filename: Optional[str] = None
@@ -52,6 +55,7 @@ class AsyncTaskRecord(BaseModel):
     finished_at: Optional[str] = None
     expires_at: Optional[str] = None
     heartbeat_at: Optional[str] = None
+    stage_events: list[StageEvent] = Field(default_factory=list)
 
 
 class TaskCreateAccepted(BaseModel):
@@ -59,6 +63,10 @@ class TaskCreateAccepted(BaseModel):
     status: AsyncTaskStatus = Field(..., description="任务状态")
     queue_name: str = Field(..., description="任务队列")
     created_at: str = Field(..., description="任务创建时间")
+    replayed: bool = Field(
+        default=False,
+        description="是否复用了同一幂等键已经接受的任务",
+    )
 
 
 class TaskCreateAcceptedResponse(BaseModel):
@@ -77,6 +85,7 @@ class TaskStatusData(BaseModel):
     finished_at: Optional[str] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    stage_events: list[StageEvent] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):

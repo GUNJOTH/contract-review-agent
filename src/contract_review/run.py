@@ -11,6 +11,7 @@ from .models import (
     Document,
     ReviewRun,
     ReviewStatus,
+    StageEvent,
     ReviewTransition,
     RuleBundle,
     utc_now,
@@ -71,6 +72,7 @@ def create_review_run(
         model_version=model_version,
         configuration=configuration,
     )
+    resolved_run_id = run_id or f"run-{uuid4().hex}"
     initial_transition = ReviewTransition(
         from_status=None,
         to_status=ReviewStatus.RECEIVED,
@@ -78,8 +80,20 @@ def create_review_run(
         actor="system",
         reason="合同包、源文件哈希、解析器版本和规则快照已登记。",
     )
+    initial_event = StageEvent(
+        event_id=f"event-{uuid4().hex}",
+        subject_type="review_run",
+        subject_id=resolved_run_id,
+        from_stage=None,
+        to_stage=ReviewStatus.RECEIVED.value,
+        action=initial_transition.action,
+        actor=initial_transition.actor,
+        reason=initial_transition.reason,
+        evidence_ids=list(initial_transition.evidence_ids),
+        occurred_at=initial_transition.occurred_at,
+    )
     return ReviewRun(
-        run_id=run_id or f"run-{uuid4().hex}",
+        run_id=resolved_run_id,
         package_id=package.package_id,
         status=ReviewStatus.RECEIVED,
         input_document_sha256={
@@ -92,6 +106,7 @@ def create_review_run(
         configuration=dict(configuration or {}),
         configuration_fingerprint=fingerprint,
         transitions=[initial_transition],
+        stage_events=[initial_event],
     )
 
 
@@ -118,11 +133,24 @@ def advance_review_run(
         evidence_ids=list(evidence_ids),
         occurred_at=occurred_at or utc_now(),
     )
+    event = StageEvent(
+        event_id=f"event-{uuid4().hex}",
+        subject_type="review_run",
+        subject_id=run.run_id,
+        from_stage=run.status.value,
+        to_stage=to_status.value,
+        action=action,
+        actor=actor,
+        reason=reason,
+        evidence_ids=list(evidence_ids),
+        occurred_at=transition.occurred_at,
+    )
     finished_at = transition.occurred_at if to_status in {ReviewStatus.FINALIZED, ReviewStatus.FAILED} else run.finished_at
     return run.model_copy(
         update={
             "status": to_status,
             "transitions": [*run.transitions, transition],
+            "stage_events": [*run.stage_events, event],
             "finished_at": finished_at,
         }
     )

@@ -6,7 +6,7 @@ import asyncio
 from enum import StrEnum
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 
 from contract_review_app.api.auth import verify_api_token
 from contract_review_app.api.errors import AppError
@@ -41,6 +41,7 @@ async def create_task(
     ImageUrl: Optional[str] = Form(None),
     options: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     body = await _parse_json_body(request)
     if body:
@@ -48,6 +49,7 @@ async def create_task(
         ImageBase64 = body.get("ImageBase64", ImageBase64)
         ImageUrl = body.get("ImageUrl", ImageUrl)
         options_value = body.get("options")
+        idempotency_key = body.get("idempotency_key", idempotency_key)
     else:
         options_value = options
 
@@ -60,6 +62,7 @@ async def create_task(
         image_base64=ImageBase64,
         image_url=ImageUrl,
         options=parse_options(options_value),
+        idempotency_key=idempotency_key,
     )
 
 

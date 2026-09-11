@@ -7,7 +7,7 @@ import re
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from loguru import logger
 
 from contract_review.pipeline import ReviewPipelineError
@@ -440,6 +440,7 @@ async def extract_contract_fields_async(
     _: bool = Depends(verify_api_token),
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """上传合同并创建异步要素提取任务。"""
     del request
@@ -447,6 +448,7 @@ async def extract_contract_fields_async(
         task_type="contract-elements",
         files=files,
         options={"PackageId": PackageId},
+        idempotency_key=idempotency_key,
     )
 
 
@@ -457,6 +459,7 @@ async def review_contract_async(
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
     ContractType: Optional[str] = Form(None, description="合同类型，如 software"),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """上传合同附件包并创建异步审查任务。
 
@@ -472,6 +475,7 @@ async def review_contract_async(
             "PackageId": PackageId,
             "ContractType": ContractType,
         },
+        idempotency_key=idempotency_key,
     )
 
 

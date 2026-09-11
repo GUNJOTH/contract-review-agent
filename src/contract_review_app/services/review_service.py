@@ -32,8 +32,10 @@ from contract_review_app.config import settings
 from contract_review_app.services.result_cache import cache_get, cache_set, fingerprint
 from contract_review_app.services.seal_evidence import SealEvidenceDetector
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
+from contract_review_app.services.pii_gate import gate_paths
 from contract_review_app.services.triton_ocr_provider import TritonOCRProvider
 from contract_review_app.services.vector_knowledge_index import VectorKnowledgeIndex
+from contract_review_app.telemetry.tracing import set_span_attributes, start_span
 
 # 语义模型提示词：引擎默认提示词没有给出 JSON 结构，模型会自创 schema；
 # 这里显式规定结构（items/status/evidence_ids），并约束只能引用上下文证据。
@@ -229,6 +231,9 @@ def _review_fingerprint(
             TritonOCRProvider().provider_version,
             str(settings.CONTRACT_SEAL_DETECTION_ENABLED),
             str(settings.CONTRACT_ENGINE_RULES_ENABLED),
+            str(settings.CONTRACT_AI_PII_GATE_ENABLED),
+            settings.CONTRACT_AI_PII_MODE,
+            settings.CONTRACT_PII_SCANNER_VERSION,
         ]
     )
     return fingerprint(parts)
@@ -259,7 +264,10 @@ def run_contract_review(
 
     rule_bundle = load_rule_bundle(rules_path())
     provider = ocr_provider if ocr_provider is not None else TritonOCRProvider()
-    with tempfile.TemporaryDirectory(prefix="contract-review-") as tmp:
+    with start_span(
+        "contract_review.run",
+        attributes={"source": "upload", "status": "started"},
+    ) as span, tempfile.TemporaryDirectory(prefix="contract-review-") as tmp:
         paths: list[Path] = []
         for index, (filename, content) in enumerate(files):
             safe_name = Path(filename).name or f"file-{index}"
@@ -270,9 +278,35 @@ def run_contract_review(
         seal_evidence = _collect_seal_evidence(paths, package_id=package_id)
         if settings.CONTRACT_ENGINE_RULES_ENABLED:
             client = _semantic_client()
-            knowledge_index_factory = _knowledge_index_factory()
+            # Scan the exact parsed text (including OCR output) before any
+            # semantic provider is allowed to receive context chunks.
+            pii_gate = gate_paths(
+                paths,
+                package_id=package_id,
+                ocr_provider=provider,
+            )
+            gate_configuration = {
+                "external_model_pii_gate": pii_gate.as_configuration()
+            }
+            set_span_attributes(
+                span,
+                {
+                    "blocked": pii_gate.blocked,
+                    "status": "pii_blocked" if pii_gate.blocked else "pii_allowed",
+                },
+            )
+            # PII 门禁阻止时连 embedding 供应商也不能接收正文，回退本地词法索引。
+            knowledge_index_factory = (
+                None if pii_gate.blocked else _knowledge_index_factory()
+            )
             retrieval_top_k = settings.CONTRACT_REVIEW_RETRIEVAL_TOP_K
-            if client is None:
+            if client is None or pii_gate.blocked:
+                if client is not None and pii_gate.blocked:
+                    logger.warning(
+                        "PII 门禁阻止语义模型调用，已降级为本地确定性审查",
+                        package_id=package_id,
+                        finding_types=[item.kind for item in pii_gate.findings],
+                    )
                 result = run_review(
                     paths,
                     package_id=package_id,
@@ -282,6 +316,7 @@ def run_contract_review(
                     extra_evidence=seal_evidence,
                     knowledge_index_factory=knowledge_index_factory,
                     retrieval_top_k=retrieval_top_k,
+                    configuration=gate_configuration,
                 )
             else:
                 result = run_review_with_semantic_client(
@@ -298,6 +333,7 @@ def run_contract_review(
                     extra_evidence=seal_evidence,
                     knowledge_index_factory=knowledge_index_factory,
                     retrieval_top_k=retrieval_top_k,
+                    configuration=gate_configuration,
                 )
         else:
             result = _parse_only_review(
@@ -307,5 +343,13 @@ def run_contract_review(
                 ocr_provider=provider,
                 extra_evidence=seal_evidence,
             )
+        set_span_attributes(
+            span,
+            {
+                "status": result.run.status.value,
+                "finding_count": len(result.findings),
+                "run_id": result.run.run_id,
+            },
+        )
     cache_set(cache_key, {"result": result.model_dump_json()})
     return result

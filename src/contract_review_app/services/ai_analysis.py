@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Literal
 
 import httpx
 from loguru import logger
@@ -31,6 +32,8 @@ from contract_review_app.services.rule_evolution import (
 )
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 from contract_review_app.services.vector_knowledge_index import _cosine, embed_texts
+from contract_review_app.services.pii_gate import PIIGateResult, gate_external_model_input
+from contract_review_app.telemetry.tracing import set_span_attributes, start_span
 
 AI_ANALYSIS_VERSION = "ai-analysis-0.3.0"
 
@@ -139,6 +142,9 @@ class AIAnalysisResult(BaseModel):
     provider: str
     model_version: str
     prompt_version: str
+    status: Literal["completed", "blocked"] = "completed"
+    blocked_reason: str | None = None
+    blocked_pii_types: list[str] = Field(default_factory=list)
     contract_type: dict | None = None
     items: list[AIRiskItem] = Field(default_factory=list)
     panels: dict[str, list[AIRiskItem]] = Field(default_factory=dict)
@@ -171,6 +177,14 @@ def run_ai_analysis(result: ReviewResult) -> AIAnalysisResult | None:
     documents = _collect_document_text(result)
     if not documents:
         return None
+    pii_gate = gate_external_model_input(documents)
+    if pii_gate.blocked:
+        logger.warning(
+            "PII 门禁阻止 AI 风险分析模型调用",
+            package_id=result.package.package_id,
+            finding_types=[item.kind for item in pii_gate.findings],
+        )
+        return _blocked_analysis(result, pii_gate)
     # 结果按指纹缓存：同一审查结果 + 同一提示词/模型/规则库状态 → 直接返回
     cache_key = _analysis_fingerprint(result)
     cached = cache_get(cache_key)
@@ -188,9 +202,21 @@ def run_ai_analysis(result: ReviewResult) -> AIAnalysisResult | None:
     if settings.CONTRACT_ENGINE_RULES_ENABLED:
         payload["reference_rules"] = [rule.title for rule in result.rule_bundle.rules]
 
-    ai_items, contract_type, suggestions, retrieved_ai_rules = _call_ai_analysis(
-        payload, chunks
-    )
+    with start_span(
+        "external_model.ai_analysis",
+        attributes={
+            "provider": settings.CONTRACT_REVIEW_PROVIDER,
+            "model_version": settings.CONTRACT_REVIEW_MODEL,
+            "context_count": len(chunks),
+        },
+    ) as span:
+        ai_items, contract_type, suggestions, retrieved_ai_rules = _call_ai_analysis(
+            payload, chunks
+        )
+        set_span_attributes(
+            span,
+            {"item_count": len(ai_items or []), "blocked": False},
+        )
 
     rule_items = _rule_finding_items(result)
     if ai_items is not None:
@@ -340,8 +366,34 @@ def _analysis_fingerprint(result: ReviewResult) -> str:
             settings.CONTRACT_REVIEW_MODEL,
             str(settings.CONTRACT_AI_RULE_RETRIEVAL_TOP_K),
             str(settings.CONTRACT_ENGINE_RULES_ENABLED),
+            str(settings.CONTRACT_AI_PII_GATE_ENABLED),
+            settings.CONTRACT_AI_PII_MODE,
+            settings.CONTRACT_PII_SCANNER_VERSION,
             json.dumps(identity, ensure_ascii=False, sort_keys=True),
         ]
+    )
+
+
+def _blocked_analysis(result: ReviewResult, gate: PIIGateResult) -> AIAnalysisResult:
+    """返回可见的确定性降级结果，避免把 PII 发往外部。"""
+
+    items = _rule_finding_items(result)
+    evidence_by_id = {item.evidence_id: item for item in result.evidence}
+    for item in items:
+        if not item.quote and item.evidence_ids:
+            quote, _ = _quote_from_evidence(item.evidence_ids, evidence_by_id)
+            item.quote = quote
+    items.sort(key=lambda item: -_SEVERITY.get(item.risk_level, 0))
+    return AIAnalysisResult(
+        analysis_id=f"analysis-{uuid.uuid4().hex[:16]}",
+        provider="pii-gate",
+        model_version=settings.CONTRACT_REVIEW_MODEL,
+        prompt_version=settings.CONTRACT_AI_ANALYSIS_PROMPT_VERSION,
+        status="blocked",
+        blocked_reason=gate.reason,
+        blocked_pii_types=[item.kind for item in gate.findings],
+        items=items,
+        panels=_group_items_by_module(items),
     )
 
 
@@ -422,12 +474,20 @@ def _call_ai_analysis(
             }
             if not followup:
                 body["tools"] = [SEARCH_RULES_TOOL]
-            response = _post(
-                settings.CONTRACT_REVIEW_ENDPOINT,
-                json=body,
-                headers=headers,
-                timeout=settings.CONTRACT_AI_ANALYSIS_TIMEOUT_SECONDS,
-            )
+            with start_span(
+                "external_model.ai_analysis_round",
+                attributes={
+                    "provider": settings.CONTRACT_REVIEW_PROVIDER,
+                    "model_version": settings.CONTRACT_REVIEW_MODEL,
+                    "stage": "followup" if followup else "initial",
+                },
+            ):
+                response = _post(
+                    settings.CONTRACT_REVIEW_ENDPOINT,
+                    json=body,
+                    headers=headers,
+                    timeout=settings.CONTRACT_AI_ANALYSIS_TIMEOUT_SECONDS,
+                )
             response.raise_for_status()
             message = response.json()["choices"][0]["message"]
             tool_calls = message.get("tool_calls") or []

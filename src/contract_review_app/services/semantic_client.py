@@ -17,6 +17,8 @@ import httpx
 
 from contract_review.models import SemanticModelRequest, SemanticReviewResponse
 from contract_review.semantic import SemanticClientError
+from contract_review_app.services.pii_gate import gate_external_model_input
+from contract_review_app.telemetry.tracing import start_span
 
 
 class RelaySemanticReviewer:
@@ -46,6 +48,11 @@ class RelaySemanticReviewer:
             raise SemanticClientError(
                 "request model_version does not match client configuration"
             )
+        pii_gate = gate_external_model_input(
+            [{"text": chunk.content} for chunk in request.context_chunks]
+        )
+        if pii_gate.blocked:
+            raise SemanticClientError("外部模型调用被 PII 门禁阻止")
         body = {
             "model": self.model_version,
             "temperature": 0,
@@ -80,25 +87,34 @@ class RelaySemanticReviewer:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        try:
-            response = httpx.post(
-                self.endpoint,
-                json=body,
-                headers=headers,
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-            provider_payload = response.json()
-        except httpx.HTTPStatusError as exc:
-            raise SemanticClientError(
-                f"semantic provider HTTP error: {exc.response.status_code}"
-            ) from exc
-        except (httpx.TimeoutException, httpx.TransportError) as exc:
-            raise SemanticClientError("semantic provider request failed") from exc
-        except ValueError as exc:
-            raise SemanticClientError(
-                "semantic provider returned invalid response payload"
-            ) from exc
+        with start_span(
+            "external_model.semantic_review",
+            attributes={
+                "provider": request.provider,
+                "model_version": self.model_version,
+                "rule_count": len(request.rule_ids),
+                "context_count": len(request.context_chunks),
+            },
+        ):
+            try:
+                response = httpx.post(
+                    self.endpoint,
+                    json=body,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                provider_payload = response.json()
+            except httpx.HTTPStatusError as exc:
+                raise SemanticClientError(
+                    f"semantic provider HTTP error: {exc.response.status_code}"
+                ) from exc
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                raise SemanticClientError("semantic provider request failed") from exc
+            except ValueError as exc:
+                raise SemanticClientError(
+                    "semantic provider returned invalid response payload"
+                ) from exc
 
         try:
             content = provider_payload["choices"][0]["message"]["content"]

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     CONTRACT_REVIEW_EMBEDDING_CACHE_DIR: str = "runtime/embedding_cache"
     CONTRACT_REVIEW_RETRIEVAL_TOP_K: int = 7
     CONTRACT_AI_ANALYSIS_ENABLED: bool = True
+    # 外部模型调用默认采用 fail-closed PII 门禁；关闭仅适用于已审批的隔离环境。
+    CONTRACT_AI_PII_GATE_ENABLED: bool = True
+    CONTRACT_AI_PII_MODE: str = "block"
+    CONTRACT_PII_SCANNER_VERSION: str = "pii-scanner-0.1.0"
     CONTRACT_AI_ANALYSIS_PROMPT_VERSION: str = "contract-ai-analysis-v6"
     CONTRACT_AI_RULES_DB_PATH: str = "data/ai_rules.db"
     CONTRACT_ELEMENT_SCHEMA_PATH: str = "data/element_fields.db"
@@ -62,6 +66,10 @@ class Settings(BaseSettings):
     CONTRACT_ENGINE_RULES_ENABLED: bool = True
     CONTRACT_REVIEW_CACHE_ENABLED: bool = True
     CONTRACT_REVIEW_CACHE_DIR: str = "runtime/review_cache"
+
+    # OpenTelemetry 为可选增强，不安装 SDK 或未开启时保持零侵入 no-op。
+    OTEL_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "contract-review-agent"
 
     API_TOKEN: str = ""
     AUTH_HEADER_NAME: str = "X-API-Token"
@@ -77,6 +85,8 @@ class Settings(BaseSettings):
     CELERY_WORKER_PREFETCH_MULTIPLIER: int = 1
 
     TASK_PENDING_LIMIT: int = 500
+    TASK_IDEMPOTENCY_TTL_SECONDS: int = 72 * 3600
+    TASK_STAGE_EVENT_LIMIT: int = 256
     TASK_RESULT_TTL_SUCCESS: int = 72 * 3600
     TASK_RESULT_TTL_FAILED: int = 24 * 3600
     TASK_EXPIRED_RETENTION_SECONDS: int = 300

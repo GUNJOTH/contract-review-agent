@@ -1,0 +1,31 @@
+[
+  {
+    "id": "software-complete",
+    "package_id": "eval-software-complete",
+    "contract_type": "软件开发/转让服务",
+    "text": "合同名称：软件开发合同\n甲方：示例甲方有限公司\n乙方：示例乙方有限公司\n合同金额：人民币1000000元整\n付款方式：验收合格后支付\n税率：13%\n交付日期：2027年1月1日前\n质保期：12个月\n争议解决：向北京市人民法院起诉。",
+    "min_findings": 1,
+    "expected_report_status": "UNKNOWN",
+    "required_evidence_types": ["text"]
+  },
+  {
+    "id": "software-incomplete",
+    "package_id": "eval-software-incomplete",
+    "contract_type": "软件开发/转让服务",
+    "text": "软件服务采购合同。甲方向乙方采购系统实施服务，合同金额人民币500000元，付款方式为合同签订后一次性支付。双方未约定交付日期、验收标准、质保期限和知识产权归属。",
+    "min_findings": 1,
+    "expected_report_status": "UNKNOWN",
+    "required_evidence_types": ["text"]
+  },
+  {
+    "id": "pii-gated",
+    "package_id": "eval-pii-gated",
+    "contract_type": "其它服务合同",
+    "text": "服务合同。联系人电话：13800138000；联系人邮箱：legal@example.test。服务范围和付款方式以附件为准。",
+    "min_findings": 1,
+    "expected_report_status": "UNKNOWN",
+    "required_evidence_types": ["text"],
+    "pii_gate_decision": "block",
+    "expected_pii_types": ["email", "mainland_mobile"]
+  }
+]
