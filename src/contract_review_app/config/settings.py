@@ -7,7 +7,6 @@ from pathlib import Path
 from pydantic import computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -16,12 +15,15 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "合同审查智能体"
     APP_VERSION: str = "1.0.0"
-    HOST: str = "0.0.0.0"
+    HOST: str = "127.0.0.1"
     PORT: int = 8090
     DEBUG: bool = False
 
     API_PREFIX: str = "/api/v1"
-    CORS_ORIGINS: list[str] = ["*"]
+    CORS_ORIGINS: list[str] = [
+        "http://127.0.0.1:8090",
+        "http://localhost:8090",
+    ]
     LOG_LEVEL: str = "INFO"
     CELERY_LOG_LEVEL: str = "INFO"
 

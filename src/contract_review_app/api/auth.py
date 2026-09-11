@@ -1,15 +1,40 @@
-"""认证依赖。审查页面对用户不鉴权。"""
+"""API Token 认证依赖。"""
 
-from fastapi import Depends, Request
+from __future__ import annotations
+
+from secrets import compare_digest
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import APIKeyHeader
+
+from contract_review_app.config import settings
+
+_api_token_header = APIKeyHeader(name=settings.AUTH_HEADER_NAME, auto_error=False)
 
 
-async def verify_api_token(request: Request) -> bool:
-    """审查应用对前端不鉴权。
+async def verify_api_token(
+    _request: Request,
+    token: str | None = Depends(_api_token_header),
+) -> bool:
+    """Validate the configured service token and fail closed when misconfigured.
 
-    调用 OCR 网关所需的 Token 只放在服务端 ``OCR_GATEWAY_TOKEN``，
-    由后端代填，用户打开审查页面时不需要输入。
+    The configured token is never returned or logged. ``compare_digest`` keeps
+    comparisons from leaking the token through an avoidable timing difference.
     """
-    del request
+    expected_token = settings.API_TOKEN.strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API_TOKEN 未配置，服务拒绝处理受保护请求",
+        )
+
+    provided_token = (token or "").strip()
+    if not compare_digest(provided_token, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或缺少 API Token",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
     return True
 
 

@@ -12,8 +12,8 @@
   - `POST /api/v1/seal`：印章视觉证据
   - `GET /api/v1/health`：连通性检查
 
-默认本服务端口 `8090`，OCR 网关默认指向本机 `http://127.0.0.1:8080`，请在 `.env` 里改成你的实际网关地址。
-审查页面不需要填写 Token；若 OCR 网关开启了鉴权，把 `OCR_GATEWAY_TOKEN` 写在本服务 `.env` 即可，由后端代填。
+默认本服务端口 `8090`，本地运行只监听 `127.0.0.1`；OCR 网关默认指向本机 `http://127.0.0.1:8080`，请在 `.env` 里改成你的实际网关地址。Docker Compose 会把服务监听地址显式设为 `0.0.0.0`，以便容器端口映射。
+除健康检查外的合同审查、预览、对比、规则和任务 API 都需要 `X-API-Token`（或 `AUTH_HEADER_NAME` 配置的请求头）。审查控制台右上角可以填写 Token，Token 只保存在当前浏览器会话中；若 OCR 网关开启了鉴权，把 `OCR_GATEWAY_TOKEN` 写在本服务 `.env` 即可，由后端代填。
 
 ## 配置（必做）
 
@@ -30,15 +30,16 @@ cp .env.example .env
 | `CONTRACT_REVIEW_MODEL` | 模型名 | 请求体缺少模型名，审查失败 |
 | `OCR_GATEWAY_BASE_URL` | OCR 网关地址 | 扫描件/印章识别连不到网关；启动时只打 warning，不阻止进程 |
 | `OCR_GATEWAY_TOKEN` | OCR 网关鉴权（网关开了鉴权才需要） | 扫描件/印章识别 401 |
+| `API_TOKEN` | 本服务 API 鉴权 Token | 未配置时受保护 API 返回 503；缺少或错误 Token 返回 401 |
 | `REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | 异步任务队列 | 默认同步审查仍可用；`--role all`（默认）会再拉 worker/beat，没 Redis 时子进程会退出 |
 
 可选但建议一并填：
 
 - `CONTRACT_REVIEW_EMBEDDING_ENDPOINT` / `CONTRACT_REVIEW_EMBEDDING_MODEL` / `CONTRACT_REVIEW_EMBEDDING_API_KEY`：启用向量检索；不填则退回引擎词法检索
 - `CONTRACT_REVIEW_PROVIDER`：默认 `openai-compatible`
-- `API_TOKEN`：本服务对前端不鉴权，一般留空
+- `AUTH_HEADER_NAME`：本服务鉴权请求头名称，默认 `X-API-Token`
 
-没有 `.env` 时，`pydantic-settings` 会用 `src/contract_review_app/config/settings.py` 里的默认值启动（端口 `8090`、内网 OCR 地址等）。这只适合确认进程能起来，不适合实际审查。
+没有 `.env` 时，`pydantic-settings` 会用 `src/contract_review_app/config/settings.py` 里的默认值启动（端口 `8090`、回环监听、内网 OCR 地址等）。服务仍可启动，但因为没有配置 `API_TOKEN`，受保护 API 会 fail-closed 返回 503，不能用于实际审查。
 
 ## 启动
 

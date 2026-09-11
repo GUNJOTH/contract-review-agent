@@ -74,13 +74,18 @@ function toast(msg, type = "ok", timeout = 3500) {
 
 /* ---------------- API 客户端 ---------------- */
 const DEFAULT_API_BASE = "/api/v1";
+const DEFAULT_AUTH_HEADER_NAME = "X-API-Token";
+const TOKEN_STORAGE_KEY = "contract_api_token";
 
 const api = {
+  authHeaderName: DEFAULT_AUTH_HEADER_NAME,
   get base() {
     return localStorage.getItem("contract_api_base") || DEFAULT_API_BASE;
   },
   headers(extra = {}) {
-    return { ...extra };
+    const token = sessionStorage.getItem(TOKEN_STORAGE_KEY)?.trim();
+    const auth = token ? { [api.authHeaderName]: token } : {};
+    return { ...auth, ...extra };
   },
   async request(method, path, options = {}) {
     const url = api.base.replace(/\/$/, "") + path;
@@ -107,6 +112,7 @@ const api = {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
       };
+      Object.entries(api.headers()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
       xhr.onload = () => {
         let json = null;
         try { json = JSON.parse(xhr.responseText); } catch { /* 非 JSON */ }
@@ -156,12 +162,24 @@ function applyConfig() {
   let base = $("#api-base").value.trim().replace(/\/+$/, "");
   if (!base) base = DEFAULT_API_BASE;
   localStorage.setItem("contract_api_base", base);
+  const tokenInput = $("#token-input");
+  if (tokenInput) {
+    const token = tokenInput.value.trim();
+    if (token) sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    tokenInput.classList.toggle("token-empty", !token);
+  }
 }
 
 function loadConfigUI() {
   const input = $("#api-base");
   if (!input) return;
   input.value = api.base === DEFAULT_API_BASE ? "" : api.base;
+  const tokenInput = $("#token-input");
+  if (tokenInput) {
+    tokenInput.value = sessionStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    tokenInput.classList.toggle("token-empty", !tokenInput.value);
+  }
   input.addEventListener("input", applyConfig);
 }
 function saveConfig() {
@@ -3088,6 +3106,7 @@ async function refreshHealth() {
   const text = $("#health-text");
   try {
     const h = await api.get("/health");
+    api.authHeaderName = h.auth_header_name || DEFAULT_AUTH_HEADER_NAME;
     const ok = h.status === "healthy";
     dot.className = "health-dot " + (ok ? "ok" : "bad");
     text.textContent = `${ok ? "服务正常" : "服务降级"} · ${h.service || ""} v${h.version || ""} · OCR 网关: ${h.ocr_gateway === "connected" ? "已连接" : "未连接"}`;
@@ -3113,6 +3132,8 @@ function init() {
   if (saveBtn) saveBtn.addEventListener("click", saveConfig);
   const apiBase = $("#api-base");
   if (apiBase) apiBase.addEventListener("keydown", (e) => { if (e.key === "Enter") saveConfig(); });
+  const tokenInput = $("#token-input");
+  if (tokenInput) tokenInput.addEventListener("keydown", (e) => { if (e.key === "Enter") saveConfig(); });
 
   const closeBtn = $("#modal-close");
   if (closeBtn) closeBtn.addEventListener("click", closeModal);

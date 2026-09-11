@@ -10,6 +10,7 @@ services:
       - TZ=Asia/Shanghai
       - VIRTUAL_ENV=/app/.venv
       - PATH=/app/.venv/bin:$PATH
+      - HOST=0.0.0.0
       - CELERY_WORKER_CONCURRENCY=2
       - CELERY_WORKER_PREFETCH_MULTIPLIER=1
     volumes:

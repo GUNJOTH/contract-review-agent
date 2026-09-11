@@ -24,7 +24,7 @@ async def health_check():
     except OCRGatewayError as exc:
         logger.warning(f"OCR 网关健康检查失败: {exc}")
         metrics.record_health("ocr_gateway", False)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - degrade on gateway errors
         logger.warning(f"OCR 网关健康检查异常: {exc}")
         metrics.record_health("ocr_gateway", False)
 
@@ -32,6 +32,7 @@ async def health_check():
         "status": "healthy" if ocr_status == "connected" else "degraded",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "auth_header_name": settings.AUTH_HEADER_NAME,
         "ocr_gateway": ocr_status,
         "ocr_gateway_url": settings.OCR_GATEWAY_BASE_URL,
     }
@@ -39,7 +40,10 @@ async def health_check():
 
 @router.get("/hardware", summary="硬件信息")
 async def hardware_info():
-    from contract_review_app.telemetry.hardware import get_hardware_summary, hardware_monitor
+    from contract_review_app.telemetry.hardware import (
+        get_hardware_summary,
+        hardware_monitor,
+    )
 
     hardware_monitor.collect_all()
     return {
