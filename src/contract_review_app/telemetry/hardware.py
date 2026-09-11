@@ -7,9 +7,10 @@
 - NVIDIA GPU 监控（温度、显存、利用率）
 """
 import platform
-import time
 import warnings
 from typing import Optional
+
+from prometheus_client import CONTENT_TYPE_LATEST, Gauge, Info, REGISTRY, generate_latest
 
 warnings.filterwarnings(
     "ignore",
@@ -35,9 +36,6 @@ except ImportError:
     except ImportError:
         pynvml = None
         PYNVML_AVAILABLE = False
-
-from prometheus_client import Gauge, Info, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
-
 
 # =============================================================================
 # Prometheus 指标定义

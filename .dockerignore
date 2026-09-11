@@ -1,0 +1,28 @@
+.git/
+.github/
+.venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.test-work/
+.coverage
+coverage.xml
+htmlcov/
+runtime/
+build/
+dist/
+*.egg-info/
+
+# Local configuration and customer documents must never enter the build context.
+.env
+.env.*
+!.env.example
+*.docx
+*.pdf
+
+# Local mutable state; the image receives the checked-in rule snapshot only.
+data/*.db
+
+# Tool-generated temporary directories.
+.tmp-smoke/
+tmp*/

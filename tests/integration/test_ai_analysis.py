@@ -3,7 +3,6 @@
 import json
 
 import fitz
-import pytest
 
 from contract_review_app.config import settings
 from contract_review_app.services.ai_analysis import (

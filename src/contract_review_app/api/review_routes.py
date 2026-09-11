@@ -53,7 +53,7 @@ from contract_review_app.services.rule_evolution import (
     set_rule_enabled,
     update_rule,
 )
-from contract_review_app.services.task_service import parse_options, task_service
+from contract_review_app.services.task_service import task_service
 from contract_review_app.telemetry.logging import log_error, log_request_end, log_request_start
 
 from contract_review.models import ReviewResult

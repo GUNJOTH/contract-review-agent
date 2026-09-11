@@ -76,4 +76,16 @@ docker compose up --build
 
 ```bash
 uv run --extra dev pytest
+uv run ruff check src tests
+uv run python -m compileall -q src tests
+node --check src/contract_review_app/static/js/app.js
+uv run python scripts/ci_api_smoke.py
 ```
+
+测试默认把 pytest 缓存写入 `.test-work/pytest-cache`，不会依赖本机的隐藏缓存目录。覆盖率报告可以按 CI 命令生成：
+
+```bash
+uv run pytest --cov=contract_review --cov=contract_review_app --cov-report=term-missing
+```
+
+`scripts/ci_api_smoke.py` 只启动本地 API 进程，验证根路径、未带 Token 的受保护接口和 OpenAPI 鉴权声明，不连接 Redis、OCR 网关或模型服务。Docker、Redis/Celery、OCR 和模型的真实联调仍需在具备对应运行环境时单独验收。

@@ -114,7 +114,6 @@ def test_ai_rules_management_api(monkeypatch, tmp_path):
     )
     from contract_review_app.services.rule_evolution import (
         confirm_rule,
-        disable_rule,
         list_rules,
         save_candidate_rules,
     )

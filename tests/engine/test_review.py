@@ -7,7 +7,6 @@ from contract_review.models import (
     DocumentKind,
     EvidenceType,
     Rule,
-    SourceLocator,
 )
 from contract_review.review import check_attachment_completeness, compare_fact_values
 

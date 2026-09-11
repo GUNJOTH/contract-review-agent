@@ -1,0 +1,73 @@
+name: quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.29"
+          enable-cache: true
+
+      - name: Verify lock file
+        run: uv lock --check
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Check Python lint
+        run: uv run ruff check src tests
+
+      - name: Check CI smoke script formatting
+        run: uv run ruff format --check scripts/ci_api_smoke.py
+
+      - name: Compile Python and browser JavaScript
+        run: |
+          uv run python -m compileall -q src tests
+          node --check src/contract_review_app/static/js/app.js
+
+      - name: Run tests with coverage report
+        run: >-
+          uv run pytest
+          --basetemp=.test-work/pytest
+          --cov=contract_review
+          --cov=contract_review_app
+          --cov-report=term-missing
+          --cov-report=xml
+
+      - name: Run process-level API smoke test
+        run: uv run python scripts/ci_api_smoke.py
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore

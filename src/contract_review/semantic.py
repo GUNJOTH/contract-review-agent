@@ -19,7 +19,6 @@ from .models import (
     RiskLevel,
     ReviewResult,
     SemanticModelRequest,
-    SemanticReviewItem,
     SemanticReviewResponse,
 )
 
