@@ -6,7 +6,13 @@ import httpx
 import pytest
 
 from contract_review.models import (
+    CandidateEvidence,
+    KnowledgeSourceKind,
     PartyPosition,
+    RetrievalFilter,
+    RetrievalQuery,
+    RetrievalSource,
+    Rule,
     ReviewContext,
     SemanticModelRequest,
     SemanticReviewResponse,
@@ -17,6 +23,28 @@ from contract_review_app.services.semantic_client import RelaySemanticReviewer
 
 
 def _request() -> SemanticModelRequest:
+    rule = Rule(
+        rule_id="R1",
+        version="v1",
+        title="金额条款",
+        category="金额",
+        applies_to=["software"],
+        check_method="semantic",
+        source_snapshot="rules-v1",
+    )
+    retrieval_query = RetrievalQuery(
+        query_id="query-1",
+        rule_id="R1",
+        rule_version="v1",
+        purpose="rule_review",
+        text="金额条款",
+        retrieval_filter=RetrievalFilter(
+            document_ids=["doc-1"],
+            source_kinds=[KnowledgeSourceKind.CONTRACT],
+            applicable_rule_ids=["R1"],
+            rule_versions=["v1"],
+        ),
+    )
     return SemanticModelRequest(
         request_id="req-1",
         provider="test-provider",
@@ -24,7 +52,31 @@ def _request() -> SemanticModelRequest:
         prompt_version="prompt-v1",
         request_fingerprint="f" * 64,
         rule_ids=["R1"],
+        rule_definitions=[rule],
         system_instruction="请只输出 JSON。",
+        review_context=ReviewContext(contract_type="software"),
+        retrieval_queries_by_rule={"R1": retrieval_query},
+        candidate_evidence_by_rule={
+            "R1": [
+                CandidateEvidence(
+                    candidate_id="candidate-1",
+                    query_id="query-1",
+                    rule_id="R1",
+                    rule_version="v1",
+                    rank=1,
+                    chunk_id="chunk-1",
+                    document_id="doc-1",
+                    source_name="contract.pdf",
+                    source_sha256="a" * 64,
+                    source_version="parser-v1",
+                    source_kind=KnowledgeSourceKind.CONTRACT,
+                    content="合同金额为一百万元。",
+                    evidence_ids=["e1"],
+                    score=1.0,
+                    retrieval_sources=[RetrievalSource.LEXICAL],
+                )
+            ]
+        },
     )
 
 

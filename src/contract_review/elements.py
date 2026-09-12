@@ -1,18 +1,18 @@
 """合同标准要素的确定性事实抽取。
 
-要素不是第二套审核结果，而是 ``ReviewResult.facts`` 中的带证据事实。
-应用层需要旧字段形状时，应调用投影函数，不得在这里创建独立的抽取结果。
+标准要素不是第二套审核结果，而是 ``ReviewResult.facts`` 中的带证据事实。
+应用层只能从核心结果读取这些事实，不创建独立的抽取结果。
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Iterator
 
-from .models import ContractFact, Evidence, ParsedDocument
-from .parser import find_text_evidence
+from .models import CandidateEvidence, ContractFact, KnowledgeSourceKind
 
 
 CONTRACT_ELEMENT_EXTRACTOR_VERSION = "contract-elements-facts-0.1.0"
@@ -106,6 +106,8 @@ CONTRACT_ELEMENT_DEFINITIONS: tuple[ContractElementDefinition, ...] = (
         (
             r"(?:交付日期|工期|履行期限)[:：]\s*([^\n]{2,80})",
             r"([0-9]{4}[年\.\-/][0-9]{1,2}[月\.\-/][0-9]{1,2}日?)\s*(?:前交付|完工)",
+            r"(?:于|在)\s*([0-9]{4}[年\.\-/][0-9]{1,2}[月\.\-/][0-9]{1,2}日?)"
+            r"\s*前(?:[^。\n]{0,20})?(?:交付|交货|完工|完成)",
         ),
     ),
     ContractElementDefinition(
@@ -159,98 +161,66 @@ CONTRACT_ELEMENT_DEFINITIONS: tuple[ContractElementDefinition, ...] = (
 )
 
 
-def list_contract_element_definitions() -> list[dict[str, object]]:
-    """返回标准要素目录；目录是代码版本的一部分，不再落 SQLite。"""
-
-    return [
-        {
-            "key": item.key,
-            "label": item.label,
-            "hint": "",
-            "aliases": list(item.aliases),
-            "pattern": item.patterns[0] if item.patterns else "",
-            "required": item.required,
-            "enabled": True,
-            "sort_order": index,
-        }
-        for index, item in enumerate(CONTRACT_ELEMENT_DEFINITIONS)
-    ]
-
-
-def extract_contract_element_facts(
-    parsed_documents: list[ParsedDocument] | tuple[ParsedDocument, ...],
-) -> tuple[list[ContractFact], list[Evidence]]:
-    """从解析快照中抽取标准要素事实，并为每个事实绑定正文证据。"""
+def extract_contract_element_facts_from_candidates(
+    candidates: Sequence[CandidateEvidence],
+) -> list[ContractFact]:
+    """从统一候选提取标准要素事实，不扫描候选之外的全文。"""
 
     facts: list[ContractFact] = []
-    evidence_by_id: dict[str, Evidence] = {}
+    unique_candidates: list[CandidateEvidence] = []
+    seen_candidate_ids: set[str] = set()
+    for candidate in sorted(
+        candidates, key=lambda item: (item.rank, item.candidate_id)
+    ):
+        if (
+            candidate.source_kind != KnowledgeSourceKind.CONTRACT
+            or not candidate.document_id
+            or candidate.candidate_id in seen_candidate_ids
+        ):
+            continue
+        seen_candidate_ids.add(candidate.candidate_id)
+        unique_candidates.append(candidate)
+
     for definition in CONTRACT_ELEMENT_DEFINITIONS:
-        for parsed_document in parsed_documents:
+        for candidate in unique_candidates:
             seen_values: set[str] = set()
-            for source_id, text in _text_units(parsed_document):
-                for pattern in _patterns_for(definition):
-                    for match in _safe_finditer(pattern, text):
-                        value = _match_value(definition.key, match)
-                        if not value or value in seen_values:
-                            continue
-                        matches = [
-                            item
-                            for item in find_text_evidence(
-                                parsed_document,
-                                match.group(0),
-                                evidence_prefix=f"element-{definition.key}",
+            for pattern in _patterns_for(definition):
+                for match in _safe_finditer(pattern, candidate.content):
+                    value = _match_value(definition.key, match)
+                    if not value or value in seen_values:
+                        continue
+                    seen_values.add(value)
+                    digest = hashlib.sha256(
+                        "\x1f".join(
+                            (
+                                candidate.document_id,
+                                candidate.candidate_id,
+                                definition.key,
+                                candidate.chunk_id,
+                                str(match.start()),
+                                value,
                             )
-                            if item.locator.block_id == source_id
-                        ]
-                        if not matches:
-                            continue
-                        seen_values.add(value)
-                        for item in matches:
-                            evidence_by_id[item.evidence_id] = item
-                        digest = hashlib.sha256(
-                            "\x1f".join(
-                                (
-                                    parsed_document.document.document_id,
-                                    definition.key,
-                                    source_id,
-                                    str(match.start()),
-                                    value,
-                                )
-                            ).encode("utf-8")
-                        ).hexdigest()[:20]
-                        facts.append(
-                            ContractFact(
-                                fact_id=f"fact-element-{digest}",
-                                fact_type=f"contract_element:{definition.key}",
-                                value=value,
-                                normalized_value=value,
-                                unit="text",
-                                evidence_ids=[item.evidence_id for item in matches],
-                                confidence=(
-                                    1.0
-                                    if parsed_document.document.parse_status == "parsed"
-                                    else 0.0
-                                ),
-                                extractor_version=CONTRACT_ELEMENT_EXTRACTOR_VERSION,
-                            )
+                        ).encode("utf-8")
+                    ).hexdigest()[:20]
+                    facts.append(
+                        ContractFact(
+                            fact_id=f"fact-element-{digest}",
+                            fact_type=f"contract_element:{definition.key}",
+                            value=value,
+                            normalized_value=value,
+                            unit="text",
+                            source_document_ids=[candidate.document_id],
+                            evidence_ids=list(candidate.evidence_ids),
+                            candidate_ids=[candidate.candidate_id],
+                            confidence=1.0,
+                            extractor_version=CONTRACT_ELEMENT_EXTRACTOR_VERSION,
                         )
-                        if len(seen_values) >= 5:
-                            break
+                    )
                     if len(seen_values) >= 5:
                         break
                 if len(seen_values) >= 5:
                     break
-    return facts, list(evidence_by_id.values())
-
-
-def _text_units(parsed_document: ParsedDocument) -> Iterator[tuple[str, str]]:
-    for page in parsed_document.pages:
-        for block in page.blocks:
-            if block.text:
-                yield block.block_id, block.text
-    for node in parsed_document.nodes:
-        if node.text:
-            yield node.node_id, node.text
+    return facts
 
 
 def _patterns_for(definition: ContractElementDefinition) -> tuple[str, ...]:

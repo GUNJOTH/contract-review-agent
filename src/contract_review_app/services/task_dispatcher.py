@@ -16,7 +16,6 @@ class TaskDispatchConfig:
 
 _TASKS: dict[str, TaskDispatchConfig] = {
     "contract-review": TaskDispatchConfig("contract-review", HEAVY_QUEUE),
-    "contract-elements": TaskDispatchConfig("contract-elements", HEAVY_QUEUE),
 }
 
 _HEAVY_SUFFIXES = {".pdf", ".doc", ".docx"}

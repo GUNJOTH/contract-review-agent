@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -59,12 +60,44 @@ class KnowledgeSourceKind(StrEnum):
     RULE = "rule"
 
 
+class RuleBundleStatus(StrEnum):
+    """规则包生命周期状态。"""
+
+    DRAFT = "draft"
+    VALIDATED = "validated"
+    PUBLISHED = "published"
+    RETIRED = "retired"
+
+
+class RetrievalMode(StrEnum):
+    """一次检索轨迹实际采用的召回方式。"""
+
+    LEXICAL = "lexical"
+    VECTOR = "vector"
+    HYBRID = "hybrid"
+
+
+class RetrievalFusion(StrEnum):
+    """候选列表的融合算法。"""
+
+    NONE = "none"
+    RRF = "rrf"
+
+
 class FindingStatus(StrEnum):
     PASS = "PASS"
     WARN = "WARN"
     BLOCK = "BLOCK"
     UNKNOWN = "UNKNOWN"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class EvidenceQuality(StrEnum):
+    """一条结论的证据覆盖质量。"""
+
+    SUFFICIENT = "SUFFICIENT"
+    INSUFFICIENT = "INSUFFICIENT"
+    CONFLICTING = "CONFLICTING"
 
 
 class RiskLevel(StrEnum):
@@ -248,8 +281,27 @@ class ParsedDocument(ModelBase):
 class ContractPackage(ModelBase):
     package_id: str
     document_ids: list[str] = Field(default_factory=list)
+    document_precedence: list[str] = Field(
+        default_factory=list,
+        description=(
+            "从高到低的合同文件优先顺序；为空表示没有可验证的优先效力，"
+            "发生冲突时必须保留 UNKNOWN。"
+        ),
+    )
     source_snapshot: str
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_document_precedence(self) -> "ContractPackage":
+        """确保文件优先顺序只引用合同包内的唯一文档。"""
+
+        if len(self.document_ids) != len(set(self.document_ids)):
+            raise ValueError("合同包 document_ids 必须唯一")
+        if len(self.document_precedence) != len(set(self.document_precedence)):
+            raise ValueError("合同包 document_precedence 必须唯一")
+        if not set(self.document_precedence).issubset(self.document_ids):
+            raise ValueError("合同包 document_precedence 只能引用 document_ids")
+        return self
 
 
 class PartyPosition(StrEnum):
@@ -289,6 +341,21 @@ class ReviewContext(ModelBase):
         max_length=2000,
         description="交易背景和本次审查需要关注的业务前提。",
     )
+    transaction_tags: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="结构化交易背景标签，用于规则适用性和检索查询构建。",
+    )
+    transaction_amount: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+        description="本次交易金额；缺失时不能满足依赖金额区间的适用条件。",
+    )
+    document_kinds: list[DocumentKind] = Field(
+        default_factory=list,
+        max_length=32,
+        description="合同包实际包含的文档角色，由解析后的合同包事实填充。",
+    )
     review_scope: list[str] = Field(
         default_factory=list,
         max_length=64,
@@ -321,12 +388,43 @@ class ReviewContext(ModelBase):
                 normalized.append(scope_item)
         return normalized
 
+    @field_validator("transaction_tags", mode="before")
+    @classmethod
+    def normalize_transaction_tags(cls, value: object) -> list[str]:
+        """清理交易标签，避免同一业务条件产生多个查询指纹。"""
+
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("transaction_tags 必须是字符串数组")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("transaction_tags 的每一项必须是字符串")
+            tag = item.strip()
+            if tag and tag not in normalized:
+                normalized.append(tag)
+        return normalized
+
+    @field_validator("document_kinds", mode="before")
+    @classmethod
+    def normalize_document_kinds(cls, value: object) -> list[DocumentKind]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("document_kinds 必须是文档类型数组")
+        return list(dict.fromkeys(DocumentKind(item) for item in value))
+
 
 class AttachmentReference(ModelBase):
     reference_id: str
     referenced_name: str
     aliases: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(min_length=1)
+    candidate_ids: list[str] = Field(
+        min_length=1,
+        description="识别该附件引用的 CandidateEvidence 身份。",
+    )
     required: bool = True
 
 
@@ -383,21 +481,114 @@ class KnowledgeChunk(ModelBase):
     source_version: str
     content: str = Field(min_length=1)
     evidence_ids: list[str] = Field(min_length=1)
-    # 默认合同正文，兼容尚未带来源字段的结果；规则导入会显式写入 RULE。
-    source_kind: KnowledgeSourceKind = KnowledgeSourceKind.CONTRACT
+    source_kind: KnowledgeSourceKind
+    clause_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @model_validator(mode="before")
-    @classmethod
-    def infer_legacy_rule_source(cls, value: Any) -> Any:
-        """为旧规则知识块从 rule_id 元数据补齐来源类型。"""
 
-        if not isinstance(value, dict) or "source_kind" in value:
-            return value
-        metadata = value.get("metadata")
-        if isinstance(metadata, dict) and metadata.get("rule_id"):
-            return {**value, "source_kind": KnowledgeSourceKind.RULE}
-        return value
+class RetrievalSource(StrEnum):
+    """一条召回命中来自哪类候选生成器。"""
+
+    LEXICAL = "lexical"
+    VECTOR = "vector"
+
+
+class RetrievalFilter(ModelBase):
+    """检索候选的结构化范围，不承载任何审核结论。
+
+    文档、条款、来源和版本过滤作用于知识块本身；适用规则过滤只作用于
+    ``source_kind=rule`` 的规则定义块，合同正文不会因为规则定义元数据缺失
+    而被误删。所有非空字段均按白名单解释，空列表表示不限制该维度。
+    """
+
+    document_ids: list[str] = Field(default_factory=list)
+    clause_ids: list[str] = Field(default_factory=list)
+    source_names: list[str] = Field(default_factory=list)
+    source_sha256s: list[str] = Field(default_factory=list)
+    source_versions: list[str] = Field(default_factory=list)
+    source_kinds: list[KnowledgeSourceKind] = Field(default_factory=list)
+    document_kinds: list[DocumentKind] = Field(default_factory=list)
+    rule_versions: list[str] = Field(default_factory=list)
+    applicable_rule_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def deduplicate_values(self) -> "RetrievalFilter":
+        """保持过滤条件的声明稳定，避免同一条件产生不同指纹。"""
+
+        for field_name in (
+            "document_ids",
+            "clause_ids",
+            "source_names",
+            "source_sha256s",
+            "source_versions",
+            "source_kinds",
+            "document_kinds",
+            "rule_versions",
+            "applicable_rule_ids",
+            "evidence_ids",
+        ):
+            values = getattr(self, field_name)
+            setattr(self, field_name, list(dict.fromkeys(values)))
+        return self
+
+
+class RetrievalQuery(ModelBase):
+    """一次规则审查的唯一检索查询契约。"""
+
+    query_id: str = Field(min_length=1)
+    rule_id: str = Field(min_length=1)
+    rule_version: str = Field(min_length=1)
+    purpose: Literal["rule_review", "playbook_position", "cross_document_consistency"]
+    text: str = Field(min_length=1, max_length=4000)
+    clause_types: list[str] = Field(default_factory=list)
+    lexical_terms: list[str] = Field(default_factory=list)
+    exact_anchors: list[str] = Field(default_factory=list)
+    numeric_anchors: list[str] = Field(default_factory=list)
+    negation_anchors: list[str] = Field(default_factory=list)
+    required_fact_types: list[str] = Field(default_factory=list)
+    # 由规则声明的事实类型映射而来；它们只用于提升候选召回，不能直接
+    # 生成事实或审核结论。
+    required_fact_anchors: list[str] = Field(default_factory=list)
+    document_kinds: list[DocumentKind] = Field(default_factory=list)
+    # 查询必须在创建时绑定完整过滤范围；不允许先生成一个全库查询，
+    # 再由下游猜测它属于哪个合同包或规则。
+    retrieval_filter: RetrievalFilter
+
+    @model_validator(mode="after")
+    def validate_query_shape(self) -> "RetrievalQuery":
+        """保证查询可回放且不会把空条件误当成业务查询。"""
+
+        if not self.text.strip():
+            raise ValueError("RetrievalQuery.text 不能为空")
+        for field_name in (
+            "clause_types",
+            "lexical_terms",
+            "exact_anchors",
+            "numeric_anchors",
+            "negation_anchors",
+            "required_fact_types",
+            "required_fact_anchors",
+            "document_kinds",
+        ):
+            values = getattr(self, field_name)
+            setattr(self, field_name, list(dict.fromkeys(values)))
+        if not set(self.required_fact_anchors).issubset(self.exact_anchors):
+            raise ValueError("RetrievalQuery 的事实锚点必须同时属于精确锚点")
+        if not self.retrieval_filter.document_ids:
+            raise ValueError("RetrievalQuery 必须绑定当前合同包文档范围")
+        if self.rule_id not in self.retrieval_filter.applicable_rule_ids:
+            raise ValueError("RetrievalQuery 必须绑定自身 rule_id 的过滤范围")
+        if self.rule_version not in self.retrieval_filter.rule_versions:
+            raise ValueError("RetrievalQuery 必须绑定自身 rule_version 的过滤范围")
+        if KnowledgeSourceKind.CONTRACT not in self.retrieval_filter.source_kinds:
+            raise ValueError("RetrievalQuery 必须允许检索合同正文候选")
+        expected_document_kinds = (
+            self.retrieval_filter.document_kinds or self.document_kinds
+        )
+        if set(self.document_kinds) != set(expected_document_kinds):
+            raise ValueError("RetrievalQuery 的文档角色与过滤范围不一致")
+        return self
 
 
 class RetrievalHit(ModelBase):
@@ -405,29 +596,75 @@ class RetrievalHit(ModelBase):
     score: float = Field(ge=0)
     evidence_ids: list[str] = Field(min_length=1)
     matched_terms: list[str] = Field(default_factory=list)
+    retrieval_sources: list[RetrievalSource] = Field(
+        default_factory=lambda: [RetrievalSource.LEXICAL], min_length=1
+    )
+    lexical_rank: int | None = Field(default=None, ge=1)
+    vector_rank: int | None = Field(default=None, ge=1)
+
+
+class CandidateEvidence(ModelBase):
+    """从检索轨迹规范化出的候选证据，不携带任何审核结论。"""
+
+    candidate_id: str = Field(min_length=1)
+    query_id: str = Field(min_length=1)
+    rule_id: str = Field(min_length=1)
+    rule_version: str = Field(min_length=1)
+    rank: int = Field(ge=1)
+    chunk_id: str = Field(min_length=1)
+    document_id: str | None = None
+    source_name: str = Field(min_length=1)
+    source_sha256: str = Field(min_length=64, max_length=64)
+    source_version: str = Field(min_length=1)
+    source_kind: KnowledgeSourceKind
+    content: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+    clause_ids: list[str] = Field(default_factory=list)
+    score: float = Field(ge=0)
+    retrieval_sources: list[RetrievalSource] = Field(min_length=1)
+    matched_terms: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_candidate_scope(self) -> "CandidateEvidence":
+        """限制候选只能指向真实知识块及其证据范围。"""
+
+        if self.source_kind == KnowledgeSourceKind.CONTRACT and not self.document_id:
+            raise ValueError("合同候选必须带 document_id")
+        if self.source_kind == KnowledgeSourceKind.RULE and self.document_id:
+            raise ValueError("规则候选不能带合同 document_id")
+        self.evidence_ids = list(dict.fromkeys(self.evidence_ids))
+        self.clause_ids = list(dict.fromkeys(self.clause_ids))
+        self.retrieval_sources = list(dict.fromkeys(self.retrieval_sources))
+        self.matched_terms = list(dict.fromkeys(self.matched_terms))
+        return self
 
 
 class RetrievalTrace(ModelBase):
     trace_id: str
-    query: str = Field(min_length=1)
+    retrieval_query: RetrievalQuery
     index_version: str
+    retrieval_mode: RetrievalMode = RetrievalMode.LEXICAL
+    fusion_method: RetrievalFusion = RetrievalFusion.NONE
     top_k: int = Field(gt=0)
     hits: list[RetrievalHit] = Field(default_factory=list)
     used_for_rule_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
+    @model_validator(mode="after")
+    def validate_trace_contract(self) -> "RetrievalTrace":
+        """保证一条轨迹只服务声明过的查询规则且候选块不重复。"""
 
-class SemanticModelRequest(ModelBase):
-    request_id: str
-    provider: str
-    model_version: str
-    prompt_version: str
-    request_fingerprint: str = Field(min_length=64, max_length=64)
-    rule_ids: list[str] = Field(min_length=1)
-    context_chunks: list[KnowledgeChunk] = Field(default_factory=list)
-    system_instruction: str = Field(min_length=1)
-    configuration: dict[str, Any] = Field(default_factory=dict)
-    review_context: ReviewContext | None = None
+        if self.retrieval_query.rule_id not in self.used_for_rule_ids:
+            raise ValueError("RetrievalTrace 必须声明查询规则的使用范围")
+        if len(self.used_for_rule_ids) != len(set(self.used_for_rule_ids)):
+            raise ValueError("RetrievalTrace 的 used_for_rule_ids 必须唯一")
+        hit_ids = [hit.chunk_id for hit in self.hits]
+        if len(hit_ids) != len(set(hit_ids)):
+            raise ValueError("RetrievalTrace 的命中知识块不能重复")
+        if len(hit_ids) > self.top_k:
+            raise ValueError("RetrievalTrace 命中数不能超过 top_k")
+        return self
 
 
 class SemanticReviewItem(ModelBase):
@@ -455,10 +692,32 @@ class ContractFact(ModelBase):
     value: Any
     normalized_value: Any | None = None
     unit: str | None = None
+    source_document_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(min_length=1)
+    candidate_ids: list[str] = Field(
+        default_factory=list,
+        description="形成该事实的 CandidateEvidence；空值仅适用于非检索事实。",
+    )
     confidence: float | None = Field(default=None, ge=0, le=1)
     extractor_version: str
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def require_candidate_binding_for_derived_fact(self) -> "ContractFact":
+        """要求由候选正文抽取的事实保留候选身份，阻断全文旁路。"""
+
+        derived = (
+            self.fact_type == "keyword_presence"
+            or self.fact_type == "tax_rate"
+            or self.fact_type.startswith("financial.")
+            or self.fact_type.startswith("contract_element:")
+            or self.fact_type.startswith("contract_term:")
+        )
+        if derived and not self.candidate_ids:
+            raise ValueError(
+                f"检索派生事实必须绑定 CandidateEvidence: {self.fact_type}"
+            )
+        return self
 
 
 class ClauseKind(StrEnum):
@@ -482,6 +741,75 @@ class ContractClause(ModelBase):
     source_chunk_ids: list[str] = Field(min_length=1)
     evidence_ids: list[str] = Field(min_length=1)
     extractor_version: str
+
+
+class ClauseRelationType(StrEnum):
+    """条款之间或条款与定义项之间的可审计关系。"""
+
+    PARENT_OF = "parent_of"
+    DEFINES = "defines"
+    REFERENCES = "references"
+
+
+class ClauseRelationTargetType(StrEnum):
+    CLAUSE = "clause"
+    TERM = "term"
+
+
+class ClauseRelationResolution(StrEnum):
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+
+
+class ClauseRelation(ModelBase):
+    """从条款文本和编号结构确定性构建的关系边。"""
+
+    relation_id: str
+    relation_type: ClauseRelationType
+    source_clause_id: str
+    target_clause_id: str | None = None
+    target_label: str = Field(min_length=1)
+    target_type: ClauseRelationTargetType
+    resolution: ClauseRelationResolution
+    evidence_ids: list[str] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+    extractor_version: str
+
+    @model_validator(mode="after")
+    def validate_relation_shape(self) -> "ClauseRelation":
+        """拒绝无法被下游按关系类型解释的边。"""
+
+        if self.target_type == ClauseRelationTargetType.CLAUSE:
+            if (
+                self.resolution == ClauseRelationResolution.RESOLVED
+                and not self.target_clause_id
+            ):
+                raise ValueError("resolved clause relation requires target_clause_id")
+            if (
+                self.resolution == ClauseRelationResolution.UNRESOLVED
+                and self.target_clause_id is not None
+            ):
+                raise ValueError("unresolved clause relation cannot carry target_clause_id")
+        elif self.target_clause_id is not None:
+            raise ValueError("term relation cannot carry target_clause_id")
+
+        if self.relation_type == ClauseRelationType.PARENT_OF:
+            if (
+                self.target_type != ClauseRelationTargetType.CLAUSE
+                or self.resolution != ClauseRelationResolution.RESOLVED
+                or not self.target_clause_id
+            ):
+                raise ValueError("parent relation must resolve to a clause")
+        elif self.relation_type == ClauseRelationType.DEFINES:
+            if (
+                self.target_type != ClauseRelationTargetType.TERM
+                or self.resolution != ClauseRelationResolution.RESOLVED
+            ):
+                raise ValueError("definition relation must resolve to a term")
+        elif self.relation_type == ClauseRelationType.REFERENCES:
+            if self.target_type != ClauseRelationTargetType.CLAUSE:
+                raise ValueError("reference relation must target a clause")
+        return self
 
 
 class ObligationModality(StrEnum):
@@ -553,6 +881,7 @@ class PlaybookSpec(ModelBase):
 
     playbook_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
+    evaluation_mode: Literal["position", "checker"] = "position"
     clause_types: list[str] = Field(default_factory=list)
     preferred_position: str | None = None
     fallback_positions: list[str] = Field(default_factory=list)
@@ -563,12 +892,13 @@ class PlaybookSpec(ModelBase):
     action_on_prohibited: PlaybookAction = PlaybookAction.REJECT
     suggested_language: str | None = None
     escalation_condition: str | None = None
+    escalation_thresholds: list["EscalationThreshold"] = Field(default_factory=list)
 
     @property
     def has_deterministic_positions(self) -> bool:
         """判断 Playbook 是否配置了可由原文证据直接判断的立场。"""
 
-        return bool(
+        return self.evaluation_mode == "position" and bool(
             self.clause_types
             or self.preferred_position
             or self.fallback_positions
@@ -595,6 +925,93 @@ class ApplicabilitySpec(ModelBase):
     ]
     expected_value: Any | None = None
     note: str | None = None
+    party_positions: list[PartyPosition] = Field(default_factory=list)
+    jurisdictions: list[str] = Field(default_factory=list)
+    transaction_tags: list[str] = Field(default_factory=list)
+    transaction_amount_min: Decimal | None = Field(default=None, ge=Decimal("0"))
+    transaction_amount_max: Decimal | None = Field(default=None, ge=Decimal("0"))
+    document_kinds: list[DocumentKind] = Field(default_factory=list)
+    document_kinds_any: list[DocumentKind] = Field(
+        default_factory=list,
+        description="至少存在一种角色时满足的文档角色条件。",
+    )
+    exceptions: list["ApplicabilityException"] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_context_ranges(self) -> "ApplicabilitySpec":
+        """阻断无法解释的金额范围和重复结构化条件。"""
+
+        if (
+            self.transaction_amount_min is not None
+            and self.transaction_amount_max is not None
+            and self.transaction_amount_min > self.transaction_amount_max
+        ):
+            raise ValueError("规则适用金额下限不能大于上限")
+        self.jurisdictions = list(dict.fromkeys(item.strip() for item in self.jurisdictions if item.strip()))
+        self.transaction_tags = list(dict.fromkeys(item.strip() for item in self.transaction_tags if item.strip()))
+        self.document_kinds = list(dict.fromkeys(self.document_kinds))
+        self.document_kinds_any = list(dict.fromkeys(self.document_kinds_any))
+        exception_ids = [item.exception_id for item in self.exceptions]
+        if len(exception_ids) != len(set(exception_ids)):
+            raise ValueError("规则适用例外 exception_id 必须唯一")
+        return self
+
+
+class ApplicabilityException(ModelBase):
+    """规则适用条件的结构化例外，命中后覆盖基础适用结论。"""
+
+    exception_id: str = Field(min_length=1)
+    result: Literal["required", "not_applicable", "unknown"]
+    party_positions: list[PartyPosition] = Field(default_factory=list)
+    jurisdictions: list[str] = Field(default_factory=list)
+    transaction_tags: list[str] = Field(default_factory=list)
+    transaction_amount_min: Decimal | None = Field(default=None, ge=Decimal("0"))
+    transaction_amount_max: Decimal | None = Field(default=None, ge=Decimal("0"))
+    document_kinds: list[DocumentKind] = Field(default_factory=list)
+    document_kinds_any: list[DocumentKind] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_exception_range(self) -> "ApplicabilityException":
+        if not any(
+            (
+                self.party_positions,
+                self.jurisdictions,
+                self.transaction_tags,
+                self.transaction_amount_min is not None,
+                self.transaction_amount_max is not None,
+                self.document_kinds,
+                self.document_kinds_any,
+            )
+        ):
+            raise ValueError("规则适用例外必须至少声明一个结构化条件")
+        if (
+            self.transaction_amount_min is not None
+            and self.transaction_amount_max is not None
+            and self.transaction_amount_min > self.transaction_amount_max
+        ):
+            raise ValueError("规则适用例外金额下限不能大于上限")
+        self.jurisdictions = list(dict.fromkeys(item.strip() for item in self.jurisdictions if item.strip()))
+        self.transaction_tags = list(dict.fromkeys(item.strip() for item in self.transaction_tags if item.strip()))
+        self.document_kinds = list(dict.fromkeys(self.document_kinds))
+        self.document_kinds_any = list(dict.fromkeys(self.document_kinds_any))
+        return self
+
+
+class EscalationThreshold(ModelBase):
+    """Playbook 的结构化升级阈值。"""
+
+    threshold_id: str = Field(min_length=1)
+    metric: Literal[
+        "transaction_amount",
+        "payment_ratio",
+        "confidence",
+        "risk_level",
+    ]
+    operator: Literal[">", ">=", "<", "<=", "=="]
+    value: Decimal = Field(ge=Decimal("0"))
+    action: PlaybookAction = PlaybookAction.ESCALATE
+    reason: str = Field(min_length=1)
 
 
 class Rule(ModelBase):
@@ -608,6 +1025,8 @@ class Rule(ModelBase):
     check_method: Literal[
         "classification", "deterministic", "keyword", "semantic", "visual", "human"
     ]
+    # 检查器是规则快照到领域实现的明确绑定；未配置时由上层保守输出 UNKNOWN。
+    checker: str | None = Field(default=None, min_length=1)
     expected_value: Any | None = None
     risk_level: RiskLevel | None = None
     applicability: dict[str, ApplicabilitySpec] = Field(default_factory=dict)
@@ -621,6 +1040,7 @@ class Rule(ModelBase):
 
 
 class RuleBundle(ModelBase):
+    schema_version: Literal["1.0"] = "1.0"
     bundle_id: str
     source_filename: str
     source_sha256: str = Field(min_length=64, max_length=64)
@@ -628,7 +1048,73 @@ class RuleBundle(ModelBase):
     source_range: str
     source_notes: list[str] = Field(default_factory=list)
     rules: list[Rule] = Field(min_length=1)
+    # 新构造的规则包只能是草稿；正式审查必须经过显式发布流程并携带
+    # release_fingerprint/published_at，避免未验证对象被误当成正式快照。
+    release_status: RuleBundleStatus = RuleBundleStatus.DRAFT
+    compatible_review_schema: Literal["2.0"] = "2.0"
+    playbook_schema_version: Literal["1.0"] = "1.0"
+    parent_bundle_id: str | None = None
+    release_fingerprint: str | None = Field(default=None, min_length=64, max_length=64)
+    published_at: datetime | None = None
     imported_at: datetime = Field(default_factory=utc_now)
+
+
+class SemanticModelRequest(ModelBase):
+    """发送给语义审查器的规则、上下文和候选证据快照。"""
+
+    request_id: str
+    provider: str
+    model_version: str
+    prompt_version: str
+    request_fingerprint: str = Field(min_length=64, max_length=64)
+    rule_ids: list[str] = Field(min_length=1)
+    rule_definitions: list[Rule] = Field(
+        min_length=1,
+        description="与 rule_ids 完全对应的版本化规则定义，不允许模型自行补写规则。",
+    )
+    candidate_evidence_by_rule: dict[str, list[CandidateEvidence]]
+    system_instruction: str = Field(min_length=1)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    review_context: ReviewContext
+    retrieval_queries_by_rule: dict[str, RetrievalQuery]
+
+    @model_validator(mode="after")
+    def validate_candidate_context(self) -> "SemanticModelRequest":
+        """保证规则定义、查询和候选证据逐条对齐。"""
+
+        rule_ids = set(self.rule_ids)
+        if len(self.rule_ids) != len(rule_ids):
+            raise ValueError("SemanticModelRequest 的 rule_ids 必须唯一")
+        rule_definitions_by_id = {
+            rule.rule_id: rule for rule in self.rule_definitions
+        }
+        if len(rule_definitions_by_id) != len(self.rule_definitions):
+            raise ValueError("语义请求的规则定义 rule_id 必须唯一")
+        if set(rule_definitions_by_id) != rule_ids:
+            raise ValueError("语义请求规则定义必须覆盖且仅覆盖 rule_ids")
+        self.rule_definitions = [
+            rule_definitions_by_id[rule_id] for rule_id in self.rule_ids
+        ]
+        if set(self.candidate_evidence_by_rule) != rule_ids:
+            raise ValueError("语义请求候选证据必须覆盖且仅覆盖 rule_ids")
+        if set(self.retrieval_queries_by_rule) != rule_ids:
+            raise ValueError("语义请求 RetrievalQuery 必须覆盖且仅覆盖 rule_ids")
+        for rule_id, candidates in self.candidate_evidence_by_rule.items():
+            query = self.retrieval_queries_by_rule[rule_id]
+            rule_definition = rule_definitions_by_id[rule_id]
+            if (
+                query.rule_id != rule_id
+                or query.rule_version != rule_definition.version
+            ):
+                raise ValueError("语义请求规则定义与 RetrievalQuery 不一致")
+            if any(
+                candidate.rule_id != rule_id
+                or candidate.query_id != query.query_id
+                or candidate.rule_version != query.rule_version
+                for candidate in candidates
+            ):
+                raise ValueError("语义请求候选证据与其 RetrievalQuery 不一致")
+        return self
 
 
 class Finding(ModelBase):
@@ -643,6 +1129,8 @@ class Finding(ModelBase):
     fact_ids: list[str] = Field(default_factory=list)
     comparison: dict[str, Any] | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    evidence_quality: EvidenceQuality = EvidenceQuality.SUFFICIENT
+    automatic: bool = False
     recommended_action: str | None = None
     action: PlaybookAction | None = None
     playbook_id: str | None = None
@@ -705,6 +1193,89 @@ class ContractRevisionSet(ModelBase):
     revision_fingerprint: str | None = None
 
 
+class VersionChangeKind(StrEnum):
+    """合同版本差异类型。"""
+
+    ADDED = "added"
+    DELETED = "deleted"
+    MODIFIED = "modified"
+
+
+class VersionChange(ModelBase):
+    """一条可回指比对输入的版本差异。"""
+
+    change_id: str
+    kind: VersionChangeKind
+    base_index: int | None = Field(default=None, ge=0)
+    compare_index: int | None = Field(default=None, ge=0)
+    base_text: str = ""
+    compare_text: str = ""
+    evidence_ids: list[str] = Field(min_length=1)
+    clause_ids: list[str] = Field(default_factory=list)
+
+
+class VersionImpactLevel(StrEnum):
+    """版本变化对业务风险或绑定关系的影响级别。"""
+
+    INCREASED = "increased"
+    DECREASED = "decreased"
+    UNCHANGED = "unchanged"
+    UNKNOWN = "unknown"
+    REQUIRES_REVIEW = "requires_review"
+
+
+class ContractVersionImpact(ModelBase):
+    """把文本变化映射到业务义务、风险和 Playbook 重审动作。"""
+
+    impact_id: str = Field(min_length=1)
+    rule_id: str | None = None
+    change_ids: list[str] = Field(min_length=1)
+    obligation_ids: list[str] = Field(
+        default_factory=list,
+        description="受版本差异直接影响的 ContractObligation 身份。",
+    )
+    changed_obligations: list[str] = Field(min_length=1)
+    payment_risk: VersionImpactLevel = VersionImpactLevel.UNKNOWN
+    liability_risk: VersionImpactLevel = VersionImpactLevel.UNKNOWN
+    liability_cap_impact: VersionImpactLevel = Field(
+        default=VersionImpactLevel.UNKNOWN,
+        description=(
+            "责任上限的风险方向：increased 表示上限扩大/放宽，"
+            "decreased 表示上限收窄或新增；无法确定时为 requires_review。"
+        ),
+    )
+    delivery_acceptance_binding: VersionImpactLevel = VersionImpactLevel.UNKNOWN
+    precedence_resolution: Literal["base", "compare", "unresolved", "not_required"] = (
+        "unresolved"
+    )
+    playbook_retrigger_required: bool = True
+    reason: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+
+
+class ContractVersionComparison(ModelBase):
+    """挂入 ``ReviewResult`` 的合同版本比对结果。"""
+
+    comparison_id: str
+    run_id: str
+    base_filename: str
+    compare_filename: str
+    base_source_sha256: str = Field(min_length=64, max_length=64)
+    compare_source_sha256: str = Field(min_length=64, max_length=64)
+    similarity: float = Field(ge=0, le=1)
+    added: int = Field(default=0, ge=0)
+    deleted: int = Field(default=0, ge=0)
+    modified: int = Field(default=0, ge=0)
+    source_version: str = Field(min_length=1)
+    options: dict[str, bool] = Field(default_factory=dict)
+    changes: list[VersionChange] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    impacts: list[ContractVersionImpact] = Field(default_factory=list)
+    retrigger_rule_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ReviewReport(ModelBase):
     report_id: str
     run_id: str
@@ -712,6 +1283,8 @@ class ReviewReport(ModelBase):
     finding_counts: dict[str, int] = Field(default_factory=dict)
     finding_ids: list[str] = Field(default_factory=list)
     decision_ids: list[str] = Field(default_factory=list)
+    comparison_ids: list[str] = Field(default_factory=list)
+    revision_ids: list[str] = Field(default_factory=list)
     review_required: bool
     generated_by: str
     report_version: str
@@ -750,6 +1323,8 @@ class ReviewRun(ModelBase):
     configuration_fingerprint: str
     finding_ids: list[str] = Field(default_factory=list)
     decision_ids: list[str] = Field(default_factory=list)
+    comparison_ids: list[str] = Field(default_factory=list)
+    revision_ids: list[str] = Field(default_factory=list)
     report_id: str | None = None
     result_fingerprint: str | None = None
     stage_events: list[StageEvent] = Field(min_length=1)
@@ -760,22 +1335,27 @@ class ReviewRun(ModelBase):
 class ReviewResult(ModelBase):
     schema_version: Literal["2.0"]
     package: ContractPackage
-    review_context: ReviewContext | None = None
+    review_context: ReviewContext
     documents: list[Document] = Field(min_length=1)
     rule_bundle: RuleBundle
     parsed_documents: list[ParsedDocument] = Field(min_length=1)
     evidence: list[Evidence] = Field(default_factory=list)
     knowledge_chunks: list[KnowledgeChunk] = Field(default_factory=list)
     retrieval_traces: list[RetrievalTrace] = Field(default_factory=list)
+    candidate_evidence: list[CandidateEvidence] = Field(default_factory=list)
     semantic_request: SemanticModelRequest | None = None
     semantic_response: SemanticReviewResponse | None = None
     attachment_references: list[AttachmentReference] = Field(default_factory=list)
     facts: list[ContractFact] = Field(default_factory=list)
     clauses: list[ContractClause]
+    clause_relations: list[ClauseRelation] = Field(default_factory=list)
     obligations: list[ContractObligation]
     review_questions: list[ReviewQuestion]
     question_assessments: list[QuestionAssessment]
     findings: list[Finding] = Field(default_factory=list)
     decisions: list[ReviewDecision] = Field(default_factory=list)
+    version_comparisons: list[ContractVersionComparison] = Field(default_factory=list)
+    revision_sets: list[ContractRevisionSet] = Field(default_factory=list)
+    post_review_sequence: list[str] = Field(default_factory=list)
     run: ReviewRun
     report: ReviewReport

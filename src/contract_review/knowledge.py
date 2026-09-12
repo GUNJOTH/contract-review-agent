@@ -1,38 +1,99 @@
-"""Deterministic knowledge chunks and a provenance-preserving lexical retriever."""
+"""确定性知识块和保留来源的词法候选检索器。"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from typing import Protocol
 
 from .index import index_text_evidence
 from .models import (
+    BlockType,
     Evidence,
     EvidenceType,
     KnowledgeChunk,
     KnowledgeSourceKind,
     ParsedDocument,
     RetrievalHit,
+    RetrievalFilter,
+    RetrievalFusion,
+    RetrievalMode,
+    RetrievalQuery,
+    RetrievalSource,
     RetrievalTrace,
     RuleBundle,
     SourceLocator,
 )
 
-KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.1.0"
+KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.5.0"
+BM25_K1 = 1.2
+BM25_B = 0.75
+EXACT_PHRASE_BOOST = 1.0
+# 规则声明的事实锚点是候选层的高区分度信号。它只改变候选排序，事实仍
+# 必须由后续抽取器从 CandidateEvidence 中重新确认。
+REQUIRED_FACT_ANCHOR_BOOST = 10.0
+PRECISION_NGRAM_MAX_LENGTH = 6
+RRF_K = 60
+
+_TOKEN_PATTERN = re.compile(
+    r"\d[\d,]*(?:\.\d+)?%?|"
+    r"[a-z][a-z0-9]*(?:[._/-][a-z0-9]+)*|"
+    r"[\u4e00-\u9fff]+",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalized_text(text: str) -> str:
+    """统一全角字符和大小写，保证数字及法律术语可稳定比较。"""
+
+    return unicodedata.normalize("NFKC", text).casefold()
+
+
+def _tokenize(text: str) -> list[str]:
+    """生成保留数字、否定词和中文法律短语的确定性词元。
+
+    中文不依赖外部分词器：保留单字用于同义召回，同时生成有限长度的
+    n-gram 使“不得”“除非”“不超过30日”等精确表达不会被拆散。数字额外
+    保留去千分位形式，兼顾“1,000”与“1000”的书写差异。
+    """
+
+    normalized = _normalized_text(text)
+    tokens: list[str] = []
+    for match in _TOKEN_PATTERN.finditer(normalized):
+        token = match.group(0)
+        if token[0].isdigit():
+            tokens.append(token)
+            compact_number = token.replace(",", "")
+            if compact_number != token:
+                tokens.append(compact_number)
+            continue
+        if token[0].isascii():
+            tokens.append(token)
+            continue
+        tokens.extend(token)
+        for ngram_length in range(2, PRECISION_NGRAM_MAX_LENGTH + 1):
+            tokens.extend(
+                token[index : index + ngram_length]
+                for index in range(len(token) - ngram_length + 1)
+            )
+    return tokens
 
 
 class KnowledgeIndex(Protocol):
     """可替换检索器契约：词法/向量检索都产出同样的 RetrievalTrace。
 
-    生产环境可替换为向量检索，但必须保留证据 ID 和版本信息。
+    检索只产生候选证据，不产生 Finding 或其它审核结论；替换实现必须保留
+    证据 ID、过滤条件、融合方式和版本信息。
     """
 
     def retrieve(
         self,
-        query: str,
+        query: RetrievalQuery,
         *,
         top_k: int = 5,
         used_for_rule_ids: Sequence[str] = (),
@@ -40,7 +101,85 @@ class KnowledgeIndex(Protocol):
 
 
 def _terms(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", text.casefold()))
+    return set(_tokenize(text))
+
+
+def chunk_matches_retrieval_filter(
+    chunk: KnowledgeChunk,
+    retrieval_filter: RetrievalFilter,
+) -> bool:
+    """判断知识块是否属于调用方声明的证据范围。"""
+
+    if retrieval_filter.source_names and chunk.source_name not in retrieval_filter.source_names:
+        return False
+    if (
+        retrieval_filter.source_sha256s
+        and chunk.source_sha256 not in retrieval_filter.source_sha256s
+    ):
+        return False
+    if (
+        retrieval_filter.source_versions
+        and chunk.source_version not in retrieval_filter.source_versions
+    ):
+        return False
+    if (
+        retrieval_filter.source_kinds
+        and chunk.source_kind not in retrieval_filter.source_kinds
+    ):
+        return False
+    if (
+        retrieval_filter.document_kinds
+        and chunk.source_kind == KnowledgeSourceKind.CONTRACT
+        and chunk.metadata.get("document_kind")
+        not in {kind.value for kind in retrieval_filter.document_kinds}
+    ):
+        return False
+    if retrieval_filter.evidence_ids and not set(chunk.evidence_ids).issubset(
+        retrieval_filter.evidence_ids
+    ):
+        return False
+
+    if chunk.source_kind == KnowledgeSourceKind.CONTRACT:
+        document_id = chunk.metadata.get("document_id")
+        if retrieval_filter.document_ids and document_id not in retrieval_filter.document_ids:
+            return False
+        if retrieval_filter.clause_ids and not set(chunk.clause_ids).intersection(
+            retrieval_filter.clause_ids
+        ):
+            return False
+        return True
+
+    rule_id = chunk.metadata.get("rule_id")
+    rule_version = chunk.metadata.get("rule_version")
+    if (
+        retrieval_filter.applicable_rule_ids
+        and rule_id not in retrieval_filter.applicable_rule_ids
+    ):
+        return False
+    if retrieval_filter.rule_versions and rule_version not in retrieval_filter.rule_versions:
+        return False
+    return True
+
+
+def _retrieval_trace_id(
+    query: RetrievalQuery,
+    used_for_rule_ids: Sequence[str],
+    *,
+    top_k: int | None = None,
+) -> str:
+    payload = {
+        "query": query.model_dump(mode="json"),
+        "used_for_rule_ids": list(used_for_rule_ids),
+        "top_k": top_k,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+    return f"retrieval-{digest}"
 
 
 def _rule_evidence(
@@ -67,6 +206,51 @@ def _rule_evidence(
     )
 
 
+def _document_chunk_metadata(
+    parsed_document: ParsedDocument,
+    item: Evidence,
+) -> dict[str, object]:
+    """把解析器的版面顺序和块类型带入知识块，供条款分段使用。"""
+
+    metadata: dict[str, object] = {
+        "document_id": parsed_document.document.document_id,
+        "document_kind": parsed_document.document.document_kind.value,
+        "page_number": item.locator.page_number,
+        "block_id": item.locator.block_id,
+        "source_order": 0,
+        "block_type": BlockType.UNKNOWN.value,
+        "is_heading": False,
+    }
+    block_id = item.locator.block_id
+    for page in parsed_document.pages:
+        for block in page.blocks:
+            if block.block_id != block_id:
+                continue
+            metadata.update(
+                {
+                    "source_order": block.order,
+                    "block_type": block.block_type.value,
+                    "is_heading": block.block_type == BlockType.HEADING,
+                }
+            )
+            return metadata
+    for node in parsed_document.nodes:
+        if node.node_id != block_id:
+            continue
+        metadata.update(
+            {
+                "source_order": node.order,
+                "block_type": node.block_type.value,
+                "is_heading": node.block_type == BlockType.HEADING,
+                "table_index": node.locator.table_index,
+                "row_index": node.locator.row_index,
+                "column_index": node.locator.column_index,
+            }
+        )
+        return metadata
+    return metadata
+
+
 def build_knowledge_corpus(
     parsed_documents: Sequence[ParsedDocument],
     *,
@@ -90,11 +274,7 @@ def build_knowledge_corpus(
                     content=item.raw_excerpt or "",
                     evidence_ids=[item.evidence_id],
                     source_kind=KnowledgeSourceKind.CONTRACT,
-                    metadata={
-                        "document_id": parsed_document.document.document_id,
-                        "page_number": item.locator.page_number,
-                        "block_id": item.locator.block_id,
-                    },
+                    metadata=_document_chunk_metadata(parsed_document, item),
                 )
             )
     if rule_bundle is not None:
@@ -139,54 +319,188 @@ def build_knowledge_corpus(
                     content=text,
                     evidence_ids=[item.evidence_id],
                     source_kind=KnowledgeSourceKind.RULE,
-                    metadata={"rule_id": rule.rule_id, "legacy_id": rule.legacy_id},
+                    metadata={
+                        "rule_id": rule.rule_id,
+                        "rule_version": rule.version,
+                        "legacy_id": rule.legacy_id,
+                        "category": rule.category,
+                        "applies_to": list(rule.applies_to),
+                        "playbook_id": (
+                            rule.playbook.playbook_id if rule.playbook is not None else None
+                        ),
+                    },
                 )
             )
     return chunks, list(evidence.values())
 
 
 class LexicalKnowledgeIndex:
-    """A deterministic baseline retriever; it is not the final evidence store."""
+    """确定性的 BM25 词法候选检索器，不承担最终审核判断。"""
 
     def __init__(self, chunks: Sequence[KnowledgeChunk]) -> None:
         self.chunks = tuple(chunks)
-        self._terms = {chunk.chunk_id: _terms(chunk.content) for chunk in self.chunks}
+        self._token_counts = {
+            chunk.chunk_id: Counter(_tokenize(chunk.content)) for chunk in self.chunks
+        }
+        self._document_lengths = {
+            chunk_id: sum(counts.values())
+            for chunk_id, counts in self._token_counts.items()
+        }
 
     def retrieve(
         self,
-        query: str,
+        query: RetrievalQuery,
         *,
         top_k: int = 5,
         used_for_rule_ids: Sequence[str] = (),
     ) -> RetrievalTrace:
-        if not query.strip():
-            raise ValueError("retrieval query cannot be empty")
         if top_k <= 0:
             raise ValueError("top_k must be positive")
-        query_terms = _terms(query)
+        if query.rule_id not in set(used_for_rule_ids):
+            raise ValueError("检索查询的 rule_id 必须出现在 used_for_rule_ids 中")
+        effective_filter = query.retrieval_filter
+        # 结构化字段与可读查询文本共同进入词法候选生成器。这样数字、否定词、
+        # 定义词和精确锚点不会只停留在审计元数据里，而是真正影响 BM25 召回。
+        query_parts = [
+            query.text,
+            *query.lexical_terms,
+            *query.exact_anchors,
+            *query.numeric_anchors,
+            *query.negation_anchors,
+        ]
+        query_terms = _terms("\x1f".join(query_parts))
+        normalized_exact_anchors = [
+            _normalized_text(anchor).strip()
+            for anchor in query.exact_anchors
+            if _normalized_text(anchor).strip()
+        ]
+        normalized_required_fact_anchors = [
+            _normalized_text(anchor).strip()
+            for anchor in query.required_fact_anchors
+            if _normalized_text(anchor).strip()
+        ]
+        normalized_numeric_anchors = [
+            _normalized_text(anchor).strip()
+            for anchor in query.numeric_anchors
+            if _normalized_text(anchor).strip()
+        ]
+        normalized_negation_anchors = [
+            _normalized_text(anchor).strip()
+            for anchor in query.negation_anchors
+            if _normalized_text(anchor).strip()
+        ]
+        candidate_chunks = [
+            chunk
+            for chunk in self.chunks
+            if chunk_matches_retrieval_filter(chunk, effective_filter)
+        ]
+        document_count = len(candidate_chunks)
+        average_length = (
+            sum(self._document_lengths[chunk.chunk_id] for chunk in candidate_chunks)
+            / document_count
+            if document_count
+            else 0.0
+        )
+        document_frequency = Counter(
+            term
+            for chunk in candidate_chunks
+            for term in self._token_counts[chunk.chunk_id]
+        )
+        normalized_query = _normalized_text(query.text).strip()
         scored: list[RetrievalHit] = []
-        for chunk in self.chunks:
-            matched = sorted(query_terms & self._terms[chunk.chunk_id])
-            if not matched:
+        for chunk in candidate_chunks:
+            token_counts = self._token_counts[chunk.chunk_id]
+            matched = sorted(query_terms.intersection(token_counts))
+            normalized_content = _normalized_text(chunk.content)
+            exact_anchor_matches = [
+                anchor
+                for anchor in normalized_exact_anchors
+                if anchor in normalized_content
+            ]
+            required_fact_anchor_matches = [
+                anchor
+                for anchor in normalized_required_fact_anchors
+                if anchor in normalized_content
+            ]
+            if not matched and not exact_anchor_matches:
                 continue
-            score = len(matched) / max(len(query_terms), 1)
-            if query.casefold() in chunk.content.casefold():
-                score += 0.5
+            document_length = self._document_lengths[chunk.chunk_id]
+            score = 0.0
+            for term in matched:
+                frequency = token_counts[term]
+                inverse_document_frequency = (
+                    0.0
+                    if document_count == 0
+                    else math.log(
+                        1
+                        + (document_count - document_frequency[term] + 0.5)
+                        / (document_frequency[term] + 0.5)
+                    )
+                )
+                normalization = (
+                    frequency
+                    + BM25_K1
+                    * (
+                        1
+                        - BM25_B
+                        + BM25_B * document_length / max(average_length, 1.0)
+                    )
+                )
+                score += (
+                    inverse_document_frequency
+                    * frequency
+                    * (BM25_K1 + 1)
+                    / max(normalization, 1e-12)
+                )
+            if normalized_query and normalized_query in normalized_content:
+                score += EXACT_PHRASE_BOOST
+            score += EXACT_PHRASE_BOOST * len(exact_anchor_matches)
+            score += REQUIRED_FACT_ANCHOR_BOOST * len(
+                required_fact_anchor_matches
+            )
+            # 否定和数字锚点是法律风险的高区分度信号，命中时提高候选排序，
+            # 但仍然只改变候选顺序，不在检索层生成规则结论。
+            score += 0.5 * sum(
+                anchor in normalized_content
+                for anchor in normalized_numeric_anchors
+            )
+            score += 0.5 * sum(
+                anchor in normalized_content
+                for anchor in normalized_negation_anchors
+            )
+            matched_terms = list(
+                dict.fromkeys(
+                    [
+                        *matched,
+                        *exact_anchor_matches,
+                        *required_fact_anchor_matches,
+                    ]
+                )
+            )
             scored.append(
                 RetrievalHit(
                     chunk_id=chunk.chunk_id,
                     score=round(score, 6),
                     evidence_ids=chunk.evidence_ids,
-                    matched_terms=matched,
+                    matched_terms=matched_terms,
+                    retrieval_sources=[RetrievalSource.LEXICAL],
                 )
             )
         scored.sort(key=lambda hit: (-hit.score, hit.chunk_id))
-        hits = scored[:top_k]
-        digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+        hits = [
+            hit.model_copy(update={"lexical_rank": rank})
+            for rank, hit in enumerate(scored[:top_k], start=1)
+        ]
         return RetrievalTrace(
-            trace_id=f"retrieval-{digest}",
-            query=query,
+            trace_id=_retrieval_trace_id(
+                query,
+                used_for_rule_ids,
+                top_k=top_k,
+            ),
+            retrieval_query=query,
             index_version=KNOWLEDGE_INDEX_VERSION,
+            retrieval_mode=RetrievalMode.LEXICAL,
+            fusion_method=RetrievalFusion.NONE,
             top_k=top_k,
             hits=hits,
             used_for_rule_ids=list(used_for_rule_ids),

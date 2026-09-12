@@ -14,6 +14,7 @@ from .models import (
     RevisionOperation,
     ReviewResult,
 )
+from .replay import build_result_fingerprint
 
 
 REVISION_BUILDER_VERSION = "revision-builder-0.1.0"
@@ -83,6 +84,14 @@ def build_revision_set(
     ``REPLACE``；其他风险统一输出 COMMENT，等待人工确认。
     """
 
+    from .audit import audit_result
+
+    audit = audit_result(result)
+    if not audit.passed:
+        raise ValueError(
+            "审查结果未通过完整性门禁，不能生成修订提案："
+            + "；".join(audit.issues[:3])
+        )
     base_fingerprint = result.run.result_fingerprint
     if not base_fingerprint:
         raise ValueError("审查结果没有 result_fingerprint，不能生成修订提案")
@@ -122,3 +131,51 @@ def build_revision_set(
         changes=changes,
         revision_fingerprint=revision_fingerprint,
     )
+
+
+def attach_revision_set(
+    result: ReviewResult,
+    revision: ContractRevisionSet,
+) -> ReviewResult:
+    """把修订提案作为核心结果附件保存，不直接修改合同正文。"""
+
+    from .audit import audit_result
+
+    audit = audit_result(result)
+    if not audit.passed:
+        raise ValueError(
+            "审查结果未通过完整性门禁，不能挂载修订提案："
+            + "；".join(audit.issues[:3])
+        )
+    if revision.run_id != result.run.run_id:
+        raise ValueError("revision set belongs to a different review run")
+    if revision.base_result_fingerprint != result.run.result_fingerprint:
+        raise ValueError(
+            "revision set base_result_fingerprint does not match current ReviewResult"
+        )
+    if any(item.revision_id == revision.revision_id for item in result.revision_sets):
+        raise ValueError(f"revision set already exists: {revision.revision_id}")
+    revisions = [*result.revision_sets, revision]
+    revision_ids = [item.revision_id for item in revisions]
+    sequence = [*result.post_review_sequence, f"revision:{revision.revision_id}"]
+    run = result.run.model_copy(update={"revision_ids": revision_ids})
+    report = result.report.model_copy(update={"revision_ids": revision_ids})
+    updated = result.model_copy(
+        update={
+            "revision_sets": revisions,
+            "post_review_sequence": sequence,
+            "run": run,
+            "report": report,
+        }
+    )
+    fingerprint = build_result_fingerprint(updated)
+    updated = updated.model_copy(
+        update={"run": run.model_copy(update={"result_fingerprint": fingerprint})}
+    )
+    final_audit = audit_result(updated)
+    if not final_audit.passed:
+        raise ValueError(
+            "挂载修订提案后未通过完整性门禁："
+            + "；".join(final_audit.issues[:3])
+        )
+    return updated

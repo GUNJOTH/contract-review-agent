@@ -23,7 +23,7 @@ flowchart LR
     API --> APP[应用服务\nreview/task/AI/规则]
     APP --> ENGINE[contract_review 领域引擎\n解析·质量门·索引·规则·回放]
     APP --> CACHE[(JSON 指纹缓存)]
-    APP --> RULEDB[(SQLite 规则/要素库)]
+    APP --> RULES[(版本化 RuleBundle 快照)]
     APP --> REDIS[(Redis 任务状态)]
     APP --> OCR[OCR 网关]
     APP --> LLM[OpenAI-compatible 模型]
@@ -59,32 +59,44 @@ ReviewContext（本次业务前提）
         ↓
 ContractPackage / Document / Evidence（合同包与证据）
         ↓
-ContractClause / ContractObligation（条款与履约义务）
+ContractClause / ClauseRelation / ContractObligation（条款、关系与履约义务）
         ↓
 RuleBundle / PlaybookSpec（规则快照与企业立场）
         ↓
 Finding / ReviewQuestion / QuestionAssessment（审查结论）
         ↓
-ReviewDecision / ContractRevisionSet（人工确认与修订提案）
+ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认、版本比对与红线建议）
 ```
 
-- `ReviewContext` 统一保存合同类型、交易立场、法域、交易背景和可选规则范围；旧的 `ContractType` 参数只作为兼容入口，不能与上下文中的合同类型冲突。
+- `ReviewContext` 统一保存合同类型、本方立场、法域、交易背景标签、交易金额、实际文档角色和可选规则范围；合同包另保存文件角色与显式优先顺序。`ApplicabilitySpec`/`ApplicabilityException` 将这些字段作为结构化适用条件，`document_kinds` 表示全部角色条件，`document_kinds_any` 表示至少命中一种角色；缺失事实或未识别角色保持 `UNKNOWN`。`ContractType` 入口优先使用 `RuleBundle` 规范名称，已登记短名称只在规则解析层归一，不能与上下文中的合同类型冲突，未登记类型保持适用性未知。
 - `rules.py` 统一负责规则范围选择、合同类型适用性和规则预期值解析；`playbook.py` 统一负责优选/备选/禁止立场、缺失条款处置和动作生成，Router 与任务处理器不复制这些判断。
+- 规则快照版本与 Playbook 自身版本是两个独立版本轴；发布门禁分别保留二者，另以 `compatible_review_schema`、Playbook 校验结果和 `release_fingerprint` 判断能否进入正式审查，不用字符串相等制造错误拒绝。
+- `Rule.applicability` 的每个合同类型声明可以进一步约束本方立场、法域、交易标签、金额区间、文档角色和结构化例外；`PlaybookSpec.escalation_thresholds` 负责金额升级门禁。条件事实缺失时统一返回 `UNKNOWN`，不能折叠为不适用或通过。
 - `ReviewResult.rule_bundle` 始终保留完整规则快照，`review_context.review_scope` 只决定本次执行的规则白名单；所有条款、发现、问题和修订操作继续通过 `Evidence` 回指原文。
-- `KnowledgeChunk.source_kind` 统一区分合同事实和规则依据；语义检索没有合同正文命中时不调用外部模型，规则发现保持 `UNKNOWN` 并进入人工复核。
-- 同步 `POST /api/v1/contract-review` 使用显式表单字段 `PackageId`、`ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext`、`ReviewScope`，返回 `ContractReviewResponse`；异步接口把同一上下文序列化进任务 manifest，由任务处理器还原为 `ReviewContext`。
-- 语义模型请求携带同一 `ReviewContext`，并把上下文写入请求指纹；模型只能输出规则枚举状态和已存在的 `evidence_id`，不能改变规则快照或企业 Playbook。
+- `data/contract_core_rules_v0.15.json` 以独立扩展快照承载付款、交付、验收、续期、终止、违约责任和跨文档一致性规则；应用服务合并基础快照与扩展快照，重复 `rule_id`、Playbook 冲突或 Schema 不兼容直接失败。
+- `Rule.checker` 是规则快照到确定性业务检查器的唯一绑定；`rule_checkers.py` 集中负责金额、税率、付款、发票和附件完整性计算，缺少绑定或结构化事实不足时统一生成 `UNKNOWN`，不在 Router、任务处理器或提示词中复制规则分支。
+- 付款、交付、验收、续期、终止和违约责任先抽取为带原文证据的 `contract_term:*` 事实；跨文档检查只比较至少覆盖规则要求事实类型的多文档候选，缺少任一比较口径时保持 `UNKNOWN`，不把局部一致性当成全包通过。
+- 财务事实先由 `facts.py` 以带证据的 `ContractFact` 形成，检查器只消费 `RuleCheckContext`，因此“事实抽取—规则判断—发现输出”三层职责可独立替换和回放。
+- `ClauseRelation` 是条款关系的唯一结果对象：确定性构建器只登记明确的父子层级、定义项和条款编号引用；引用目标不存在或编号重复时保留 `UNRESOLVED`，不得把未解析的关系当作审查通过。
+- `KnowledgeChunk.source_kind` 统一区分合同事实和规则依据；来源类型必须显式声明，不再从旧元数据推断。语义检索没有合同正文命中时不调用外部模型，规则发现保持 `UNKNOWN` 并进入人工复核。
+- 每条适用规则都必须走同一条 `RetrievalQuery → RetrievalTrace → CandidateEvidence` 链路；确定性规则、Playbook 和语义模型只能消费按规则绑定的候选证据。关键词扫描仍可作为词法候选生成器，但不得成为条款识别或事实抽取的旁路入口。
+- 配置 embedding 后由应用适配层执行 BM25 词法与向量候选召回，并使用固定 `RRF_K=60` 的 Reciprocal Rank Fusion 融合名次：词法命中保留精确术语、数字、否定和定义短语，向量命中补充语义相近表达。`RetrievalQuery` 携带规则版本、查询意图、精确/数字/否定锚点和结构化过滤；`RetrievalTrace` 持久化过滤条件、融合方式和各来源名次，轨迹命中再规范化为 `CandidateEvidence`。召回结果仍只是候选证据，不产生 `Finding` 或其它审核结论，最终判断只能来自规则检查器或通过证据门禁的语义审查。
+- 同步 `POST /api/v1/contract-review` 使用显式表单字段 `PackageId`、`ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext`、`TransactionTags`、`TransactionAmount`、`DocumentKinds`、`DocumentPrecedence`、`ReviewScope`，返回 `ContractReviewResponse`；异步接口把同一上下文和合同包角色序列化进任务 manifest，由任务处理器还原为 `ReviewContext` 与 `ContractPackage`。
+- `POST /contract-review/decision` 和 `POST /contract-review/finalize` 的请求体分别是 `ReviewDecisionRequest`、`ReviewFinalizationRequest`，都必须携带完整 `ReviewResult`；应用服务先执行完整性、证据和指纹门禁，再追加 `ReviewDecision` 或推进 `FINALIZED`，不接受只传旧风险清单的部分更新。
+- `ContractVersionComparison` 和 `ContractRevisionSet` 是 `ReviewResult` 的后置领域附件；挂载时生成 `EvidenceType.COMPARISON` 证据，更新 `ReviewRun`/`ReviewReport` 指针、结果指纹和 `post_review_sequence`，因此版本差异和红线建议不会形成第二套结果对象。
+- 版本比对只有在两侧文档都属于当前合同包且都出现在完整 `document_precedence` 中时才解析 `base/compare` 覆盖关系；外部比较文件、部分优先序列或未配置优先序列均输出 `unresolved`。每个影响项同时保留受影响业务义务、付款风险、责任风险、责任上限是否扩大、交付/验收绑定变化和需要重触发的规则；责任上限的数值、例外或适用主体无法从差异片段确定时输出 `requires_review`，不自动放行。
+- 语义模型的 `PASS` 需达到更高置信度门槛并引用带原文片段的合同证据；明确要求人工复核、置信度不足或缺少合同原文时强制转为 `UNKNOWN`，并标记 `evidence_quality=INSUFFICIENT`、`automatic=false`。
+- 语义模型请求携带同一 `ReviewContext`、与 `rule_ids` 逐条对应的规则定义快照，以及同一条检索链路产生的查询和候选；请求指纹覆盖这些内容，模型只能输出每条请求规则一次的枚举状态和已存在的 `evidence_id`，不能改变规则快照或企业 Playbook。缺少任一规则输出直接拒绝整批响应，不把缺失项静默降为通过。
 
 ### 应用服务：`src/contract_review_app/services`
 
 - `review_service.py`：组合文件指纹、规则快照、解析、印章证据、语义客户端和缓存。
 - `services/review_context.py`：只负责 API/任务输入的上下文解析与别名归一化，不参与规则判断。
 - `models/review_schemas.py`：定义同步审查和修订提案的 HTTP 响应 DTO，不把领域模型直接作为不受约束的字典返回。
-- `projections.py`：只把核心 `ReviewResult` 投影为历史风险清单、要素抽取和规则目录形状；不执行解析、模型调用或数据库写入。
-- `elements.py`：从解析快照生成带证据的标准合同要素 `ContractFact`，要素结果与审查结果共用同一个事实集合。
+- `elements.py`：从解析快照生成带证据的标准合同要素 `ContractFact`，要素结果与审查结果共用同一个事实集合；不创建独立的抽取结果。
 - `task_service.py`：负责上传落盘、任务状态和 Celery 入队；同步 Redis/文件适配器在异步 API 中通过线程池调用。
 - `result_cache.py`：以输入/规则/模型/提示词指纹为键的可选缓存，使用同目录临时文件加原子替换。
-- `/rules` 与 `/contract-element-fields` 仅返回正式 `RuleBundle` 和标准要素目录的只读兼容投影。
+- `/contract-review/rule-bundle` 直接返回正式 `RuleBundle`；标准合同要素只作为 `ReviewResult.facts` 的事实类型提供，不再暴露独立目录或抽取接口。
 
 ### 适配层与运行时
 
@@ -96,10 +108,11 @@ ReviewDecision / ContractRevisionSet（人工确认与修订提案）
 
 1. API 读取并限制每个上传文件大小。
 2. 应用服务在线程池中运行确定性审查；文件按稳定 `document_id` 排序，保证上传顺序不影响指纹。
-3. 解析质量门、证据索引、知识检索和规则执行产生 `ReviewResult`。
-4. 如配置了模型，再调用语义客户端；模型请求/响应指纹、规则 ID 和证据 ID 在引擎边界复核。
-5. HTTP 层需要历史字段时，只从已生成的 `ReviewResult` 生成兼容投影；缓存命中不跳过证据校验。
-6. 返回报告并停在 `HUMAN_REVIEW`，人工决定通过追加修订记录完成闭环。
+3. 解析质量门、证据索引、条款关系构建、知识检索和规则执行产生 `ReviewResult`。
+4. 对每条适用规则先构造 `RetrievalQuery`，索引返回 `RetrievalTrace`，再生成 `CandidateEvidence`；确定性事实抽取、Playbook/规则检查器和语义请求共享这一按规则候选集合。
+5. 如配置了模型，再调用语义客户端；模型请求/响应指纹、规则 ID 和证据 ID 在引擎边界复核。
+6. HTTP 层直接返回 `ReviewResult`；缓存命中不跳过证据校验，也不生成第二套风险清单。
+7. 返回报告并停在 `HUMAN_REVIEW`；人工决定、版本比对和最终确认继续以 `ReviewResult` 为输入，形成可回放的后置附件、`ReviewDecision` 和 `FINALIZED` 状态。
 
 ### 异步任务
 
@@ -120,7 +133,7 @@ ReviewDecision / ContractRevisionSet（人工确认与修订提案）
 - `ReviewResult` 新增条款、履约义务、审查问题和问题结论；规则发现被明确映射为 `SUPPORTED`、`CONTRADICTED`、`NOT_MENTIONED`、`UNKNOWN` 或 `NOT_APPLICABLE`，且必须引用持久化证据。
 - 删除“关闭引擎规则、截断规则快照、只解析合同”的旧分支；每次合同审查都执行完整 `RuleBundle`，模型只是有合同证据时的补充判断。
 - 知识块增加显式来源类型，语义模型的证据白名单只包含合同正文命中；规则定义证据被引用时由流水线和审计同时拒绝。
-- Redis、文件和 SQLite 适配器不再直接阻塞 FastAPI 事件循环，查询任务和规则/要素管理接口统一使用 `asyncio.to_thread`。
+- Redis、文件和规则快照适配器不再直接阻塞 FastAPI 事件循环，任务查询和规则加载统一使用 `asyncio.to_thread`。
 
 ## 5. 从优秀项目吸收的模式
 
@@ -140,19 +153,21 @@ ReviewDecision / ContractRevisionSet（人工确认与修订提案）
 
 - 为异步任务创建增加 `Idempotency-Key` 和 Redis Lua 原子 admission；同一键在 TTL 内只返回原任务，只有准入胜者落盘/绑定输入并入队，待处理上限检查与首条事件写入在同一脚本中完成。
 - 同步审查和异步任务共用 `StageEventStore` 契约，保留 Redis/JSON 的后端差异但统一追加/读取边界；删除重复的 `ReviewTransition`，缺少 v2 Schema 或独立事件文件的旧结果直接拒绝。
-- 规则编辑、要素编辑和 AI 合同类型的严格 JSON DTO 仍可作为后续收紧项，不把本轮未实现的范围计入验收。
+- Playbook 管理、规则审批和发布操作不属于当前运行 API；本轮只保留正式快照读取和兼容门禁，不把未实现的管理能力计入验收。
+- 条款关系和混合召回已先落地确定性/适配器边界；`evals/expert_contract_review_cases.json` 另行固定每条标注规则的金标准、可接受候选、错误候选和法律表达切片，离线统计 Recall@5、Recall@10、证据引用准确率与 `unknown_false_pass`。在基线指标完成前不引入重排模型或持久化 ANN。
 
 ### P2：生产可观测与隐私（已落地基础能力）
 
 - 在不记录合同正文/Token 的前提下增加可选 OpenTelemetry trace，关联阶段、`run_id`、task、provider/model 和数量摘要；SDK 未安装或追踪异常时自动 no-op。
-- 在语义、AI 风险分析、要素抽取和 embedding 外发前增加默认 `block` 的高置信度 PII 门；扫描器异常、配置异常和无法读取文字时 fail-closed，并返回本地确定性/词法降级结果。
+- 在语义审查和 embedding 外发前增加默认 `block` 的高置信度 PII 门；扫描器异常、配置异常和无法读取文字时 fail-closed，并返回本地确定性/词法降级结果。
 - 下一步为每个阶段补充重试、耗时、输入/输出指纹和降级原因的聚合报表；本轮先保留结构化日志和安全 span 属性。
 
 ### P3：质量与部署（离线质量门已落地，真实联调待环境）
 
-- 建立带固定合同夹具的离线评测：证据类型、规则结果、PII 门禁、阶段账本审计和重放指纹均在 CI 中执行。
+- 建立带固定合同夹具的离线评测：证据类型、规则结果、统一检索链路、PII 门禁、阶段账本审计和重放指纹均在 CI 中执行；离线评测不访问 OCR、外部模型、Redis 或 Celery。
+- 增加中文脱敏业务场景专家标注种子集；每个案例以主合同、附件/报价单/技术协议、版本或补充协议、业务背景、企业立场和专家标注闭环为最小单位，分别统计条款定位、证据引用、规则判断、`UNKNOWN` 识别、金额事实、金额计算、版本比对和红线建议；真实法务专家签字集与离线种子集分开管理，旧扁平案例格式不再兼容。
 - 在具备 Docker daemon、Redis、OCR 和模型环境的 CI/验收机上补运行验证；本机未具备这些依赖时只能报告阻塞，不能伪造通过。
-- 需要独立扩缩容时再拆 worker 或检索服务，先用接口/事件契约隔离，避免把共享事务状态拆散。
+- 只有在检索专项评测证明进程内索引不足后，才考虑 Elasticsearch/OpenSearch 等持久化 ANN；当前优先修复查询对象、候选证据和业务规则的一致性，不以拆服务替代业务契约。
 
 ## 7. 验收与回滚
 

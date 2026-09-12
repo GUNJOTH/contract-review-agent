@@ -9,11 +9,13 @@ from contract_review import (
     ReviewContext,
     Rule,
     RuleBundle,
-    resolve_review_context,
     resolve_rule_applicability,
     select_rules,
 )
-from contract_review.review_context import ReviewContextError
+from contract_review_app.services.review_context import (
+    ReviewContextInputError,
+    build_review_context,
+)
 
 
 def _bundle() -> RuleBundle:
@@ -53,21 +55,24 @@ def _bundle() -> RuleBundle:
 
 
 def test_review_context_normalizes_legacy_contract_type() -> None:
-    context = resolve_review_context(
-        ReviewContext(party_position=PartyPosition.BUYER),
+    context = build_review_context(
         contract_type=" software ",
+        party_position="甲方",
+        transaction_tags="软件,重点,软件",
+        transaction_amount="1000000.00",
+        review_scope="金额,金额",
     )
 
     assert context.contract_type == "software"
     assert context.party_position == PartyPosition.BUYER
+    assert context.transaction_tags == ["软件", "重点"]
+    assert str(context.transaction_amount) == "1000000.00"
+    assert context.review_scope == ["金额"]
 
 
-def test_review_context_rejects_conflicting_contract_types() -> None:
-    with pytest.raises(ReviewContextError):
-        resolve_review_context(
-            ReviewContext(contract_type="software"),
-            contract_type="hardware",
-        )
+def test_application_context_rejects_unknown_party_position() -> None:
+    with pytest.raises(ReviewContextInputError):
+        build_review_context(party_position="甲乙方")
 
 
 def test_rule_scope_and_applicability_are_resolved_by_rule_module() -> None:
@@ -80,7 +85,25 @@ def test_rule_scope_and_applicability_are_resolved_by_rule_module() -> None:
     ) == "expected_value"
 
 
+def test_rule_applicability_resolves_registered_contract_type_alias() -> None:
+    rule = Rule(
+        rule_id="software-alias-001",
+        version="v1",
+        title="软件交付",
+        category="交付",
+        applies_to=["软件开发/转让服务"],
+        check_method="semantic",
+        applicability={
+            "软件开发/转让服务": ApplicabilitySpec(applicability="required")
+        },
+        source_snapshot="rules#software-alias",
+    )
+
+    assert resolve_rule_applicability(
+        rule, review_context=ReviewContext(contract_type="software")
+    ) == "required"
+
+
 def test_review_scope_accepts_only_string_arrays() -> None:
     with pytest.raises(ValidationError):
         ReviewContext(review_scope="金额")
-

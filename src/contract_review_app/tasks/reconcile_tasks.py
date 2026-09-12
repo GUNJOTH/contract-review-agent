@@ -9,7 +9,7 @@ from contract_review_app.config import settings
 from contract_review_app.models import AsyncTaskStage
 from contract_review_app.repositories.redis_task_store import task_store
 from contract_review_app.tasks.celery_app import celery_app
-from contract_review_app.tasks.worker_tasks import execute_ocr_task
+from contract_review_app.tasks.worker_tasks import execute_contract_review_task
 from contract_review_app.telemetry.logging import log_async_task_event
 from contract_review_app.telemetry.metrics import metrics
 
@@ -28,7 +28,9 @@ def reconcile_stale_tasks() -> int:
             updated = task_store.requeue(task.task_id, heartbeat_at=None)
             if updated is None:
                 continue
-            execute_ocr_task.apply_async(args=[task.task_id], queue=updated.queue_name)
+            execute_contract_review_task.apply_async(
+                args=[task.task_id], queue=updated.queue_name
+            )
             metrics.record_async_task_requeued(updated.task_type, updated.queue_name, "worker_lost")
             _sync_queue_depth(updated.queue_name)
             log_async_task_event(

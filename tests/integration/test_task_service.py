@@ -2,12 +2,20 @@
 
 import asyncio
 import threading
+from io import BytesIO
 
 import pytest
+from fastapi import UploadFile
 
 from contract_review_app.api.errors import AppError
 from contract_review_app.models import AsyncTaskStage, AsyncTaskStatus
 from contract_review_app.services.task_service import TaskService
+
+
+def _upload(filename: str = "合同.pdf") -> UploadFile:
+    """构造仅供任务服务边界测试使用的合同附件。"""
+
+    return UploadFile(file=BytesIO(b"contract"), filename=filename)
 
 
 class _PendingStore:
@@ -100,7 +108,10 @@ async def test_unknown_task_type_is_rejected_before_input_persistence(monkeypatc
     monkeypatch.setattr(service, "_persist_input", unexpected_persist)
 
     with pytest.raises(AppError) as caught:
-        await service.create_task(task_type="not-a-supported-task")
+        await service.create_task(
+            task_type="not-a-supported-task",
+            files=[_upload()],
+        )
 
     assert caught.value.status_code == 400
     assert caught.value.error_code == "InvalidParameterValue.InvalidTaskType"
@@ -126,7 +137,10 @@ async def test_task_persistence_failure_cleans_uploaded_input(monkeypatch):
     monkeypatch.setattr(service, "_persist_input", fake_persist)
 
     with pytest.raises(AppError) as caught:
-        await service.create_task(task_type="contract-review")
+        await service.create_task(
+            task_type="contract-review",
+            files=[_upload()],
+        )
 
     assert caught.value.status_code == 503
     assert caught.value.error_code == "FailedOperation.UnOpenError"
@@ -158,10 +172,14 @@ async def test_idempotency_key_replays_existing_task_without_second_enqueue(
     monkeypatch.setattr(service, "_enqueue_task", lambda *_args: None)
 
     first = await service.create_task(
-        task_type="contract-review", idempotency_key="review-2026-001"
+        task_type="contract-review",
+        files=[_upload()],
+        idempotency_key="review-2026-001",
     )
     second = await service.create_task(
-        task_type="contract-review", idempotency_key=" review-2026-001 "
+        task_type="contract-review",
+        files=[_upload()],
+        idempotency_key=" review-2026-001 ",
     )
 
     assert first.Response.task_id == second.Response.task_id
@@ -191,7 +209,7 @@ async def test_strict_idempotency_admits_before_input_persistence(monkeypatch):
         *(
             service.create_task(
                 task_type="contract-review",
-                image_base64="dGVzdA==",
+                files=[_upload()],
                 idempotency_key="strict-review-001",
             )
             for _ in range(8)
@@ -214,7 +232,9 @@ async def test_idempotency_key_rejects_control_characters_before_persistence():
 
     with pytest.raises(AppError) as caught:
         await service.create_task(
-            task_type="contract-review", idempotency_key="bad\nkey"
+            task_type="contract-review",
+            files=[_upload()],
+            idempotency_key="bad\nkey",
         )
 
     assert caught.value.status_code == 400

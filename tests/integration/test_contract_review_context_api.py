@@ -58,6 +58,9 @@ def test_contract_review_persists_context_and_applies_rule_scope(monkeypatch):
         "party_position": "buyer",
         "jurisdiction": "中国大陆",
         "transaction_context": "软件开发项目采购，关注付款与金额口径。",
+        "transaction_tags": [],
+        "transaction_amount": None,
+        "document_kinds": ["unknown"],
         "review_scope": ["金额"],
     }
     assert review["run"]["configuration"]["selected_rule_ids"]
@@ -76,4 +79,3 @@ def test_contract_review_persists_context_and_applies_rule_scope(monkeypatch):
         == "金额"
         for finding in review["findings"]
     )
-

@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from loguru import logger
 
 from contract_review import (
-    load_rule_bundle,
+    load_active_rule_bundle,
     parse_contract_package,
     run_review,
     run_review_with_semantic_client,
 )
+from contract_review.rule_checkers import RULE_CHECKER_VERSION
 from contract_review.pipeline import PIPELINE_VERSION
 from contract_review.models import (
+    DocumentKind,
     Evidence,
     ReviewContext,
     ReviewResult,
 )
-from contract_review.review_context import resolve_review_context
 from contract_review.ocr import OCRProvider
 from contract_review.semantic import CONTRACT_REVIEW_SYSTEM_INSTRUCTION
 
@@ -30,13 +32,20 @@ from contract_review_app.services.seal_evidence import SealEvidenceDetector
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 from contract_review_app.services.pii_gate import gate_paths
 from contract_review_app.services.triton_ocr_provider import TritonOCRProvider
-from contract_review_app.services.vector_knowledge_index import VectorKnowledgeIndex
+from contract_review_app.services.vector_knowledge_index import HybridKnowledgeIndex
 from contract_review_app.telemetry.tracing import set_span_attributes, start_span
 
 
 def rules_path() -> Path:
     """规则快照路径；相对路径按项目根解析，可用 CONTRACT_RULES_PATH 覆盖。"""
     return settings.resolve_path(settings.CONTRACT_RULES_PATH)
+
+
+def core_rules_path() -> Path | None:
+    """返回核心扩展规则快照路径；空配置表示不加载扩展。"""
+
+    configured = settings.CONTRACT_CORE_RULES_PATH.strip()
+    return settings.resolve_path(configured) if configured else None
 
 
 def _semantic_client() -> RelaySemanticReviewer | None:
@@ -53,16 +62,21 @@ def _semantic_client() -> RelaySemanticReviewer | None:
 
 
 def _knowledge_index_factory():
-    """配置了 embedding 端点时启用向量检索，否则用引擎词法基线。"""
+    """配置了 embedding 端点时启用词法与向量混合检索。"""
     if (
         settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT
         and settings.CONTRACT_REVIEW_EMBEDDING_MODEL
     ):
-        return VectorKnowledgeIndex
+        return HybridKnowledgeIndex
     return None
 
 
-def _collect_seal_evidence(paths: list[Path], *, package_id: str) -> list[Evidence]:
+def _collect_seal_evidence(
+    paths: list[Path],
+    *,
+    package_id: str,
+    document_kinds: Mapping[str, DocumentKind] | None = None,
+) -> list[Evidence]:
     """预解析（无 OCR，快）拿到文档身份后逐页检测印章，登记视觉证据。
 
     识别服务不可用或检测失败时返回空列表，不阻断审查。
@@ -75,6 +89,7 @@ def _collect_seal_evidence(paths: list[Path], *, package_id: str) -> list[Eviden
         _, parsed = parse_contract_package(
             paths,
             package_id=package_id,
+            document_kinds=document_kinds,
             ocr_provider=None,
         )
         documents = [item.document for item in parsed]
@@ -88,21 +103,35 @@ def _review_fingerprint(
     files: list[tuple[str, bytes]],
     *,
     package_id: str,
-    contract_type: str | None = None,
-    review_context: ReviewContext | None = None,
+    review_context: ReviewContext,
+    document_precedence: Sequence[str] = (),
+    document_kinds: Mapping[str, DocumentKind] | None = None,
     allow_semantic: bool = True,
 ) -> str:
     """审查输入指纹：文件内容、上下文、规则和执行模式的稳定摘要。"""
-    effective_context = resolve_review_context(
-        review_context,
-        contract_type=contract_type,
-    )
-    parts = [package_id, effective_context.model_dump_json()]
+    effective_context = review_context
+    parts = [
+        package_id,
+        effective_context.model_dump_json(),
+        "document_precedence=" + "\x1f".join(document_precedence),
+        "document_kinds="
+        + "\x1f".join(
+            f"{filename}:{document_kind.value}"
+            for filename, document_kind in sorted((document_kinds or {}).items())
+        ),
+    ]
     for filename, content in files:
         parts.append(f"{filename}:{hashlib.sha256(content).hexdigest()}")
     parts.append(settings.CONTRACT_RULES_PATH)
     try:
         parts.append(hashlib.sha256(rules_path().read_bytes()).hexdigest())
+    except OSError:
+        pass
+    parts.append(settings.CONTRACT_CORE_RULES_PATH)
+    try:
+        extension = core_rules_path()
+        if extension is not None:
+            parts.append(hashlib.sha256(extension.read_bytes()).hexdigest())
     except OSError:
         pass
     parts.extend(
@@ -114,6 +143,7 @@ def _review_fingerprint(
             settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
             settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
             PIPELINE_VERSION,
+            RULE_CHECKER_VERSION,
             TritonOCRProvider().provider_version,
             str(settings.CONTRACT_SEAL_DETECTION_ENABLED),
             str(allow_semantic),
@@ -129,8 +159,9 @@ def run_contract_review(
     files: list[tuple[str, bytes]],
     *,
     package_id: str,
-    contract_type: str | None = None,
-    review_context: ReviewContext | None = None,
+    review_context: ReviewContext,
+    document_precedence: Sequence[str] = (),
+    document_kinds: Mapping[str, DocumentKind] | None = None,
     ocr_provider: OCRProvider | None = None,
     allow_semantic: bool = True,
 ) -> ReviewResult:
@@ -142,14 +173,13 @@ def run_contract_review(
     ID），未配置时语义/视觉/人工规则显式输出 UNKNOWN 进入人工复核队列。
     结果按输入指纹缓存：同一输入返回完全一致的结果（见 result_cache）。
     """
-    effective_context = resolve_review_context(
-        review_context,
-        contract_type=contract_type,
-    )
+    effective_context = review_context
     cache_key = _review_fingerprint(
         files,
         package_id=package_id,
         review_context=effective_context,
+        document_precedence=document_precedence,
+        document_kinds=document_kinds,
         allow_semantic=allow_semantic,
     )
     cached = cache_get(cache_key)
@@ -159,7 +189,7 @@ def run_contract_review(
         except Exception as exc:
             logger.warning(f"审查缓存读取失败，重新审查: {exc}")
 
-    rule_bundle = load_rule_bundle(rules_path())
+    rule_bundle = load_active_rule_bundle(rules_path(), core_rules_path())
     provider = ocr_provider if ocr_provider is not None else TritonOCRProvider()
     with (
         start_span(
@@ -169,13 +199,21 @@ def run_contract_review(
         tempfile.TemporaryDirectory(prefix="contract-review-") as tmp,
     ):
         paths: list[Path] = []
+        temporary_document_kinds: dict[str, DocumentKind] = {}
         for index, (filename, content) in enumerate(files):
             safe_name = Path(filename).name or f"file-{index}"
             path = Path(tmp) / f"{index:03d}-{safe_name}"
             path.write_bytes(content)
             paths.append(path)
+            document_kind = (document_kinds or {}).get(safe_name)
+            if document_kind is not None:
+                temporary_document_kinds[path.name] = document_kind
 
-        seal_evidence = _collect_seal_evidence(paths, package_id=package_id)
+        seal_evidence = _collect_seal_evidence(
+            paths,
+            package_id=package_id,
+            document_kinds=temporary_document_kinds,
+        )
         client = _semantic_client() if allow_semantic else None
         # Scan the exact parsed text (including OCR output) before any
         # semantic provider is allowed to receive context chunks.
@@ -211,6 +249,8 @@ def run_contract_review(
                 package_id=package_id,
                 rule_bundle=rule_bundle,
                 review_context=effective_context,
+                document_precedence=document_precedence,
+                document_kinds=temporary_document_kinds,
                 ocr_provider=provider,
                 extra_evidence=seal_evidence,
                 knowledge_index_factory=knowledge_index_factory,
@@ -228,6 +268,8 @@ def run_contract_review(
                 prompt_version=settings.CONTRACT_REVIEW_PROMPT_VERSION,
                 system_instruction=CONTRACT_REVIEW_SYSTEM_INSTRUCTION,
                 review_context=effective_context,
+                document_precedence=document_precedence,
+                document_kinds=temporary_document_kinds,
                 ocr_provider=provider,
                 extra_evidence=seal_evidence,
                 knowledge_index_factory=knowledge_index_factory,

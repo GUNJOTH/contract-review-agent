@@ -11,6 +11,8 @@ from contract_review.models import (
     ContractFact,
     EvidenceType,
     KnowledgeSourceKind,
+    RetrievalMode,
+    RetrievalSource,
     Rule,
     RuleBundle,
     ReviewContext,
@@ -32,6 +34,7 @@ from contract_review.semantic import (
     build_semantic_model_request,
 )
 from contract_review.parser import find_text_evidence, parse_pdf
+from contract_review.playbook import publish_playbook_bundle
 from contract_review.store import AuditStoreError, JsonAuditStore
 
 
@@ -47,7 +50,7 @@ class PipelineTests(unittest.TestCase):
         page.insert_text((60, 180), "The tax rate is 13%.")
         pdf.save(str(self.pdf_path))
         pdf.close()
-        self.bundle = RuleBundle(
+        self.bundle = publish_playbook_bundle(RuleBundle(
             bundle_id="pipeline-rules-v1",
             source_filename="pipeline-rules.xlsx",
             source_sha256="b" * 64,
@@ -88,7 +91,7 @@ class PipelineTests(unittest.TestCase):
                     source_snapshot="pipeline-rules#3",
                 ),
             ],
-        )
+        ))
         self.addCleanup(self._cleanup)
 
     def _cleanup(self) -> None:
@@ -110,14 +113,14 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-pipeline",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-one",
         )
         second = run_review(
             [self.pdf_path],
             package_id="pkg-pipeline",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-two",
         )
 
@@ -173,12 +176,70 @@ class PipelineTests(unittest.TestCase):
 
         self.assertTrue(audit_result(result).passed)
 
+    def test_semantic_retrieval_requires_explicit_rule_applicability(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-inapplicable-semantic",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="hardware"),
+            run_id="run-inapplicable-semantic",
+        )
+
+        self.assertEqual(
+            {trace.retrieval_query.rule_id for trace in result.retrieval_traces},
+            {rule.rule_id for rule in self.bundle.rules},
+        )
+        self.assertTrue(result.candidate_evidence)
+        self.assertIsNone(
+            build_semantic_model_request(
+                result,
+                provider="test-provider",
+                model_version="test-model",
+                prompt_version="prompt-v1",
+            )
+        )
+        self.assertEqual(
+            next(
+                finding
+                for finding in result.findings
+                if finding.rule_id == "semantic-breach"
+            ).status,
+            "UNKNOWN",
+        )
+
+    def test_audit_rejects_mismatched_retrieval_mode_and_hit_source(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-retrieval-audit",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-retrieval-audit",
+        )
+        trace = next(trace for trace in result.retrieval_traces if trace.hits)
+        tampered_hit = trace.hits[0].model_copy(
+            update={"retrieval_sources": [RetrievalSource.VECTOR]}
+        )
+        tampered_trace = trace.model_copy(
+            update={
+                "retrieval_mode": RetrievalMode.LEXICAL,
+                "hits": [tampered_hit, *trace.hits[1:]],
+            }
+        )
+        tampered = result.model_copy(
+            update={"retrieval_traces": [tampered_trace, *result.retrieval_traces[1:]]}
+        )
+
+        from contract_review.audit import audit_result
+
+        report = audit_result(tampered)
+        self.assertFalse(report.checks["knowledge_integrity"])
+
     def test_v1_result_without_schema_version_is_rejected(self) -> None:
         result = run_review(
             [self.pdf_path],
             package_id="pkg-schema-v2",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-schema-v2",
         )
         payload = result.model_dump(mode="json")
@@ -192,7 +253,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-pipeline",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-decisions",
         )
         with self.assertRaises(ValueError):
@@ -227,12 +288,40 @@ class PipelineTests(unittest.TestCase):
             replayed.run.result_fingerprint, finalized.run.result_fingerprint
         )
 
+    def test_review_action_rejects_a_tampered_core_result(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-tampered-action",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-tampered-action",
+        )
+        finding = result.findings[0]
+        tampered = result.model_copy(
+            update={
+                "findings": [
+                    finding.model_copy(update={"reason": "客户端篡改的结论"}),
+                    *result.findings[1:],
+                ]
+            }
+        )
+
+        with self.assertRaises(ValueError):
+            record_review_decision(
+                tampered,
+                finding.finding_id,
+                decision="ACCEPT",
+                actor_id="reviewer-1",
+                actor_role="legal",
+                comment="不能绕过结果完整性门禁。",
+            )
+
     def test_replay_requires_same_inputs_and_result(self) -> None:
         result = run_review(
             [self.pdf_path],
             package_id="pkg-replay",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-replay-original",
         )
         replayed = replay_review(result, [self.pdf_path], rule_bundle=self.bundle)
@@ -254,7 +343,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-semantic",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-semantic-baseline",
         )
         semantic_finding = next(
@@ -301,7 +390,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-semantic",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             semantic_request=semantic_request,
             semantic_response=response,
             run_id="run-semantic",
@@ -334,7 +423,7 @@ class PipelineTests(unittest.TestCase):
                 [self.pdf_path],
                 package_id="pkg-semantic-rule-evidence",
                 rule_bundle=self.bundle,
-                contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
                 semantic_request=semantic_request,
                 semantic_response=response.model_copy(
                     update={
@@ -352,7 +441,7 @@ class PipelineTests(unittest.TestCase):
                 [self.pdf_path],
                 package_id="pkg-semantic-invalid",
                 rule_bundle=self.bundle,
-                contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
                 semantic_request=semantic_request,
                 semantic_response=response.model_copy(
                     update={
@@ -370,7 +459,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-semantic-client",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-semantic-client-baseline",
         )
         request = build_semantic_model_request(
@@ -422,7 +511,7 @@ class PipelineTests(unittest.TestCase):
             model_version="captured-model-v1",
             prompt_version="contract-review-prompt-v2",
             system_instruction="只能引用给定证据；无法确定则返回 UNKNOWN。",
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             configuration={"temperature": 0, "top_k": 5},
             run_id="run-semantic-client",
         )
@@ -446,9 +535,13 @@ class PipelineTests(unittest.TestCase):
         )
         bundle = self.bundle.model_copy(
             update={
-                "rules": [self.bundle.rules[0], unmatched_rule, self.bundle.rules[2]]
+                "rules": [self.bundle.rules[0], unmatched_rule, self.bundle.rules[2]],
+                "release_status": "draft",
+                "release_fingerprint": None,
+                "published_at": None,
             }
         )
+        bundle = publish_playbook_bundle(bundle)
 
         class _UnexpectedSemanticCall:
             def review(self, _request):
@@ -462,7 +555,7 @@ class PipelineTests(unittest.TestCase):
             provider="test-provider",
             model_version="test-model-v1",
             prompt_version="contract-review-prompt-v1",
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
         )
 
         finding = next(
@@ -477,7 +570,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-decision-evidence",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-decision-evidence",
         )
         finding = next(
@@ -519,7 +612,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-contract-type",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             contract_type_fact=fact,
             contract_type_evidence=fact_evidence,
             run_id="run-contract-type",
@@ -573,7 +666,7 @@ class PipelineTests(unittest.TestCase):
         with ZipFile(docx_path, "w") as archive:
             archive.writestr("word/document.xml", xml)
         self.addCleanup(lambda: docx_path.unlink(missing_ok=True))
-        bundle = RuleBundle(
+        bundle = publish_playbook_bundle(RuleBundle(
             bundle_id="attachment-rules-v1",
             source_filename="attachment-rules.xlsx",
             source_sha256="c" * 64,
@@ -586,17 +679,18 @@ class PipelineTests(unittest.TestCase):
                     title="技术协议",
                     category="附件完整性",
                     applies_to=["software"],
-                    check_method="semantic",
+                    check_method="deterministic",
+                    checker="attachment_completeness",
                     source_snapshot="attachment-rules#1",
                 )
             ],
-        )
+        ))
 
         result = run_review(
             [docx_path],
             package_id="pkg-attachment",
             rule_bundle=bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-attachment",
         )
 
@@ -615,7 +709,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-store",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-store",
         )
         store = JsonAuditStore(self.work_path / "audit-store")
@@ -645,7 +739,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-store-revision",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-store-revision",
         )
         store = JsonAuditStore(self.work_path / "audit-store-revision")
@@ -673,7 +767,7 @@ class PipelineTests(unittest.TestCase):
             [self.pdf_path],
             package_id="pkg-store-version",
             rule_bundle=self.bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             run_id="run-store-version",
         )
         store = JsonAuditStore(self.work_path / "audit-store-version")

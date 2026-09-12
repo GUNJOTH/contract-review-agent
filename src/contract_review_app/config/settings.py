@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     OCR_GATEWAY_TIMEOUT_SECONDS: float = 60.0
 
     CONTRACT_RULES_PATH: str = "data/contract_rules_v0.14.json"
+    CONTRACT_CORE_RULES_PATH: str = "data/contract_core_rules_v0.15.json"
     CONTRACT_OCR_CONFIDENCE_THRESHOLD: float = 0.0
     CONTRACT_REVIEW_ENDPOINT: str = ""
     CONTRACT_REVIEW_API_KEY: str = ""

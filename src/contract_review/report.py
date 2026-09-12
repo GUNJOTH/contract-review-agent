@@ -7,7 +7,7 @@ from pathlib import Path
 from .audit import audit_result
 from .models import Evidence, Finding, ReviewResult
 
-REPORT_RENDERER_VERSION = "markdown-review-report-0.1.0"
+REPORT_RENDERER_VERSION = "markdown-review-report-0.2.0"
 
 
 def _markdown_text(value: str | None) -> str:
@@ -112,6 +112,29 @@ def render_markdown_report(result: ReviewResult) -> str:
         )
     if not result.obligations:
         lines.append("- 未识别到可由确定性规则确认的中文履约义务，需人工或模型复核。")
+    lines.extend(["", "## 条款关系", ""])
+    clause_labels = {
+        clause.clause_id: clause.clause_number or clause.title
+        for clause in result.clauses
+    }
+    if result.clause_relations:
+        for relation in result.clause_relations:
+            source_label = clause_labels.get(
+                relation.source_clause_id, relation.source_clause_id
+            )
+            target_label = (
+                clause_labels.get(relation.target_clause_id, relation.target_clause_id)
+                if relation.target_clause_id
+                else relation.target_label
+            )
+            lines.append(
+                f"- `{relation.relation_type.value}`：{_markdown_text(source_label)}"
+                f" → {_markdown_text(target_label)}；"
+                f"解析：`{relation.resolution.value}`；证据 "
+                f"{', '.join(f'`{item}`' for item in relation.evidence_ids)}"
+            )
+    else:
+        lines.append("- 未识别到可由确定性规则确认的条款关系。")
     lines.extend(["", "## 逐条发现", ""])
 
     decisions_by_finding = {
@@ -136,6 +159,7 @@ def render_markdown_report(result: ReviewResult) -> str:
                 ),
                 f"- 风险级别：`{finding.risk_level.value}`",
                 f"- 置信度：`{finding.confidence if finding.confidence is not None else '未提供'}`",
+                f"- 证据质量：`{finding.evidence_quality.value}`；自动采纳：`{'是' if finding.automatic else '否'}`",
                 f"- 原因：{_markdown_text(finding.reason)}",
             ]
         )
@@ -160,6 +184,69 @@ def render_markdown_report(result: ReviewResult) -> str:
             lines.append("人工决定：尚未记录。")
         lines.append("")
 
+    if result.version_comparisons:
+        lines.extend(["## 合同版本比对", ""])
+        for comparison in result.version_comparisons:
+            lines.append(
+                f"- `{comparison.comparison_id}`："
+                f"{_markdown_text(comparison.base_filename)} → "
+                f"{_markdown_text(comparison.compare_filename)}；"
+                f"相似度 {comparison.similarity:.2%}；"
+                f"新增 {comparison.added}、删除 {comparison.deleted}、"
+                f"修改 {comparison.modified}；证据 "
+                f"{', '.join(f'`{item}`' for item in comparison.evidence_ids)}"
+            )
+            for change in comparison.changes:
+                lines.append(
+                    f"  - `{change.kind.value}` `{change.change_id}`："
+                    f"基准：{_markdown_text(change.base_text) or '（无）'}；"
+                    f"比对：{_markdown_text(change.compare_text) or '（无）'}；"
+                    f"条款 {', '.join(f'`{item}`' for item in change.clause_ids) or '未定位'}；"
+                    f"证据 {', '.join(f'`{item}`' for item in change.evidence_ids)}"
+                )
+            if comparison.impacts:
+                lines.append(
+                    "  - 业务影响："
+                    f"重触发规则 {', '.join(f'`{item}`' for item in comparison.retrigger_rule_ids) or '无'}"
+                )
+                for impact in comparison.impacts:
+                    lines.append(
+                        f"    - `{impact.impact_id}`"
+                        + (
+                            f" · 规则 `{impact.rule_id}`"
+                            if impact.rule_id
+                            else " · 未映射规则"
+                        )
+                        + f" · 业务义务：{_markdown_text('；'.join(impact.changed_obligations))}"
+                        + f" · 付款风险 `{impact.payment_risk.value}`"
+                        + f" · 责任风险 `{impact.liability_risk.value}`"
+                        + f" · 责任上限变化 `{impact.liability_cap_impact.value}`"
+                        + f" · 交付/验收绑定 `{impact.delivery_acceptance_binding.value}`"
+                        + f" · 文件优先 `{impact.precedence_resolution}`"
+                        + f" · Playbook 重审：{'是' if impact.playbook_retrigger_required else '否'}"
+                        + f" · {_markdown_text(impact.reason)}"
+                    )
+
+    if result.revision_sets:
+        lines.extend(["", "## 红线/修订建议", ""])
+        for revision in result.revision_sets:
+            lines.append(
+                f"- `{revision.revision_id}` · `{revision.status}`；"
+                f"来源 `{revision.source_version}`；变更 {len(revision.changes)} 条"
+            )
+            for change in revision.changes:
+                lines.append(
+                    f"  - `{change.operation.value}` · 发现 `{change.finding_id}`"
+                    + (
+                        f" · 条款 `{change.clause_id}`"
+                        if change.clause_id
+                        else ""
+                    )
+                    + f"；原文：{_markdown_text(change.original_text)}"
+                    + f"；建议：{_markdown_text(change.proposed_text)}"
+                    + f"；证据 {', '.join(f'`{item}`' for item in change.evidence_ids)}"
+                )
+
     lines.extend(
         [
             "## 审计与回放",
@@ -168,10 +255,13 @@ def render_markdown_report(result: ReviewResult) -> str:
             f"- 结果指纹：`{result.run.result_fingerprint or '未生成'}`",
             f"- 证据数量：{len(result.evidence)}",
             f"- 条款片段数量：{len(result.clauses)}",
+            f"- 条款关系数量：{len(result.clause_relations)}",
             f"- 履约义务数量：{len(result.obligations)}",
             f"- 审查问题数量：{len(result.review_questions)}",
             f"- 知识片段数量：{len(result.knowledge_chunks)}",
             f"- 检索轨迹数量：{len(result.retrieval_traces)}",
+            f"- 版本比对数量：{len(result.version_comparisons)}",
+            f"- 红线/修订集合数量：{len(result.revision_sets)}",
         ]
     )
     if not audit.passed:

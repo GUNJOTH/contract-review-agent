@@ -1,10 +1,14 @@
 from contract_review.models import (
+    CandidateEvidence,
     ClauseKind,
     ContractClause,
     FindingStatus,
     MissingClausePolicy,
     PlaybookAction,
     PlaybookSpec,
+    KnowledgeSourceKind,
+    RetrievalSource,
+    ReviewContext,
     RiskLevel,
     Rule,
 )
@@ -44,6 +48,27 @@ def _rule(playbook: PlaybookSpec) -> Rule:
     )
 
 
+def _candidate(clause: ContractClause) -> CandidateEvidence:
+    return CandidateEvidence(
+        candidate_id=f"candidate-{clause.clause_id}",
+        query_id="query-payment-playbook",
+        rule_id="rule-payment-playbook",
+        rule_version="v1",
+        rank=1,
+        chunk_id=clause.source_chunk_ids[0],
+        document_id=clause.document_id,
+        source_name="contract.docx",
+        source_sha256="a" * 64,
+        source_version="parser-v1",
+        source_kind=KnowledgeSourceKind.CONTRACT,
+        content=clause.text,
+        evidence_ids=list(clause.evidence_ids),
+        clause_ids=[clause.clause_id],
+        score=1.0,
+        retrieval_sources=[RetrievalSource.LEXICAL],
+    )
+
+
 def _playbook(**overrides) -> PlaybookSpec:
     values = {
         "playbook_id": "payment-position-v1",
@@ -64,9 +89,12 @@ def _playbook(**overrides) -> PlaybookSpec:
 
 
 def test_playbook_preferred_position_passes_with_clause_evidence():
+    clause = _clause("付款条款：验收合格后支付合同价款。")
     result = evaluate_playbook_rule(
         _rule(_playbook()),
-        [_clause("付款条款：验收合格后支付合同价款。")],
+        [clause],
+        candidate_evidence=[_candidate(clause)],
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
         default_evidence_ids=["evidence-rule-1"],
     )
 
@@ -78,14 +106,20 @@ def test_playbook_preferred_position_passes_with_clause_evidence():
 
 
 def test_playbook_fallback_and_prohibited_positions_are_distinct():
+    fallback_clause = _clause("付款条款：合同采用分阶段付款。")
+    prohibited_clause = _clause("付款条款：合同签订后100%预付。")
     fallback = evaluate_playbook_rule(
         _rule(_playbook()),
-        [_clause("付款条款：合同采用分阶段付款。")],
+        [fallback_clause],
+        candidate_evidence=[_candidate(fallback_clause)],
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
         default_evidence_ids=["evidence-rule-1"],
     )
     prohibited = evaluate_playbook_rule(
         _rule(_playbook()),
-        [_clause("付款条款：合同签订后100%预付。")],
+        [prohibited_clause],
+        candidate_evidence=[_candidate(prohibited_clause)],
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
         default_evidence_ids=["evidence-rule-1"],
     )
 
@@ -100,14 +134,20 @@ def test_playbook_fallback_and_prohibited_positions_are_distinct():
 
 
 def test_playbook_missing_clause_is_blocked_and_unknown_text_is_not_pass():
+    missing_clause = _clause("交付条款：乙方按期交付。", title="交付条款")
+    unknown_clause = _clause("付款条款：双方另行协商付款安排。")
     missing = evaluate_playbook_rule(
         _rule(_playbook()),
-        [_clause("交付条款：乙方按期交付。", title="交付条款")],
+        [missing_clause],
+        candidate_evidence=[_candidate(missing_clause)],
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
         default_evidence_ids=["evidence-rule-1"],
     )
     unknown = evaluate_playbook_rule(
         _rule(_playbook()),
-        [_clause("付款条款：双方另行协商付款安排。")],
+        [unknown_clause],
+        candidate_evidence=[_candidate(unknown_clause)],
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
         default_evidence_ids=["evidence-rule-1"],
     )
 

@@ -25,7 +25,7 @@ from .models import (
     RuleBundle,
 )
 
-CONTRACT_DOMAIN_VERSION = "contract-domain-0.1.0"
+CONTRACT_DOMAIN_VERSION = "contract-domain-0.2.0"
 
 
 class ContractDomainError(ValueError):
@@ -51,6 +51,13 @@ _STRONG_OBLIGATION_PATTERN = re.compile(
 )
 _WEAK_OBLIGATION_PATTERN = re.compile(
     rf"(?P<subject>{_OBLIGOR_PATTERN})\s*应\s*"
+    r"(?P<action>[^。；;\n]{2,160})"
+)
+# 中文合同经常用“乙方提供/负责/保证……”的陈述句表达履约义务，
+# 这类句子没有“应/必须”标记，但在版本变更分析中不能丢失。
+_DECLARATIVE_OBLIGATION_PATTERN = re.compile(
+    rf"(?P<subject>{_OBLIGOR_PATTERN})\s*"
+    r"(?P<marker>提供|交付|承担|负责|保证|保修|维护|支付|赔偿)\s*"
     r"(?P<action>[^。；;\n]{2,160})"
 )
 _DEADLINE_PATTERN = re.compile(
@@ -87,14 +94,35 @@ def _clause_heading(text: str) -> tuple[str | None, str]:
     return clause_number, (title[:48] or "未命名条款")
 
 
+def _is_clause_start(chunk: KnowledgeChunk) -> bool:
+    """判断知识块是否开启新条款，而不是普通正文续行。"""
+
+    clause_number, _ = _clause_heading(chunk.content)
+    return clause_number is not None or bool(chunk.metadata.get("is_heading"))
+
+
+def _is_table_chunk(chunk: KnowledgeChunk) -> bool:
+    return chunk.metadata.get("block_type") == "table_cell"
+
+
+def _chunk_sort_key(chunk: KnowledgeChunk) -> tuple[str, int, int, str]:
+    return (
+        str(chunk.metadata.get("document_id") or ""),
+        int(chunk.metadata.get("page_number") or 0),
+        int(chunk.metadata.get("source_order") or 0),
+        chunk.chunk_id,
+    )
+
+
 def build_contract_clauses(
     chunks: Sequence[KnowledgeChunk],
     evidence: Sequence[Evidence],
 ) -> list[ContractClause]:
-    """把文档知识块转成稳定、可审计的最小条款片段。
+    """把正文知识块按条款边界聚合为稳定、可审计的领域对象。
 
-    当前版本坚持一块一条款，避免在没有版面证据时跨块自动合并。后续可以在
-    保持 ``source_chunk_ids`` 和 ``evidence_ids`` 不变的前提下升级分段器。
+    编号条款会吸收其后的普通正文续行，表格单元格和未编号段落保持独立，
+    这样既为语义检索提供完整条款上下文，又不会在缺少版面关系时跨段臆造
+    一个条款。每个聚合条款仍保留全部来源知识块和证据 ID。
     """
 
     evidence_by_id = {item.evidence_id: item for item in evidence}
@@ -105,57 +133,116 @@ def build_contract_clauses(
         and isinstance(chunk.metadata.get("document_id"), str)
         and chunk.content.strip()
     ]
-    document_chunks.sort(
-        key=lambda chunk: (
-            str(chunk.metadata["document_id"]),
-            int(chunk.metadata.get("page_number") or 0),
-            str(chunk.metadata.get("block_id") or ""),
-            chunk.chunk_id,
-        )
-    )
-    orders: dict[str, int] = {}
-    clauses: list[ContractClause] = []
+    by_document: dict[str, list[KnowledgeChunk]] = {}
     for chunk in document_chunks:
-        document_id = str(chunk.metadata["document_id"])
-        bound_evidence: list[Evidence] = []
-        for evidence_id in chunk.evidence_ids:
-            item = evidence_by_id.get(evidence_id)
-            if item is None:
-                raise ContractDomainError(
-                    f"条款知识块引用了不存在的证据: {chunk.chunk_id} -> {evidence_id}"
+        by_document.setdefault(str(chunk.metadata["document_id"]), []).append(chunk)
+
+    clauses: list[ContractClause] = []
+    for document_id in sorted(by_document):
+        ordered_chunks = sorted(by_document[document_id], key=_chunk_sort_key)
+        groups: list[list[KnowledgeChunk]] = []
+        current: list[KnowledgeChunk] = []
+        current_is_numbered = False
+        for chunk in ordered_chunks:
+            starts_clause = _is_clause_start(chunk)
+            is_table = _is_table_chunk(chunk)
+            if not current:
+                current = [chunk]
+                current_is_numbered = _clause_heading(chunk.content)[0] is not None
+                continue
+            if starts_clause or is_table or not current_is_numbered:
+                groups.append(current)
+                current = [chunk]
+                current_is_numbered = _clause_heading(chunk.content)[0] is not None
+            else:
+                current.append(chunk)
+        if current:
+            groups.append(current)
+
+        for order, group in enumerate(groups):
+            bound_evidence: list[Evidence] = []
+            source_chunk_ids: list[str] = []
+            evidence_ids: list[str] = []
+            for chunk in group:
+                source_chunk_ids.append(chunk.chunk_id)
+                for evidence_id in chunk.evidence_ids:
+                    item = evidence_by_id.get(evidence_id)
+                    if item is None:
+                        raise ContractDomainError(
+                            f"条款知识块引用了不存在的证据: {chunk.chunk_id} -> {evidence_id}"
+                        )
+                    if item.document_id != document_id:
+                        raise ContractDomainError(
+                            f"条款知识块与证据不属于同一文档: {chunk.chunk_id}"
+                        )
+                    if evidence_id not in evidence_ids:
+                        evidence_ids.append(evidence_id)
+                        bound_evidence.append(item)
+            first = group[0]
+            clause_number, title = _clause_heading(first.content)
+            clause_kind = (
+                ClauseKind.TABLE
+                if any(
+                    item.evidence_type == EvidenceType.TABLE_CELL
+                    for item in bound_evidence
                 )
-            if item.document_id != document_id:
-                raise ContractDomainError(
-                    f"条款知识块与证据不属于同一文档: {chunk.chunk_id}"
+                else ClauseKind.NUMBERED
+                if clause_number is not None
+                else ClauseKind.UNNUMBERED
+            )
+            text = "\n".join(chunk.content.strip() for chunk in group).strip()
+            clauses.append(
+                ContractClause(
+                    clause_id=_stable_id(
+                        "clause",
+                        document_id,
+                        *source_chunk_ids,
+                    ),
+                    document_id=document_id,
+                    clause_kind=clause_kind,
+                    clause_number=clause_number,
+                    title=title,
+                    text=text,
+                    order=order,
+                    source_chunk_ids=source_chunk_ids,
+                    evidence_ids=evidence_ids,
+                    extractor_version=CONTRACT_DOMAIN_VERSION,
                 )
-            bound_evidence.append(item)
-        clause_number, title = _clause_heading(chunk.content)
-        clause_kind = (
-            ClauseKind.TABLE
-            if any(
-                item.evidence_type == EvidenceType.TABLE_CELL for item in bound_evidence
             )
-            else ClauseKind.NUMBERED
-            if clause_number is not None
-            else ClauseKind.UNNUMBERED
-        )
-        order = orders.get(document_id, 0)
-        orders[document_id] = order + 1
-        clauses.append(
-            ContractClause(
-                clause_id=_stable_id("clause", document_id, chunk.chunk_id),
-                document_id=document_id,
-                clause_kind=clause_kind,
-                clause_number=clause_number,
-                title=title,
-                text=chunk.content.strip(),
-                order=order,
-                source_chunk_ids=[chunk.chunk_id],
-                evidence_ids=list(chunk.evidence_ids),
-                extractor_version=CONTRACT_DOMAIN_VERSION,
-            )
-        )
     return clauses
+
+
+def bind_clause_ids_to_chunks(
+    chunks: Sequence[KnowledgeChunk],
+    clauses: Sequence[ContractClause],
+) -> list[KnowledgeChunk]:
+    """把条款聚合结果回写到知识块，供条款范围检索使用。
+
+    条款是由知识块构建出的领域对象，因此绑定必须发生在条款生成之后；
+    不通过内容相似度反推条款归属，避免同文重复或数字相近时产生错误范围。
+    """
+
+    chunk_to_clause: dict[str, str] = {}
+    for clause in clauses:
+        for chunk_id in clause.source_chunk_ids:
+            previous = chunk_to_clause.get(chunk_id)
+            if previous is not None and previous != clause.clause_id:
+                raise ContractDomainError(
+                    f"知识块同时属于多个条款: {chunk_id} -> {previous}, {clause.clause_id}"
+                )
+            chunk_to_clause[chunk_id] = clause.clause_id
+    return [
+        chunk.model_copy(
+            update={
+                "clause_ids": (
+                    [chunk_to_clause[chunk.chunk_id]]
+                    if chunk.chunk_id in chunk_to_clause
+                    else []
+                )
+            }
+        )
+        for chunk in chunks
+    ]
 
 
 def _deadline(action: str) -> str | None:
@@ -174,6 +261,7 @@ def extract_contract_obligations(
         patterns = (
             (_STRONG_OBLIGATION_PATTERN, 0.9),
             (_WEAK_OBLIGATION_PATTERN, 0.8),
+            (_DECLARATIVE_OBLIGATION_PATTERN, 0.7),
         )
         for pattern, base_confidence in patterns:
             for match in pattern.finditer(clause.text):

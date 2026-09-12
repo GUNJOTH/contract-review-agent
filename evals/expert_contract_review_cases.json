@@ -1,0 +1,2866 @@
+{
+  "dataset_id": "contract-review-cn-expert-package-v2",
+  "schema_version": "2.0",
+  "dataset_kind": "expert_contract_package",
+  "language": "zh-CN",
+  "annotation_status": "seed_requires_legal_signoff",
+  "annotation_note": "场景主体、金额和日期均为虚构或脱敏示例；每个案例按完整合同包组织，标注结构需由合同、财务和技术领域专家逐条签字确认后才可作为正式验收集。",
+  "privacy_note": "不得写入真实合同、个人信息、密钥或外部服务凭证；该数据集不构成法律意见。",
+  "required_package_sections": [
+    "main_contract",
+    "supporting_documents",
+    "version_or_amendment",
+    "business_background",
+    "enterprise_position",
+    "expert_annotation"
+  ],
+  "cases": [
+    {
+      "case_id": "payment-prepay-redline",
+      "package": {
+        "package_id": "expert-package-payment-001",
+        "main_contract": {
+          "document_id": "pmt-main-v1",
+          "filename": "付款项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "软件实施服务合同。\n第一条 项目名称：仓储系统实施。\n第二条 付款条款：合同签订后100%预付，乙方按项目计划完成系统实施。\n合同金额：小写500000元；大写：伍拾万元整。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "pmt-quotation-v1",
+            "filename": "付款项目-报价单-v1.docx",
+            "document_kind": "quotation",
+            "version_label": "v1",
+            "text": "报价单。\n项目名称：仓储系统实施。\n报价范围：实施服务、部署支持和操作培训；具体交付内容以主合同为准。\n报价有效期：30日。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "pmt-amend-v2",
+            "filename": "付款项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "软件实施服务合同。\n第一条 项目名称：仓储系统实施。\n第二条 付款条款：合同签订后100%预付，乙方按项目计划完成系统实施。\n合同金额：小写500000元；大写：伍拾万元整。\n第三条：乙方提供90日质保。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方拟采购仓储系统实施服务，供应商要求合同签订即收取全部价款。",
+          "transaction_purpose": "在项目实施前锁定服务资源，同时控制预付款无法对应成果的资金风险。",
+          "review_focus": [
+            "付款比例是否触及预付款底线",
+            "付款是否绑定交付和验收",
+            "质保承诺是否进入合同包"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方立场，不能接受无交付或验收条件的一次性全额预付。",
+          "non_negotiables": [
+            "付款必须与交付、阶段成果或验收节点绑定",
+            "一次性全额预付必须触发红线和人工升级"
+          ],
+          "acceptable_fallbacks": [
+            "保留小比例启动款，其余付款绑定阶段成果和验收"
+          ],
+          "escalation_triggers": [
+            "供应商拒绝调整100%预付",
+            "付款条件无法从合同包原文确认"
+          ]
+        },
+        "review_context": {
+          "contract_type": "软件开发/转让服务",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["software_implementation", "prepayment_risk"],
+          "transaction_amount": "500000",
+          "review_scope": [
+            "CONTRACT-CORE-PAYMENT-001",
+            "CONTRACT-CORE-RENEWAL-001",
+            "CONTRACT-CHECK-4CABB10596A5",
+            "CONTRACT-CHECK-875D2A258280"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-payment-001",
+            "rule_id": "CONTRACT-CORE-PAYMENT-001",
+            "checker": "payment_terms",
+            "search_document_ids": ["pmt-main-v1", "pmt-quotation-v1", "pmt-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["pmt-main-v1"],
+            "gold_phrases": ["100%预付"],
+            "acceptable_phrases": ["付款条款", "合同签订后100%预付"],
+            "error_candidate_phrases": ["报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["pmt-main-v1"],
+                "phrases": ["100%预付"],
+                "expected_recall": true,
+                "rationale": "付款比例是规则判断的关键数字。"
+              },
+              {
+                "slice_type": "negation",
+                "document_ids": ["pmt-main-v1"],
+                "phrases": ["预付"],
+                "expected_recall": true,
+                "rationale": "预付与后续交付绑定关系不能被泛化为普通付款。"
+              }
+            ],
+            "rationale": "主合同付款条款是金标准，报价单有效期属于错误候选。"
+          },
+          {
+            "retrieval_id": "retrieval-payment-002",
+            "rule_id": "CONTRACT-CORE-RENEWAL-001",
+            "checker": "renewal_terms",
+            "search_document_ids": ["pmt-main-v1", "pmt-quotation-v1", "pmt-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["报价有效期：30日", "90日质保"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["pmt-quotation-v1"],
+                "phrases": ["报价有效期：30日"],
+                "expected_recall": false,
+                "rationale": "报价有效期不是合同续期。"
+              }
+            ],
+            "rationale": "合同包没有续期条款，不能把报价有效期当作续期证据。"
+          },
+          {
+            "retrieval_id": "retrieval-payment-003",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["pmt-main-v1", "pmt-quotation-v1", "pmt-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["90日质保"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["pmt-amend-v2"],
+                "phrases": ["质保"],
+                "expected_recall": false,
+                "rationale": "质保期与保函要求是不同业务对象。"
+              }
+            ],
+            "rationale": "合同包没有保函要求或排除保函的明示证据。"
+          },
+          {
+            "retrieval_id": "retrieval-payment-004",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["pmt-main-v1", "pmt-quotation-v1", "pmt-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["pmt-main-v1"],
+            "gold_phrases": ["合同金额：小写500000元", "伍拾万元整"],
+            "acceptable_phrases": ["500000元", "伍拾万元"],
+            "error_candidate_phrases": ["报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["pmt-main-v1"],
+                "phrases": ["500000元", "伍拾万元整"],
+                "expected_recall": true,
+                "rationale": "大小写金额必须同时进入证据候选。"
+              }
+            ],
+            "rationale": "主合同大小写金额是金额一致性规则的完整证据。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-payment-001",
+          "annotator_id": "expert-seed-legal-finance-01",
+          "expert_role": "合同法务与财务联合标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务和财务专家联合签署；当前仅作为可执行种子集。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "pmt-clause-001",
+            "document_id": "pmt-main-v1",
+            "phrase": "付款条款",
+            "expected_present": true,
+            "rationale": "主合同第二条明确给出付款条款。"
+          },
+          {
+            "target_id": "pmt-clause-002",
+            "document_id": "pmt-main-v1",
+            "phrase": "验收标准",
+            "expected_present": false,
+            "rationale": "合同包没有提供可定位的验收标准。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "pmt-evidence-payment",
+            "checker": "payment_terms",
+            "document_ids": [
+              "pmt-main-v1"
+            ],
+            "required_phrases": [
+              "100%预付"
+            ],
+            "expected_evidence": true,
+            "rationale": "付款红线必须直接引用主合同中的全额预付原文。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "一次性100%预付未与交付或验收节点绑定。"
+          },
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有续期条款，不能推断是否存在自动续期。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函证据，不能据此认定业务上不需要保函。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "PASS",
+            "conclusion_basis": "主合同同时给出小写和大写金额，且两者折算一致。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "renewal_clause_absent",
+            "reason": "主合同、报价单和补充协议均未约定续期或续签机制。",
+            "evidence_gap": "缺少续期期限、通知期限和退出条件的合同证据。",
+            "required_document_ids": [
+              "pmt-main-v1",
+              "pmt-amend-v2"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或明确排除保函的文字。",
+            "evidence_gap": "无法从合同原文确认是否存在业务保函要求。",
+            "required_document_ids": [
+              "pmt-main-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "500000.00",
+            "document_ids": [
+              "pmt-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写500000元"
+            ],
+            "fact_basis": "主合同给出小写合同金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "500000.00",
+            "document_ids": [
+              "pmt-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：伍拾万元整"
+            ],
+            "fact_basis": "主合同给出大写合同金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "numeric": "500000.00",
+              "uppercase": "500000.00",
+              "consistent": true
+            },
+            "calculation_basis": "小写500000元与伍拾万元整均折算为500000.00元。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "pmt-main-v1",
+          "compare_document_id": "pmt-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "第三条：乙方提供90日质保"
+            }
+          ],
+          "change_summary": "补充协议新增90日质保承诺，未改变原付款红线。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "pmt-redline-001",
+            "checker": "payment_terms",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "pmt-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "100%预付",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "pmt-evidence-payment",
+            "rationale": "禁止直接接受全额预付，先以评论/升级方式要求改为节点付款。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "delivery-acceptance-missing",
+      "package": {
+        "package_id": "expert-package-delivery-002",
+        "main_contract": {
+          "document_id": "dly-main-v1",
+          "filename": "交付项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "软件系统采购合同。\n项目名称：仓储管理系统。\n合同金额：小写800000元；大写：捌拾万元整。\n付款条款：项目完成后支付50%。\n交付条款：乙方按项目计划完成交付。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "dly-technical-v1",
+            "filename": "交付项目-技术协议-v1.docx",
+            "document_kind": "technical_agreement",
+            "version_label": "v1",
+            "text": "技术协议。\n系统功能范围以双方后续确认的需求清单为准。\n接口资料按项目计划提供。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "dly-amend-v2",
+            "filename": "交付项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "软件系统采购合同。\n项目名称：仓储管理系统。\n合同金额：小写800000元；大写：捌拾万元整。\n付款条款：项目完成后支付50%。\n交付条款：乙方按项目计划完成交付。\n新增：双方确认质保期为六个月。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方采购软件系统，技术协议只写功能范围，主合同没有明确交付日期、地点和可执行验收标准。",
+          "transaction_purpose": "确保系统交付和验收可以形成付款前置条件，并避免项目计划被单方变更。",
+          "review_focus": [
+            "交付期限和地点",
+            "验收标准和不合格处理",
+            "付款与交付验收的绑定"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方需要可验证的交付和验收条件，不能以笼统项目计划替代履约期限。",
+          "non_negotiables": [
+            "交付日期、地点或方式必须可验证",
+            "付款前必须有验收标准和不合格处理"
+          ],
+          "acceptable_fallbacks": [
+            "技术协议补足指标，主合同明确文件优先顺序和验收程序"
+          ],
+          "escalation_triggers": [
+            "供应商不能提供交付日期",
+            "技术协议和主合同对验收责任没有共同签署确认"
+          ]
+        },
+        "review_context": {
+          "contract_type": "软件开发/转让服务",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["software_implementation", "delivery_dependency"],
+          "transaction_amount": "800000",
+          "review_scope": [
+            "CONTRACT-CORE-PAYMENT-001",
+            "CONTRACT-CORE-DELIVERY-001",
+            "CONTRACT-CORE-ACCEPTANCE-001",
+            "CONTRACT-CORE-RENEWAL-001",
+            "CONTRACT-CHECK-4CABB10596A5",
+            "CONTRACT-CHECK-875D2A258280"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-delivery-001",
+            "rule_id": "CONTRACT-CORE-PAYMENT-001",
+            "checker": "payment_terms",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["dly-main-v1"],
+            "gold_phrases": ["项目完成后支付50%"],
+            "acceptable_phrases": ["付款条款", "支付50%"],
+            "error_candidate_phrases": ["按项目计划完成交付"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["dly-main-v1"],
+                "phrases": ["支付50%"],
+                "expected_recall": true,
+                "rationale": "付款比例数字不能被交付文本覆盖。"
+              }
+            ],
+            "rationale": "付款事实来自主合同，交付表述属于另一条规则。"
+          },
+          {
+            "retrieval_id": "retrieval-delivery-002",
+            "rule_id": "CONTRACT-CORE-DELIVERY-001",
+            "checker": "delivery_terms",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["dly-main-v1"],
+            "gold_phrases": ["按项目计划完成交付"],
+            "acceptable_phrases": ["交付条款", "按项目计划"],
+            "error_candidate_phrases": ["接口资料按项目计划提供"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["dly-technical-v1"],
+                "phrases": ["后续确认的需求清单"],
+                "expected_recall": false,
+                "rationale": "待后续确认的需求清单不能替代已确定交付期限。"
+              }
+            ],
+            "rationale": "主合同交付条款必须进入候选，即使它缺少可执行日期。"
+          },
+          {
+            "retrieval_id": "retrieval-delivery-003",
+            "rule_id": "CONTRACT-CORE-ACCEPTANCE-001",
+            "checker": "acceptance_terms",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["功能范围", "项目计划完成交付"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["dly-technical-v1"],
+                "phrases": ["功能范围"],
+                "expected_recall": false,
+                "rationale": "功能范围不是客观验收标准和验收方法。"
+              }
+            ],
+            "rationale": "合同包只有功能范围和交付计划，没有验收标准。"
+          },
+          {
+            "retrieval_id": "retrieval-delivery-004",
+            "rule_id": "CONTRACT-CORE-RENEWAL-001",
+            "checker": "renewal_terms",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["质保期为六个月"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["dly-amend-v2"],
+                "phrases": ["质保期为六个月"],
+                "expected_recall": false,
+                "rationale": "质保期限不是服务续期或续签。"
+              }
+            ],
+            "rationale": "补充协议新增质保，但没有续期安排。"
+          },
+          {
+            "retrieval_id": "retrieval-delivery-005",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["质保期为六个月"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["dly-amend-v2"],
+                "phrases": ["质保期"],
+                "expected_recall": false,
+                "rationale": "质保和保函的业务对象不同。"
+              }
+            ],
+            "rationale": "不能由质保期存在推导出保函要求。"
+          },
+          {
+            "retrieval_id": "retrieval-delivery-006",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["dly-main-v1", "dly-technical-v1", "dly-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["dly-main-v1"],
+            "gold_phrases": ["小写800000元", "捌拾万元整"],
+            "acceptable_phrases": ["合同金额", "800000元"],
+            "error_candidate_phrases": ["支付50%"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["dly-main-v1"],
+                "phrases": ["800000元", "捌拾万元整"],
+                "expected_recall": true,
+                "rationale": "金额大小写是独立于付款比例的证据。"
+              }
+            ],
+            "rationale": "主合同金额大小写一致，付款比例不能作为金额证据替代。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-delivery-002",
+          "annotator_id": "expert-seed-legal-02",
+          "expert_role": "合同法务标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务、项目交付和技术专家联合签署。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "dly-clause-001",
+            "document_id": "dly-main-v1",
+            "phrase": "交付条款",
+            "expected_present": true,
+            "rationale": "主合同明确出现交付条款，但内容不可执行。"
+          },
+          {
+            "target_id": "dly-clause-002",
+            "document_id": "dly-main-v1",
+            "phrase": "验收标准",
+            "expected_present": false,
+            "rationale": "合同包中没有可验证的验收标准。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "dly-evidence-delivery",
+            "checker": "delivery_terms",
+            "document_ids": [
+              "dly-main-v1"
+            ],
+            "required_phrases": [
+              "按项目计划完成交付"
+            ],
+            "expected_evidence": true,
+            "rationale": "交付风险需要引用主合同的笼统履约表述。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "WARN",
+            "conclusion_basis": "付款仅绑定项目完成，没有明确验收条件。"
+          },
+          {
+            "checker": "delivery_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "有交付条款但缺少可验证交付日期或履行期限。"
+          },
+          {
+            "checker": "acceptance_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "合同包没有验收标准、方法和不合格处理。"
+          },
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有续期或续签安排。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "PASS",
+            "conclusion_basis": "主合同同时给出小写和大写金额，且两者折算一致。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "renewal_clause_absent",
+            "reason": "主合同、技术协议和补充协议均未约定是否续期。",
+            "evidence_gap": "缺少续期期限和退出机制的原文证据。",
+            "required_document_ids": [
+              "dly-main-v1",
+              "dly-amend-v2"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或排除保函的明确约定。",
+            "evidence_gap": "无法从合同材料判断是否需要保函。",
+            "required_document_ids": [
+              "dly-main-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "800000.00",
+            "document_ids": [
+              "dly-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写800000元"
+            ],
+            "fact_basis": "主合同的小写合同金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "800000.00",
+            "document_ids": [
+              "dly-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：捌拾万元整"
+            ],
+            "fact_basis": "主合同的大写合同金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "numeric": "800000.00",
+              "uppercase": "800000.00",
+              "consistent": true
+            },
+            "calculation_basis": "小写800000元与捌拾万元整金额一致。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "dly-main-v1",
+          "compare_document_id": "dly-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：双方确认质保期为六个月"
+            }
+          ],
+          "change_summary": "补充协议新增六个月质保期，但未补足交付和验收缺口。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "dly-redline-001",
+            "checker": "delivery_terms",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "dly-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "按项目计划完成交付",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "dly-evidence-delivery",
+            "rationale": "要求将不可验证的项目计划改成有日期、地点、方式和逾期责任的交付条款。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "renewal-and-termination",
+      "package": {
+        "package_id": "expert-package-renewal-003",
+        "main_contract": {
+          "document_id": "rnl-main-v1",
+          "filename": "运维项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "运维服务合同。\n合同金额：小写360000元；大写：叁拾陆万元整。\n付款条款：每月服务完成后支付30000元。\n服务期限为一年，期满自动续期一年，任一方应至少提前30日书面通知不再续期。\n解除条款：发生逾期履行等违约事由的，守约方可提前10日通知解除合同，终止后5日内完成费用结算。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "rnl-annex-v1",
+            "filename": "运维项目-服务范围附件-v1.docx",
+            "document_kind": "annex",
+            "version_label": "v1",
+            "text": "服务范围附件。\n服务内容包括系统巡检、故障响应和月度服务报告。\n服务报告应记录已完成事项和待处理事项。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "rnl-amend-v2",
+            "filename": "运维项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "运维服务合同。\n合同金额：小写360000元；大写：叁拾陆万元整。\n付款条款：每月服务完成后支付30000元。\n服务期限为一年，期满自动续期一年，任一方应至少提前30日书面通知不再续期。\n解除条款：发生逾期履行等违约事由的，守约方可提前10日通知解除合同，终止后5日内完成费用结算。\n新增：服务报告应于每月5日前提交。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方采购一年期系统运维服务，供应商使用自动续期条款保证持续服务。",
+          "transaction_purpose": "保证服务连续性，同时避免未重新评估服务质量和预算就自动产生下一年度费用。",
+          "review_focus": [
+            "自动续期的通知和退出",
+            "提前解除和终止结算",
+            "违约责任是否可执行"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方可以接受有明确通知和退出机制的续期，但不接受无条件自动续期。",
+          "non_negotiables": [
+            "续期必须有书面确认或明确退出通知期限",
+            "终止后应完成资料交接和费用结算"
+          ],
+          "acceptable_fallbacks": [
+            "保留自动续期，但增加预算确认和提前30日退出机制"
+          ],
+          "escalation_triggers": [
+            "续期费用没有预算确认",
+            "供应商拒绝提供提前解除安排"
+          ]
+        },
+        "review_context": {
+          "contract_type": "其它服务合同",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["service_contract", "renewal_risk"],
+          "transaction_amount": "360000",
+          "review_scope": [
+            "CONTRACT-CORE-RENEWAL-001",
+            "CONTRACT-CORE-TERMINATION-001",
+            "CONTRACT-CORE-BREACH-001",
+            "CONTRACT-CHECK-4CABB10596A5",
+            "CONTRACT-CHECK-875D2A258280"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-renewal-001",
+            "rule_id": "CONTRACT-CORE-RENEWAL-001",
+            "checker": "renewal_terms",
+            "search_document_ids": ["rnl-main-v1", "rnl-annex-v1", "rnl-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["rnl-main-v1"],
+            "gold_phrases": ["期满自动续期一年"],
+            "acceptable_phrases": ["提前30日书面通知不再续期"],
+            "error_candidate_phrases": ["服务报告", "每月服务完成后支付"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["rnl-main-v1"],
+                "phrases": ["自动续期一年", "提前30日"],
+                "expected_recall": true,
+                "rationale": "续期期限和退出通知期限都是决定风险的数字。"
+              },
+              {
+                "slice_type": "exception",
+                "document_ids": ["rnl-main-v1"],
+                "phrases": ["不再续期"],
+                "expected_recall": true,
+                "rationale": "否定性退出表达不能被忽略。"
+              }
+            ],
+            "rationale": "主合同完整包含自动续期和书面退出条件。"
+          },
+          {
+            "retrieval_id": "retrieval-renewal-002",
+            "rule_id": "CONTRACT-CORE-TERMINATION-001",
+            "checker": "termination_terms",
+            "search_document_ids": ["rnl-main-v1", "rnl-annex-v1", "rnl-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["rnl-main-v1"],
+            "gold_phrases": ["解除条款", "提前10日通知解除"],
+            "acceptable_phrases": ["终止后5日内完成费用结算"],
+            "error_candidate_phrases": ["提前30日书面通知不再续期"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["rnl-main-v1"],
+                "phrases": ["提前10日", "5日内"],
+                "expected_recall": true,
+                "rationale": "解除通知与终止结算期限必须精确召回。"
+              }
+            ],
+            "rationale": "解除条款与续期退出条款是不同业务对象。"
+          },
+          {
+            "retrieval_id": "retrieval-renewal-003",
+            "rule_id": "CONTRACT-CORE-BREACH-001",
+            "checker": "breach_liability_terms",
+            "search_document_ids": ["rnl-main-v1", "rnl-annex-v1", "rnl-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["违约事由", "费用结算"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["rnl-main-v1"],
+                "phrases": ["违约事由"],
+                "expected_recall": false,
+                "rationale": "解除触发事由不能直接替代责任承担和责任计算。"
+              }
+            ],
+            "rationale": "文本提到违约事由，但没有独立的责任承担或计算条款。"
+          },
+          {
+            "retrieval_id": "retrieval-renewal-004",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["rnl-main-v1", "rnl-annex-v1", "rnl-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["服务报告", "服务期限为一年"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["rnl-annex-v1"],
+                "phrases": ["服务报告"],
+                "expected_recall": false,
+                "rationale": "履约报告不是保函要求。"
+              }
+            ],
+            "rationale": "合同包没有保函相关明示条款。"
+          },
+          {
+            "retrieval_id": "retrieval-renewal-005",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["rnl-main-v1", "rnl-annex-v1", "rnl-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["rnl-main-v1"],
+            "gold_phrases": ["小写360000元", "叁拾陆万元整"],
+            "acceptable_phrases": ["360000元", "叁拾陆万元"],
+            "error_candidate_phrases": ["每月服务完成后支付30000元"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["rnl-main-v1"],
+                "phrases": ["360000元", "叁拾陆万元整"],
+                "expected_recall": true,
+                "rationale": "总额与月度付款数字需要区分。"
+              }
+            ],
+            "rationale": "合同总额大小写一致，月度付款额是可混淆的错误候选。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-renewal-003",
+          "annotator_id": "expert-seed-legal-03",
+          "expert_role": "合同法务标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务和运维业务负责人确认续期处置。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "rnl-clause-001",
+            "document_id": "rnl-main-v1",
+            "phrase": "自动续期一年",
+            "expected_present": true,
+            "rationale": "主合同明确约定期满自动续期一年。"
+          },
+          {
+            "target_id": "rnl-clause-002",
+            "document_id": "rnl-main-v1",
+            "phrase": "提前30日书面通知",
+            "expected_present": true,
+            "rationale": "主合同约定不再续期的书面通知期限。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "rnl-evidence-renewal",
+            "checker": "renewal_terms",
+            "document_ids": [
+              "rnl-main-v1"
+            ],
+            "required_phrases": [
+              "自动续期一年"
+            ],
+            "expected_evidence": true,
+            "rationale": "续期风险应直接引用自动续期原文。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "renewal_terms",
+            "expected_status": "WARN",
+            "conclusion_basis": "自动续期存在，但需要确认费用和退出条件。"
+          },
+          {
+            "checker": "termination_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "已有违约触发、通知期限和终止结算安排。"
+          },
+          {
+            "checker": "breach_liability_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "合同包没有独立、可执行的违约责任承担和计算口径。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "PASS",
+            "conclusion_basis": "主合同同时给出小写和大写金额，且两者折算一致。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "主合同及附件没有保函要求或明确排除保函的文字。",
+            "evidence_gap": "无法从合同包判断运维服务是否需要保函。",
+            "required_document_ids": [
+              "rnl-main-v1",
+              "rnl-annex-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "360000.00",
+            "document_ids": [
+              "rnl-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写360000元"
+            ],
+            "fact_basis": "主合同的小写合同金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "360000.00",
+            "document_ids": [
+              "rnl-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：叁拾陆万元整"
+            ],
+            "fact_basis": "主合同的大写合同金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "numeric": "360000.00",
+              "uppercase": "360000.00",
+              "consistent": true
+            },
+            "calculation_basis": "小写360000元与叁拾陆万元整一致。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "rnl-main-v1",
+          "compare_document_id": "rnl-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：服务报告应于每月5日前提交"
+            }
+          ],
+          "change_summary": "补充协议增加服务报告提交期限。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "rnl-redline-001",
+            "checker": "renewal_terms",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "rnl-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "自动续期一年",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "rnl-evidence-renewal",
+            "rationale": "自动续期属于可谈安排，需补充预算确认、退出条件或改为书面续签。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "breach-full-exemption",
+      "package": {
+        "package_id": "expert-package-breach-004",
+        "main_contract": {
+          "document_id": "brh-main-v1",
+          "filename": "设备采购-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "设备采购合同。\n合同金额：小写240000元；大写：贰拾肆万元整。\n付款条款：设备到货后支付。\n违约责任条款：乙方不承担任何违约责任，甲方不得要求赔偿。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "brh-quotation-v1",
+            "filename": "设备采购-报价单-v1.docx",
+            "document_kind": "quotation",
+            "version_label": "v1",
+            "text": "报价单。\n设备型号：工业网关；数量和技术参数以技术确认单为准。\n报价有效期：30日。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "brh-amend-v2",
+            "filename": "设备采购-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "设备采购合同。\n合同金额：小写240000元；大写：贰拾肆万元整。\n付款条款：设备到货后支付。\n违约责任条款：乙方不承担任何违约责任，甲方不得要求赔偿。\n新增：设备质保期为十二个月。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方向供应商采购工业网关，供应商报价单和主合同均未约定对等违约责任。",
+          "transaction_purpose": "确保设备按约交付并保留质量、延迟交付和损失赔偿的追责路径。",
+          "review_focus": [
+            "全面免责",
+            "违约损失和违约金计算",
+            "采购付款与交付"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方不能接受供应商全面免责，也不能接受只有甲方承担责任。",
+          "non_negotiables": [
+            "双方应承担对等且可执行的违约责任",
+            "质量和延迟交付损失必须有追责依据"
+          ],
+          "acceptable_fallbacks": [
+            "在合理责任上限下保留故意或重大过失例外"
+          ],
+          "escalation_triggers": [
+            "供应商拒绝删除全面免责",
+            "责任上限和损失计算无法协商"
+          ]
+        },
+        "review_context": {
+          "contract_type": "一般商品销售合同",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["goods_sale", "liability_risk"],
+          "transaction_amount": "240000",
+          "review_scope": [
+            "CONTRACT-CORE-BREACH-001",
+            "CONTRACT-CORE-ACCEPTANCE-001",
+            "CONTRACT-CORE-RENEWAL-001",
+            "CONTRACT-CHECK-4CABB10596A5",
+            "CONTRACT-CHECK-875D2A258280"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-breach-001",
+            "rule_id": "CONTRACT-CORE-BREACH-001",
+            "checker": "breach_liability_terms",
+            "search_document_ids": ["brh-main-v1", "brh-quotation-v1", "brh-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["brh-main-v1"],
+            "gold_phrases": ["违约责任条款", "不承担任何违约责任"],
+            "acceptable_phrases": ["不得要求赔偿"],
+            "error_candidate_phrases": ["报价有效期：30日", "设备质保期为十二个月"],
+            "slices": [
+              {
+                "slice_type": "negation",
+                "document_ids": ["brh-main-v1"],
+                "phrases": ["不承担任何违约责任", "不得要求赔偿"],
+                "expected_recall": true,
+                "rationale": "全面免责和否定赔偿是责任风险的核心表达。"
+              }
+            ],
+            "rationale": "主合同明确出现全面免责，必须召回否定责任和赔偿的完整语境。"
+          },
+          {
+            "retrieval_id": "retrieval-breach-002",
+            "rule_id": "CONTRACT-CORE-ACCEPTANCE-001",
+            "checker": "acceptance_terms",
+            "search_document_ids": ["brh-main-v1", "brh-quotation-v1", "brh-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["设备质保期为十二个月", "设备到货后支付"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["brh-amend-v2"],
+                "phrases": ["质保期"],
+                "expected_recall": false,
+                "rationale": "质保期定义不能替代验收标准和验收方法。"
+              }
+            ],
+            "rationale": "合同包没有独立的验收标准、方法或期限。"
+          },
+          {
+            "retrieval_id": "retrieval-breach-003",
+            "rule_id": "CONTRACT-CORE-RENEWAL-001",
+            "checker": "renewal_terms",
+            "search_document_ids": ["brh-main-v1", "brh-quotation-v1", "brh-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["brh-quotation-v1"],
+                "phrases": ["有效期：30日"],
+                "expected_recall": false,
+                "rationale": "报价有效期的数字不能被误判为合同续期期限。"
+              }
+            ],
+            "rationale": "合同包没有服务或采购合同的续期安排。"
+          },
+          {
+            "retrieval_id": "retrieval-breach-004",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["brh-main-v1", "brh-quotation-v1", "brh-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["设备质保期为十二个月", "报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["brh-amend-v2"],
+                "phrases": ["质保期"],
+                "expected_recall": false,
+                "rationale": "产品质保是履约义务，不是履约保函或保证金。"
+              }
+            ],
+            "rationale": "合同包未出现保函、保证金或其他保证措施。"
+          },
+          {
+            "retrieval_id": "retrieval-breach-005",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["brh-main-v1", "brh-quotation-v1", "brh-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["brh-main-v1"],
+            "gold_phrases": ["小写240000元", "贰拾肆万元整"],
+            "acceptable_phrases": ["240000元", "贰拾肆万元"],
+            "error_candidate_phrases": ["设备到货后支付"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["brh-main-v1"],
+                "phrases": ["240000元", "贰拾肆万元整"],
+                "expected_recall": true,
+                "rationale": "金额大小写需要和付款触发条件区分。"
+              }
+            ],
+            "rationale": "主合同金额大小写一致，付款节点是金额规则的干扰候选。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-breach-004",
+          "annotator_id": "expert-seed-legal-04",
+          "expert_role": "合同法务标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务和采购负责人确认责任上限方案。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "brh-clause-001",
+            "document_id": "brh-main-v1",
+            "phrase": "违约责任条款",
+            "expected_present": true,
+            "rationale": "主合同明确出现违约责任条款。"
+          },
+          {
+            "target_id": "brh-clause-002",
+            "document_id": "brh-main-v1",
+            "phrase": "责任计算",
+            "expected_present": false,
+            "rationale": "合同包没有责任金额、违约金或损失计算口径。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "brh-evidence-breach",
+            "checker": "breach_liability_terms",
+            "document_ids": [
+              "brh-main-v1"
+            ],
+            "required_phrases": [
+              "不承担任何违约责任"
+            ],
+            "expected_evidence": true,
+            "rationale": "全面免责红线必须引用主合同的原文。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "breach_liability_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "主合同约定供应商不承担任何违约责任。"
+          },
+          {
+            "checker": "acceptance_terms",
+            "expected_status": "BLOCK",
+            "conclusion_basis": "合同包没有验收标准和不合格处理。"
+          },
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有续期安排。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "PASS",
+            "conclusion_basis": "主合同同时给出小写和大写金额，且两者折算一致。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "renewal_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "renewal_clause_absent",
+            "reason": "主合同、报价单和补充协议均未约定续期或续签。",
+            "evidence_gap": "缺少续期期限和退出条件的合同证据。",
+            "required_document_ids": [
+              "brh-main-v1",
+              "brh-amend-v2"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或排除保函的明确文字。",
+            "evidence_gap": "不能根据保函文字缺失推断采购不需要保函。",
+            "required_document_ids": [
+              "brh-main-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "240000.00",
+            "document_ids": [
+              "brh-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写240000元"
+            ],
+            "fact_basis": "主合同的小写合同金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "240000.00",
+            "document_ids": [
+              "brh-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：贰拾肆万元整"
+            ],
+            "fact_basis": "主合同的大写合同金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "numeric": "240000.00",
+              "uppercase": "240000.00",
+              "consistent": true
+            },
+            "calculation_basis": "小写240000元与贰拾肆万元整一致。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "brh-main-v1",
+          "compare_document_id": "brh-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：设备质保期为十二个月"
+            }
+          ],
+          "change_summary": "补充协议新增十二个月质保期，但未修复全面免责。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "brh-redline-001",
+            "checker": "breach_liability_terms",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "brh-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "不承担任何违约责任",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "brh-evidence-breach",
+            "rationale": "删除全面免责并补充对等责任、责任上限及例外情形。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "cross-document-amount-conflict",
+      "package": {
+        "package_id": "expert-package-cross-doc-005",
+        "main_contract": {
+          "document_id": "xdoc-main-v1",
+          "filename": "跨文档项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "软件开发合同。\n项目名称：智慧仓储系统。\n合同金额：小写1000000元；大写：壹佰万元整。\n付款条款：合同签订后支付50%，验收合格后支付50%。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "xdoc-technical-v1",
+            "filename": "跨文档项目-技术协议-v1.docx",
+            "document_kind": "technical_agreement",
+            "version_label": "v1",
+            "text": "技术协议。\n项目名称：智慧仓储系统。\n合同金额：小写1200000元；大写：壹佰贰拾万元整。\n技术范围：系统部署、接口开发和测试支持。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "xdoc-amend-v2",
+            "filename": "跨文档项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "软件开发合同。\n项目名称：智慧仓储系统。\n合同金额：小写1000000元；大写：壹佰万元整。\n付款条款：合同签订后支付50%，验收合格后支付50%。\n新增：项目上线后提供三个月支持。"
+          }
+        ],
+        "document_precedence": ["xdoc-amend-v2", "xdoc-main-v1", "xdoc-technical-v1"],
+        "business_background": {
+          "scenario": "甲方拟采购智慧仓储系统，技术协议中的金额高于主合同，补充协议只新增上线支持。",
+          "transaction_purpose": "在签署前确定主合同、技术协议和补充协议的金额及文件优先效力。",
+          "review_focus": [
+            "主合同与技术协议的金额冲突",
+            "文件优先顺序",
+            "付款比例是否超过合同金额"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方以主合同作为交易金额基准，技术协议不能单方增加应付款金额。",
+          "non_negotiables": [
+            "金额、项目和交付范围必须跨文档一致",
+            "不一致时必须明确文件优先顺序并重新确认"
+          ],
+          "acceptable_fallbacks": [
+            "经授权审批后以补充协议明确最终金额"
+          ],
+          "escalation_triggers": [
+            "技术协议金额未经甲方签署确认",
+            "文件优先效力不能确定"
+          ]
+        },
+        "review_context": {
+          "contract_type": "软件开发/转让服务",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["software_implementation", "multi_document", "amount_conflict"],
+          "transaction_amount": "1200000",
+          "review_scope": [
+            "CONTRACT-CORE-CROSS-DOCUMENT-001",
+            "CONTRACT-CHECK-875D2A258280",
+            "CONTRACT-CORE-PAYMENT-001",
+            "CONTRACT-CHECK-4CABB10596A5"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-cross-doc-001",
+            "rule_id": "CONTRACT-CORE-CROSS-DOCUMENT-001",
+            "checker": "cross_document_consistency",
+            "search_document_ids": ["xdoc-main-v1", "xdoc-technical-v1", "xdoc-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["xdoc-main-v1", "xdoc-technical-v1"],
+            "gold_phrases": ["合同金额：小写1000000元", "合同金额：小写1200000元"],
+            "acceptable_phrases": ["壹佰万元整", "壹佰贰拾万元整"],
+            "error_candidate_phrases": ["验收合格后支付50%", "技术范围"],
+            "slices": [
+              {
+                "slice_type": "cross_document_conflict",
+                "document_ids": ["xdoc-main-v1", "xdoc-technical-v1"],
+                "phrases": ["合同金额", "1000000元", "1200000元"],
+                "expected_recall": true,
+                "rationale": "跨文档金额冲突必须同时召回两个来源。"
+              },
+              {
+                "slice_type": "numeric",
+                "document_ids": ["xdoc-main-v1", "xdoc-technical-v1"],
+                "phrases": ["1000000元", "1200000元"],
+                "expected_recall": true,
+                "rationale": "精确金额数字不能被相似项目语义召回覆盖。"
+              }
+            ],
+            "rationale": "主合同和技术协议对同一项目给出不同金额，必须保留来源和冲突关系。"
+          },
+          {
+            "retrieval_id": "retrieval-cross-doc-002",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["xdoc-main-v1", "xdoc-technical-v1", "xdoc-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["xdoc-main-v1", "xdoc-technical-v1"],
+            "gold_phrases": ["1000000元", "1200000元"],
+            "acceptable_phrases": ["壹佰万元整", "壹佰贰拾万元整"],
+            "error_candidate_phrases": ["验收合格后支付50%"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["xdoc-main-v1", "xdoc-technical-v1"],
+                "phrases": ["小写1000000元", "小写1200000元"],
+                "expected_recall": true,
+                "rationale": "金额大小写和文档来源都需要进入候选。"
+              }
+            ],
+            "rationale": "金额规则需要召回冲突双方，不能只取主合同。"
+          },
+          {
+            "retrieval_id": "retrieval-cross-doc-003",
+            "rule_id": "CONTRACT-CORE-PAYMENT-001",
+            "checker": "payment_terms",
+            "search_document_ids": ["xdoc-main-v1", "xdoc-technical-v1", "xdoc-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["xdoc-main-v1"],
+            "gold_phrases": ["验收合格后支付50%"],
+            "acceptable_phrases": ["合同签订后支付50%"],
+            "error_candidate_phrases": ["合同金额：小写1200000元", "技术范围"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["xdoc-main-v1"],
+                "phrases": ["付款条款"],
+                "expected_recall": true,
+                "rationale": "付款节点和比例定义了支付义务。"
+              }
+            ],
+            "rationale": "付款规则的有效证据来自主合同付款条款。"
+          },
+          {
+            "retrieval_id": "retrieval-cross-doc-004",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["xdoc-main-v1", "xdoc-technical-v1", "xdoc-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["付款条款", "技术范围"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["xdoc-technical-v1"],
+                "phrases": ["技术范围"],
+                "expected_recall": false,
+                "rationale": "技术范围和付款比例不能替代履约保证。"
+              }
+            ],
+            "rationale": "合同包没有保函、保证金或履约保证条款。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-cross-doc-005",
+          "annotator_id": "expert-seed-legal-finance-05",
+          "expert_role": "合同法务与财务联合标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务、财务和技术协议负责人共同裁决最终金额。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "xdoc-clause-001",
+            "document_id": "xdoc-main-v1",
+            "phrase": "项目名称：智慧仓储系统",
+            "expected_present": true,
+            "rationale": "主合同给出项目名称事实。"
+          },
+          {
+            "target_id": "xdoc-clause-002",
+            "document_id": "xdoc-technical-v1",
+            "phrase": "合同金额：小写1200000元",
+            "expected_present": true,
+            "rationale": "技术协议给出与主合同冲突的金额事实。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "xdoc-evidence-conflict",
+            "checker": "cross_document_consistency",
+            "document_ids": [
+              "xdoc-main-v1",
+              "xdoc-technical-v1"
+            ],
+            "required_phrases": [
+              "1200000"
+            ],
+            "expected_evidence": true,
+            "rationale": "跨文档冲突必须同时核对主合同和技术协议，不能只引用单一文档。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "cross_document_consistency",
+            "expected_status": "WARN",
+            "conclusion_basis": "主合同1000000元与技术协议1200000元不一致。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包出现多个数字金额和大写金额，无法选择唯一金额口径。"
+          },
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "交易金额达到一百万元升级阈值，付款条款即使绑定验收也必须人工复核。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "payment_threshold_reached",
+            "reason": "交易金额1200000元达到付款 Playbook 的一百万元升级阈值，不能自动放行。",
+            "evidence_gap": "需要人工确认金额口径、付款节点和验收绑定是否经过授权。",
+            "required_document_ids": [
+              "xdoc-main-v1",
+              "xdoc-amend-v2"
+            ]
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "reason_code": "multiple_amount_bases",
+            "reason": "主合同和技术协议各自给出不同金额，无法将数字金额与唯一大写金额配对。",
+            "evidence_gap": "缺少双方最终确认的唯一合同金额和文件优先顺序。",
+            "required_document_ids": [
+              "xdoc-main-v1",
+              "xdoc-technical-v1"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或排除保函的明确约定。",
+            "evidence_gap": "不能从保函文字缺失推断交易不需要保函。",
+            "required_document_ids": [
+              "xdoc-main-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "xdoc-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写1000000元"
+            ],
+            "fact_basis": "主合同约定金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1200000.00",
+            "document_ids": [
+              "xdoc-technical-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写1200000元"
+            ],
+            "fact_basis": "技术协议约定金额，与主合同冲突。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "xdoc-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：壹佰万元整"
+            ],
+            "fact_basis": "主合同大写金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "1200000.00",
+            "document_ids": [
+              "xdoc-technical-v1"
+            ],
+            "evidence_phrases": [
+              "大写：壹佰贰拾万元整"
+            ],
+            "fact_basis": "技术协议大写金额，与主合同冲突。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "UNKNOWN",
+            "expected_comparison": {},
+            "calculation_basis": "存在两个不同的金额口径，必须先确认最终金额后才能计算大小写一致性。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "xdoc-main-v1",
+          "compare_document_id": "xdoc-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：项目上线后提供三个月支持"
+            }
+          ],
+          "change_summary": "补充协议新增上线支持，但没有解决技术协议金额冲突。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "xdoc-redline-001",
+            "checker": "cross_document_consistency",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "xdoc-main-v1",
+              "xdoc-technical-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "不一致",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "xdoc-evidence-conflict",
+            "rationale": "要求明确主合同、技术协议和补充协议的金额优先顺序并重新确认。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "financial-insufficient-evidence",
+      "package": {
+        "package_id": "expert-package-financial-006",
+        "main_contract": {
+          "document_id": "fin-main-v1",
+          "filename": "咨询项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "咨询服务合同。\n合同金额：小写1000000元。\n付款方式：按双方确认的进度支付。\n服务成果以项目总结报告为准。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "fin-quotation-v1",
+            "filename": "咨询项目-报价单-v1.docx",
+            "document_kind": "quotation",
+            "version_label": "v1",
+            "text": "报价单。\n咨询服务范围以双方确认的工作说明为准。\n报价有效期：30日。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "fin-amend-v2",
+            "filename": "咨询项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "咨询服务合同。\n合同金额：小写1000000元。\n付款方式：按双方确认的进度支付。\n服务成果以项目总结报告为准。\n新增：双方应在项目结束后提交总结报告。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方采购咨询服务，主合同只有小写合同金额，没有大写金额、税率或税额。",
+          "transaction_purpose": "在付款前确认财务口径，避免金额大小写和税额因证据不足被系统误判为一致。",
+          "review_focus": [
+            "金额大小写证据是否完整",
+            "税率和税额是否可计算",
+            "付款进度是否有明确节点"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方要求金额和税务口径有原文依据，证据不足时必须人工确认。",
+          "non_negotiables": [
+            "不能从小写金额推导大写金额并自动通过",
+            "税率、税额和含税口径必须有明确依据"
+          ],
+          "acceptable_fallbacks": [
+            "由财务补充确认单并与合同一并归档"
+          ],
+          "escalation_triggers": [
+            "供应商拒绝补充税务口径",
+            "付款节点只有双方另行确认但没有附件"
+          ]
+        },
+        "review_context": {
+          "contract_type": "其它服务合同",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["service_contract", "financial_review"],
+          "transaction_amount": "1000000",
+          "review_scope": [
+            "CONTRACT-CHECK-875D2A258280",
+            "CONTRACT-CHECK-CBAFDF262EB8",
+            "CONTRACT-CHECK-1BF7A165D755",
+            "CONTRACT-CHECK-4CABB10596A5"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-financial-001",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["fin-main-v1", "fin-quotation-v1", "fin-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["fin-main-v1"],
+            "gold_phrases": ["合同金额：小写1000000元"],
+            "acceptable_phrases": ["1000000元"],
+            "error_candidate_phrases": ["按双方确认的进度支付", "报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["fin-main-v1"],
+                "phrases": ["1000000元"],
+                "expected_recall": true,
+                "rationale": "总金额数字是唯一可确认的金额事实。"
+              }
+            ],
+            "rationale": "主合同只提供小写总额，金额规则可以确认事实但不能补造大写金额。"
+          },
+          {
+            "retrieval_id": "retrieval-financial-002",
+            "rule_id": "CONTRACT-CHECK-CBAFDF262EB8",
+            "checker": "tax_rate",
+            "search_document_ids": ["fin-main-v1", "fin-quotation-v1", "fin-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["合同金额：小写1000000元", "报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["fin-main-v1"],
+                "phrases": ["付款方式"],
+                "expected_recall": false,
+                "rationale": "付款方式不是税率定义。"
+              }
+            ],
+            "rationale": "合同包没有税率、含税或不含税金额定义。"
+          },
+          {
+            "retrieval_id": "retrieval-financial-003",
+            "rule_id": "CONTRACT-CHECK-1BF7A165D755",
+            "checker": "tax_amount",
+            "search_document_ids": ["fin-main-v1", "fin-quotation-v1", "fin-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["合同金额：小写1000000元", "报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["fin-main-v1"],
+                "phrases": ["1000000元"],
+                "expected_recall": false,
+                "rationale": "总额数字不能被推导为税额。"
+              }
+            ],
+            "rationale": "没有独立税额事实，必须保持 UNKNOWN 而不是从总额猜测。"
+          },
+          {
+            "retrieval_id": "retrieval-financial-004",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["fin-main-v1", "fin-quotation-v1", "fin-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["项目总结报告", "报价有效期：30日"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["fin-main-v1"],
+                "phrases": ["项目总结报告"],
+                "expected_recall": false,
+                "rationale": "成果报告不是履约保证措施。"
+              }
+            ],
+            "rationale": "合同包没有保函、保证金或其他保证条款。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-financial-006",
+          "annotator_id": "expert-seed-finance-06",
+          "expert_role": "财务与合同法务联合标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待财务专家确认金额和税务证据缺口。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "fin-clause-001",
+            "document_id": "fin-main-v1",
+            "phrase": "合同金额：小写1000000元",
+            "expected_present": true,
+            "rationale": "主合同存在小写金额事实。"
+          },
+          {
+            "target_id": "fin-clause-002",
+            "document_id": "fin-main-v1",
+            "phrase": "税率",
+            "expected_present": false,
+            "rationale": "合同包没有税率原文。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "fin-evidence-amount",
+            "checker": "amount_case_consistency",
+            "document_ids": [
+              "fin-main-v1"
+            ],
+            "required_phrases": [
+              "合同金额：小写1000000元"
+            ],
+            "expected_evidence": true,
+            "rationale": "金额大小写检查只能引用已有小写金额证据，不能虚构大写金额。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "没有提取到大写金额，不能自动核对大小写一致性。"
+          },
+          {
+            "checker": "tax_rate",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有税率百分比原文。"
+          },
+          {
+            "checker": "tax_amount",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "缺少不含税基数、税率和税额中的必要事实。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "reason_code": "uppercase_amount_absent",
+            "reason": "合同包只有小写金额，没有大写金额原文。",
+            "evidence_gap": "缺少可与1000000元配对的大写金额证据。",
+            "required_document_ids": [
+              "fin-main-v1",
+              "fin-amend-v2"
+            ]
+          },
+          {
+            "checker": "tax_rate",
+            "expected_status": "UNKNOWN",
+            "reason_code": "tax_rate_absent",
+            "reason": "主合同、报价单和补充协议均没有税率百分比。",
+            "evidence_gap": "无法依据合同包计算适用税率。",
+            "required_document_ids": [
+              "fin-main-v1",
+              "fin-quotation-v1",
+              "fin-amend-v2"
+            ]
+          },
+          {
+            "checker": "tax_amount",
+            "expected_status": "UNKNOWN",
+            "reason_code": "tax_calculation_inputs_incomplete",
+            "reason": "缺少税率和税额，不能依据合同金额推导税额。",
+            "evidence_gap": "税额计算的输入事实不完整。",
+            "required_document_ids": [
+              "fin-main-v1",
+              "fin-amend-v2"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或排除保函的明确约定。",
+            "evidence_gap": "不能从保函文字缺失推断交易不需要保函。",
+            "required_document_ids": [
+              "fin-main-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "fin-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写1000000元"
+            ],
+            "fact_basis": "主合同提供小写合同金额，但没有大写金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "UNKNOWN",
+            "expected_comparison": {},
+            "calculation_basis": "缺少大写金额，大小写一致性计算必须保持UNKNOWN。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "fin-main-v1",
+          "compare_document_id": "fin-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：双方应在项目结束后提交总结报告"
+            }
+          ],
+          "change_summary": "补充协议新增总结报告要求，但没有补足金额大小写和税务证据。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "fin-redline-001",
+            "checker": "amount_case_consistency",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "fin-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "大写金额",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "fin-evidence-amount",
+            "rationale": "要求补充大写金额、税率和税额或转人工财务确认，不能因只有小写金额而自动通过。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "complete-core-terms",
+      "package": {
+        "package_id": "expert-package-complete-007",
+        "main_contract": {
+          "document_id": "cmp-main-v1",
+          "filename": "云平台项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "软件开发合同。\n项目名称：云平台实施项目。\n合同金额：小写1000000元；大写：壹佰万元整。\n不含税金额：1000000元；税率：0%；税额：0元。\n付款条款：合同签订后支付30%，验收合格后支付70%。\n交付条款：乙方应于2026年12月31日前将系统交付至甲方指定地点，交付方式为现场部署。\n验收标准：功能和性能指标符合技术协议；验收方法：甲方依据测试报告在收到材料后10个工作日内完成验收。\n不自动续期。\n解除条款：一方发生重大违约且提前10日书面通知后仍未改正的，守约方可解除合同，终止后5日内完成结算。\n违约责任：违约方应承担赔偿责任，违约金按合同总额5%计算。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "cmp-technical-v1",
+            "filename": "云平台项目-技术协议-v1.docx",
+            "document_kind": "technical_agreement",
+            "version_label": "v1",
+            "text": "技术协议。\n项目名称：云平台实施项目。\n功能、性能和测试指标见本协议；交付成果包括部署文档和测试报告。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "cmp-amend-v2",
+            "filename": "云平台项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "软件开发合同。\n项目名称：云平台实施项目。\n合同金额：小写1000000元；大写：壹佰万元整。\n不含税金额：1000000元；税率：0%；税额：0元。\n付款条款：合同签订后支付30%，验收合格后支付70%。\n交付条款：乙方应于2026年12月31日前将系统交付至甲方指定地点，交付方式为现场部署。\n验收标准：功能和性能指标符合技术协议；验收方法：甲方依据测试报告在收到材料后10个工作日内完成验收。\n不自动续期。\n解除条款：一方发生重大违约且提前10日书面通知后仍未改正的，守约方可解除合同，终止后5日内完成结算。\n违约责任：违约方应承担赔偿责任，违约金按合同总额5%计算。\n新增：乙方提供一年质保。"
+          }
+        ],
+        "business_background": {
+          "scenario": "甲方采购云平台实施服务，合同包已同步提供主合同、技术协议和补充协议。",
+          "transaction_purpose": "验证一套完整且可执行的核心条款在多文档合同包中的一致性。",
+          "review_focus": [
+            "付款、交付和验收闭环",
+            "续期、终止和违约责任",
+            "金额大小写及税额计算"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方优先接受与交付验收绑定、责任对等且金额税务口径完整的文本。",
+          "non_negotiables": [
+            "付款必须与验收节点绑定",
+            "交付和验收必须可执行",
+            "违约责任和金额税务口径必须完整"
+          ],
+          "acceptable_fallbacks": [
+            "在技术协议明确指标并与主合同共同签署的前提下执行"
+          ],
+          "escalation_triggers": [
+            "附件与主合同出现主体、金额或交付事实冲突",
+            "责任上限或免责例外另行变更"
+          ]
+        },
+        "review_context": {
+          "contract_type": "软件开发/转让服务",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["software_implementation", "standard_terms"],
+          "transaction_amount": "1000000",
+          "review_scope": [
+            "CONTRACT-CORE-PAYMENT-001",
+            "CONTRACT-CORE-DELIVERY-001",
+            "CONTRACT-CORE-ACCEPTANCE-001",
+            "CONTRACT-CORE-RENEWAL-001",
+            "CONTRACT-CORE-TERMINATION-001",
+            "CONTRACT-CORE-BREACH-001",
+            "CONTRACT-CHECK-875D2A258280",
+            "CONTRACT-CHECK-CBAFDF262EB8",
+            "CONTRACT-CHECK-1BF7A165D755",
+            "CONTRACT-CHECK-4CABB10596A5"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-complete-001",
+            "rule_id": "CONTRACT-CORE-PAYMENT-001",
+            "checker": "payment_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["验收合格后支付70%"],
+            "acceptable_phrases": ["合同签订后支付30%"],
+            "error_candidate_phrases": ["交付条款", "技术协议"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["付款条款", "验收合格后支付70%"],
+                "expected_recall": true,
+                "rationale": "付款比例和验收触发条件共同定义付款义务。"
+              }
+            ],
+            "rationale": "付款后段与验收绑定，是确定性规则判断的直接证据。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-002",
+            "rule_id": "CONTRACT-CORE-DELIVERY-001",
+            "checker": "delivery_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["2026年12月31日前", "现场部署"],
+            "acceptable_phrases": ["交付至甲方指定地点"],
+            "error_candidate_phrases": ["验收方法", "测试报告"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["2026年12月31日前"],
+                "expected_recall": true,
+                "rationale": "交付期限是不可被语义近似替代的数字事实。"
+              }
+            ],
+            "rationale": "主合同同时给出日期、地点和交付方式。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-003",
+            "rule_id": "CONTRACT-CORE-ACCEPTANCE-001",
+            "checker": "acceptance_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["验收标准", "10个工作日内完成验收"],
+            "acceptable_phrases": ["验收方法", "测试报告"],
+            "error_candidate_phrases": ["现场部署", "一年质保"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["验收标准", "验收方法"],
+                "expected_recall": true,
+                "rationale": "标准、方法和期限构成验收定义。"
+              }
+            ],
+            "rationale": "验收证据集中在主合同，并引用技术协议指标。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-004",
+            "rule_id": "CONTRACT-CORE-RENEWAL-001",
+            "checker": "renewal_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["不自动续期"],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["一年质保", "技术协议"],
+            "slices": [
+              {
+                "slice_type": "negation",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["不自动续期"],
+                "expected_recall": true,
+                "rationale": "不自动续期的否定词直接决定续期结论。"
+              }
+            ],
+            "rationale": "明确排除自动续期，不能只检索续期正向表述。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-005",
+            "rule_id": "CONTRACT-CORE-TERMINATION-001",
+            "checker": "termination_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["解除条款", "提前10日书面通知"],
+            "acceptable_phrases": ["终止后5日内完成结算"],
+            "error_candidate_phrases": ["不自动续期", "10个工作日内完成验收"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["提前10日", "5日内"],
+                "expected_recall": true,
+                "rationale": "解除通知期限和终止结算期限必须精确召回。"
+              }
+            ],
+            "rationale": "解除触发、通知和终止结算形成完整闭环。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-006",
+            "rule_id": "CONTRACT-CORE-BREACH-001",
+            "checker": "breach_liability_terms",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["违约责任", "承担赔偿责任"],
+            "acceptable_phrases": ["违约金按合同总额5%计算"],
+            "error_candidate_phrases": ["现场部署", "一年质保"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["5%"],
+                "expected_recall": true,
+                "rationale": "违约金比例是责任计算的精确数字。"
+              }
+            ],
+            "rationale": "主合同有责任承担和合同总额比例计算。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-007",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["小写1000000元", "壹佰万元整"],
+            "acceptable_phrases": ["不含税金额：1000000元"],
+            "error_candidate_phrases": ["违约金按合同总额5%计算", "支付70%"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["1000000元", "壹佰万元整"],
+                "expected_recall": true,
+                "rationale": "大小写金额和不含税金额是不同金额事实。"
+              }
+            ],
+            "rationale": "主合同提供大小写一致的合同总额。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-008",
+            "rule_id": "CONTRACT-CHECK-CBAFDF262EB8",
+            "checker": "tax_rate",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["税率：0%"],
+            "acceptable_phrases": ["不含税金额：1000000元"],
+            "error_candidate_phrases": ["合同总额5%", "支付70%"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["0%"],
+                "expected_recall": true,
+                "rationale": "税率百分比不能和违约金百分比混淆。"
+              }
+            ],
+            "rationale": "税率有明确百分比原文，属于可计算输入。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-009",
+            "rule_id": "CONTRACT-CHECK-1BF7A165D755",
+            "checker": "tax_amount",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["cmp-main-v1"],
+            "gold_phrases": ["税额：0元", "不含税金额：1000000元"],
+            "acceptable_phrases": ["税率：0%"],
+            "error_candidate_phrases": ["合同金额：小写1000000元", "违约金按合同总额5%计算"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["cmp-main-v1"],
+                "phrases": ["不含税金额", "税额"],
+                "expected_recall": true,
+                "rationale": "税额计算必须绑定不含税基数和税额定义。"
+              }
+            ],
+            "rationale": "合同包同时提供不含税金额、税率和税额。"
+          },
+          {
+            "retrieval_id": "retrieval-complete-010",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["cmp-main-v1", "cmp-technical-v1", "cmp-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["一年质保", "测试报告"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["cmp-amend-v2"],
+                "phrases": ["一年质保"],
+                "expected_recall": false,
+                "rationale": "质保承诺不等于履约保函或保证金。"
+              }
+            ],
+            "rationale": "合同包没有保函、保证金或履约保证要求。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-complete-007",
+          "annotator_id": "expert-seed-legal-finance-tech-07",
+          "expert_role": "合同、财务与技术联合标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待三方专家确认完整条款的通过标准。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "cmp-clause-001",
+            "document_id": "cmp-main-v1",
+            "phrase": "付款条款",
+            "expected_present": true,
+            "rationale": "主合同有明确付款节点和比例。"
+          },
+          {
+            "target_id": "cmp-clause-002",
+            "document_id": "cmp-main-v1",
+            "phrase": "验收标准",
+            "expected_present": true,
+            "rationale": "主合同同时给出验收标准和方法。"
+          },
+          {
+            "target_id": "cmp-clause-003",
+            "document_id": "cmp-main-v1",
+            "phrase": "不自动续期",
+            "expected_present": true,
+            "rationale": "主合同明确排除自动续期。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "cmp-evidence-payment",
+            "checker": "payment_terms",
+            "document_ids": [
+              "cmp-main-v1"
+            ],
+            "required_phrases": [
+              "验收合格后支付70%"
+            ],
+            "expected_evidence": true,
+            "rationale": "付款通过结论必须回指验收付款节点。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "交易金额达到一百万元升级阈值，付款条款需要人工复核。"
+          },
+          {
+            "checker": "delivery_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "交付有日期、地点和现场部署方式。"
+          },
+          {
+            "checker": "acceptance_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "验收有功能性能标准、测试报告、期限和方法。"
+          },
+          {
+            "checker": "renewal_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "合同明确约定不自动续期。"
+          },
+          {
+            "checker": "termination_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "解除有重大违约事由、通知期限和终止结算。"
+          },
+          {
+            "checker": "breach_liability_terms",
+            "expected_status": "PASS",
+            "conclusion_basis": "违约责任和合同总额5%的违约金计算口径明确。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "PASS",
+            "conclusion_basis": "小写金额和大写金额一致。"
+          },
+          {
+            "checker": "tax_rate",
+            "expected_status": "PASS",
+            "conclusion_basis": "合同明确约定税率为0%。"
+          },
+          {
+            "checker": "tax_amount",
+            "expected_status": "PASS",
+            "conclusion_basis": "不含税金额1000000元乘以0%得到税额0元。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据，不能自动认定不需要。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "payment_threshold_reached",
+            "reason": "交易金额1000000元达到付款 Playbook 的一百万元升级阈值，不能自动放行。",
+            "evidence_gap": "需要人工确认付款节点、验收绑定和高金额交易授权。",
+            "required_document_ids": [
+              "cmp-main-v1"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "完整核心条款合同包仍没有保函要求或排除保函的明确文字。",
+            "evidence_gap": "业务是否需要保函不属于现有合同文字可直接判断的事实。",
+            "required_document_ids": [
+              "cmp-main-v1",
+              "cmp-technical-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "cmp-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：小写1000000元"
+            ],
+            "fact_basis": "主合同小写金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_upper",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "cmp-main-v1"
+            ],
+            "evidence_phrases": [
+              "大写：壹佰万元整"
+            ],
+            "fact_basis": "主合同大写金额。"
+          },
+          {
+            "fact_type": "financial.tax_base_amount",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "cmp-main-v1"
+            ],
+            "evidence_phrases": [
+              "不含税金额：1000000元"
+            ],
+            "fact_basis": "主合同不含税金额。"
+          },
+          {
+            "fact_type": "financial.tax_amount",
+            "normalized_value": "0.00",
+            "document_ids": [
+              "cmp-main-v1"
+            ],
+            "evidence_phrases": [
+              "税额：0元"
+            ],
+            "fact_basis": "主合同税额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "numeric": "1000000.00",
+              "uppercase": "1000000.00",
+              "consistent": true
+            },
+            "calculation_basis": "小写1000000元与壹佰万元整一致。"
+          },
+          {
+            "checker": "tax_amount",
+            "input_fact_types": [
+              "financial.tax_base_amount",
+              "tax_rate",
+              "financial.tax_amount"
+            ],
+            "expected_status": "PASS",
+            "expected_comparison": {
+              "tax_base": "1000000.00",
+              "tax_rate": 0.0,
+              "actual_tax": "0.00",
+              "expected_tax": "0.00"
+            },
+            "calculation_basis": "不含税金额1000000元乘以0%等于0元。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "cmp-main-v1",
+          "compare_document_id": "cmp-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 0,
+          "expected_changes": [
+            {
+              "kind": "added",
+              "compare_contains": "新增：乙方提供一年质保"
+            }
+          ],
+          "change_summary": "补充协议只新增一年质保，核心付款、交付、验收和责任条款保持一致。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "cmp-redline-001",
+            "checker": "payment_terms",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "cmp-main-v1"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "验收合格后支付70%",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "cmp-evidence-payment",
+            "rationale": "交易金额达到升级阈值，需在付款条款上保留人工复核意见，确认高金额付款授权和验收绑定。"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "version-change-with-redline-source",
+      "package": {
+        "package_id": "expert-package-version-008",
+        "main_contract": {
+          "document_id": "ver-main-v1",
+          "filename": "云平台变更项目-主合同-v1.docx",
+          "document_kind": "main_contract",
+          "version_label": "v1",
+          "text": "项目名称：云平台实施项目\n合同金额：人民币1000000元\n付款方式：验收合格后支付。"
+        },
+        "supporting_documents": [
+          {
+            "document_id": "ver-technical-v1",
+            "filename": "云平台变更项目-技术协议-v1.docx",
+            "document_kind": "technical_agreement",
+            "version_label": "v1",
+            "text": "技术协议。\n项目名称：云平台实施项目。\n交付标准：完成部署、接口联调和测试报告。"
+          }
+        ],
+        "version_or_amendment": [
+          {
+            "document_id": "ver-amend-v2",
+            "filename": "云平台变更项目-补充协议-v2.docx",
+            "document_kind": "amendment",
+            "version_label": "v2",
+            "text": "项目名称：云平台实施项目\n合同金额：人民币1200000元\n付款方式：验收合格后支付。\n新增：乙方提供一年质保。"
+          }
+        ],
+        "document_precedence": ["ver-amend-v2", "ver-main-v1", "ver-technical-v1"],
+        "business_background": {
+          "scenario": "项目进入补充协议谈判，供应商将合同金额从1000000元调整为1200000元并新增一年质保。",
+          "transaction_purpose": "确认金额变化是否经过授权，同时把版本差异和变更建议绑定到同一审查结果。",
+          "review_focus": [
+            "版本金额变化",
+            "补充协议新增责任",
+            "主合同与技术协议的文件优先效力"
+          ]
+        },
+        "enterprise_position": {
+          "party_position": "buyer",
+          "position_summary": "甲方接受有依据的范围变更，但金额增加必须有技术范围、报价和授权证据。",
+          "non_negotiables": [
+            "金额变化必须可回溯到版本差异和书面确认",
+            "新增质保责任必须进入最终补充协议"
+          ],
+          "acceptable_fallbacks": [
+            "以补充协议明确新增范围、金额和质保，并完成授权审批"
+          ],
+          "escalation_triggers": [
+            "金额增加没有报价或范围变更依据",
+            "版本差异无法定位到具体条款"
+          ]
+        },
+        "review_context": {
+          "contract_type": "软件开发/转让服务",
+          "jurisdiction": "中国大陆",
+          "transaction_tags": ["software_implementation", "multi_document", "version_change"],
+          "transaction_amount": "1200000",
+          "review_scope": [
+            "CONTRACT-CORE-CROSS-DOCUMENT-001",
+            "CONTRACT-CHECK-875D2A258280",
+            "CONTRACT-CORE-PAYMENT-001",
+            "CONTRACT-CHECK-4CABB10596A5"
+          ]
+        }
+      },
+      "expert_annotation": {
+        "retrieval_annotations": [
+          {
+            "retrieval_id": "retrieval-version-001",
+            "rule_id": "CONTRACT-CORE-CROSS-DOCUMENT-001",
+            "checker": "cross_document_consistency",
+            "search_document_ids": ["ver-main-v1", "ver-technical-v1", "ver-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["ver-main-v1", "ver-amend-v2"],
+            "gold_phrases": ["合同金额：人民币1000000元", "合同金额：人民币1200000元"],
+            "acceptable_phrases": ["新增：乙方提供一年质保"],
+            "error_candidate_phrases": ["交付标准", "验收合格后支付"],
+            "slices": [
+              {
+                "slice_type": "version_override",
+                "document_ids": ["ver-main-v1", "ver-amend-v2"],
+                "phrases": ["1000000元", "1200000元"],
+                "expected_recall": true,
+                "rationale": "补充协议覆盖主合同金额，两个版本必须同时召回。"
+              },
+              {
+                "slice_type": "cross_document_conflict",
+                "document_ids": ["ver-main-v1", "ver-amend-v2"],
+                "phrases": ["合同金额"],
+                "expected_recall": true,
+                "rationale": "版本差异是同一业务义务的金额变化，不是孤立文本差异。"
+              }
+            ],
+            "rationale": "补充协议将金额从1000000元改为1200000元，必须进入版本影响分析。"
+          },
+          {
+            "retrieval_id": "retrieval-version-002",
+            "rule_id": "CONTRACT-CHECK-875D2A258280",
+            "checker": "amount_case_consistency",
+            "search_document_ids": ["ver-main-v1", "ver-technical-v1", "ver-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["ver-main-v1", "ver-amend-v2"],
+            "gold_phrases": ["人民币1000000元", "人民币1200000元"],
+            "acceptable_phrases": ["合同金额"],
+            "error_candidate_phrases": ["验收合格后支付", "一年质保"],
+            "slices": [
+              {
+                "slice_type": "numeric",
+                "document_ids": ["ver-main-v1", "ver-amend-v2"],
+                "phrases": ["1000000元", "1200000元"],
+                "expected_recall": true,
+                "rationale": "两个版本的精确金额数字都必须可引用。"
+              }
+            ],
+            "rationale": "金额规则需要同时看到基准金额和变更金额。"
+          },
+          {
+            "retrieval_id": "retrieval-version-003",
+            "rule_id": "CONTRACT-CORE-PAYMENT-001",
+            "checker": "payment_terms",
+            "search_document_ids": ["ver-main-v1", "ver-technical-v1", "ver-amend-v2"],
+            "expected_present": true,
+            "gold_document_ids": ["ver-main-v1", "ver-amend-v2"],
+            "gold_phrases": ["验收合格后支付"],
+            "acceptable_phrases": ["付款方式"],
+            "error_candidate_phrases": ["合同金额：人民币1200000元", "交付标准"],
+            "slices": [
+              {
+                "slice_type": "definition",
+                "document_ids": ["ver-main-v1", "ver-amend-v2"],
+                "phrases": ["付款方式", "验收合格后支付"],
+                "expected_recall": true,
+                "rationale": "版本变化没有解除验收付款绑定，主合同和补充协议都应可见。"
+              }
+            ],
+            "rationale": "付款义务在两个版本中保持一致，但仍需作为版本影响判断的输入。"
+          },
+          {
+            "retrieval_id": "retrieval-version-004",
+            "rule_id": "CONTRACT-CHECK-4CABB10596A5",
+            "checker": "guarantee_requirement",
+            "search_document_ids": ["ver-main-v1", "ver-technical-v1", "ver-amend-v2"],
+            "expected_present": false,
+            "gold_document_ids": [],
+            "gold_phrases": [],
+            "acceptable_phrases": [],
+            "error_candidate_phrases": ["一年质保", "交付标准"],
+            "slices": [
+              {
+                "slice_type": "exception",
+                "document_ids": ["ver-amend-v2"],
+                "phrases": ["一年质保"],
+                "expected_recall": false,
+                "rationale": "新增质保不是履约保函要求，不能混淆保证类型。"
+              }
+            ],
+            "rationale": "版本包没有保函、保证金或履约保证条款。"
+          }
+        ],
+        "metadata": {
+          "annotation_id": "annotation-version-008",
+          "annotator_id": "expert-seed-legal-finance-08",
+          "expert_role": "合同法务与财务联合标注",
+          "annotated_at": "2026-09-12",
+          "annotation_state": "seed",
+          "adjudication_note": "待合同法务、财务和技术专家确认金额变更依据。"
+        },
+        "clause_localization": [
+          {
+            "target_id": "ver-clause-001",
+            "document_id": "ver-main-v1",
+            "phrase": "合同金额：人民币1000000元",
+            "expected_present": true,
+            "rationale": "主合同提供基准版本金额。"
+          },
+          {
+            "target_id": "ver-clause-002",
+            "document_id": "ver-amend-v2",
+            "phrase": "合同金额：人民币1200000元",
+            "expected_present": true,
+            "rationale": "补充协议提供变更后金额。"
+          }
+        ],
+        "evidence_scope": [
+          {
+            "scope_id": "ver-evidence-conflict",
+            "checker": "cross_document_consistency",
+            "document_ids": [
+              "ver-main-v1",
+              "ver-amend-v2"
+            ],
+            "required_phrases": [
+              "1200000"
+            ],
+            "expected_evidence": true,
+            "rationale": "金额变化需要引用补充协议，并与主合同基准一起复核。"
+          }
+        ],
+        "rule_conclusions": [
+          {
+            "checker": "cross_document_consistency",
+            "expected_status": "WARN",
+            "conclusion_basis": "主合同和补充协议的金额事实发生变化，需要确认版本优先效力。"
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包有两个不同版本金额，不能自动选择唯一金额口径。"
+          },
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "交易金额达到一百万元升级阈值，付款方式即使绑定验收也必须人工复核。"
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "conclusion_basis": "合同包没有保函要求证据。"
+          }
+        ],
+        "unknown_reasons": [
+          {
+            "checker": "payment_terms",
+            "expected_status": "UNKNOWN",
+            "reason_code": "payment_threshold_reached",
+            "reason": "交易金额1200000元达到付款 Playbook 的一百万元升级阈值，不能自动放行。",
+            "evidence_gap": "需要人工确认版本金额变化、付款节点和验收绑定是否经过授权。",
+            "required_document_ids": [
+              "ver-main-v1",
+              "ver-amend-v2"
+            ]
+          },
+          {
+            "checker": "amount_case_consistency",
+            "expected_status": "UNKNOWN",
+            "reason_code": "version_amount_conflict",
+            "reason": "主合同和补充协议分别给出1000000元和1200000元，金额口径取决于版本效力确认。",
+            "evidence_gap": "缺少授权审批、变更范围和最终生效版本的完整证据。",
+            "required_document_ids": [
+              "ver-main-v1",
+              "ver-amend-v2",
+              "ver-technical-v1"
+            ]
+          },
+          {
+            "checker": "guarantee_requirement",
+            "expected_status": "UNKNOWN",
+            "reason_code": "guarantee_requirement_not_stated",
+            "reason": "合同包没有保函要求或排除保函的明确约定。",
+            "evidence_gap": "不能从保函文字缺失推断交易不需要保函。",
+            "required_document_ids": [
+              "ver-main-v1",
+              "ver-technical-v1"
+            ]
+          }
+        ],
+        "financial_facts": [
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1000000.00",
+            "document_ids": [
+              "ver-main-v1"
+            ],
+            "evidence_phrases": [
+              "合同金额：人民币1000000元"
+            ],
+            "fact_basis": "主合同基准金额。"
+          },
+          {
+            "fact_type": "financial.contract_amount_numeric",
+            "normalized_value": "1200000.00",
+            "document_ids": [
+              "ver-amend-v2"
+            ],
+            "evidence_phrases": [
+              "合同金额：人民币1200000元"
+            ],
+            "fact_basis": "补充协议变更后金额。"
+          }
+        ],
+        "financial_calculations": [
+          {
+            "checker": "amount_case_consistency",
+            "input_fact_types": [
+              "financial.contract_amount_numeric",
+              "financial.contract_amount_upper"
+            ],
+            "expected_status": "UNKNOWN",
+            "expected_comparison": {},
+            "calculation_basis": "版本金额存在差异，且没有唯一生效金额，大小写一致性不能自动判定。"
+          }
+        ],
+        "version_changes": {
+          "base_document_id": "ver-main-v1",
+          "compare_document_id": "ver-amend-v2",
+          "expected_added": 1,
+          "expected_deleted": 0,
+          "expected_modified": 1,
+          "expected_changes": [
+            {
+              "kind": "modified",
+              "base_contains": "1000000",
+              "compare_contains": "1200000"
+            },
+            {
+              "kind": "added",
+              "compare_contains": "一年质保"
+            }
+          ],
+          "change_summary": "补充协议将金额从1000000元改为1200000元，并新增一年质保。"
+        },
+        "redline_recommendations": [
+          {
+            "recommendation_id": "ver-redline-001",
+            "checker": "cross_document_consistency",
+            "expectation": "REQUIRED",
+            "target_document_ids": [
+              "ver-main-v1",
+              "ver-amend-v2"
+            ],
+            "operation": "COMMENT",
+            "anchor_phrase": "不一致",
+            "proposed_text_contains": null,
+            "evidence_scope_id": "ver-evidence-conflict",
+            "rationale": "对金额变更提出红线评论，要求补充范围、报价、授权和最终生效版本证据。"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -4,7 +4,7 @@ import fitz
 import pytest
 
 from contract_review import parse_contract_package
-from contract_review.models import EvidenceType
+from contract_review.models import EvidenceType, ReviewContext
 
 from contract_review_app.config import settings
 from contract_review_app.services.review_service import run_contract_review
@@ -85,7 +85,7 @@ def test_contract_review_includes_seal_evidence_and_visual_finding(monkeypatch):
     result = run_contract_review(
         [("合同主文.pdf", _make_contract_pdf())],
         package_id="pkg-seal-001",
-        contract_type="软件开发/转让服务",
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
     )
 
     seal_evidence = [

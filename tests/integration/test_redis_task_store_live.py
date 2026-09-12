@@ -9,11 +9,13 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import asyncio
+from io import BytesIO
 import os
 from uuid import uuid4
 
 import pytest
 import redis
+from fastapi import UploadFile
 
 from contract_review_app.models import AsyncTaskRecord, AsyncTaskStage, AsyncTaskStatus
 from contract_review_app.repositories.redis_task_store import (
@@ -31,6 +33,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _upload() -> UploadFile:
+    """构造仅供任务服务并发测试使用的合同附件。"""
+
+    return UploadFile(file=BytesIO(b"contract"), filename="合同.pdf")
+
+
 def _task(*, task_id: str, idempotency_key: str) -> AsyncTaskRecord:
     return AsyncTaskRecord(
         task_id=task_id,
@@ -40,7 +48,7 @@ def _task(*, task_id: str, idempotency_key: str) -> AsyncTaskRecord:
         queue_name="contract.heavy",
         request_id=f"request-{task_id}",
         idempotency_key=idempotency_key,
-        input_mode="file",
+        input_mode="files",
         input_path=f"runtime/tasks/input/{task_id}/input.json",
         input_filename="contract.pdf",
         input_content_type="application/pdf",
@@ -162,7 +170,7 @@ def test_live_service_strict_idempotency_writes_input_once(monkeypatch) -> None:
     async def fake_persist(*, task_id, **_kwargs):
         file_store.persisted.append(task_id)
         await asyncio.sleep(0)
-        return "base64", file_store.input_path_for(task_id), 8, None, None
+        return "files", file_store.input_path_for(task_id), 8, "合同.pdf", "application/pdf"
 
     monkeypatch.setattr(service, "_persist_input", fake_persist)
     monkeypatch.setattr(service, "_enqueue_task", lambda *_args: None)
@@ -170,7 +178,7 @@ def test_live_service_strict_idempotency_writes_input_once(monkeypatch) -> None:
     async def submit():
         return await service.create_task(
             task_type="contract-review",
-            image_base64="dGVzdC1pbnB1dA==",
+            files=[_upload()],
             idempotency_key=idempotency_key,
         )
 

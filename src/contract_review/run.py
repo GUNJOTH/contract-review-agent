@@ -61,6 +61,14 @@ def create_review_run(
 ) -> ReviewRun:
     """Create a run snapshot without mutating source documents or rule data."""
 
+    # 运行快照是正式审查的起点，不能由 CLI 或其它直接调用绕过规则包的
+    # 发布、Playbook 和 ReviewResult Schema 兼容门禁。
+    from .rules import assert_rule_bundle_compatible
+
+    try:
+        assert_rule_bundle_compatible(rule_bundle)
+    except ValueError as exc:
+        raise ReviewRunError(str(exc)) from exc
     document_list = list(documents)
     if not document_list:
         raise ReviewRunError("a contract package must contain at least one document")

@@ -3,9 +3,10 @@ from pathlib import Path
 
 import fitz
 
-from contract_review.models import BoundingBox, Rule, RuleBundle
+from contract_review.models import BoundingBox, ReviewContext, Rule, RuleBundle
 from contract_review.ocr import OCRPageResult, OCRTextBlock, StaticOCRProvider
 from contract_review.parser import find_text_evidence, parse_pdf
+from contract_review.playbook import publish_playbook_bundle
 from contract_review.pipeline import replay_review, run_review
 
 
@@ -63,7 +64,7 @@ class OcrParserTests(unittest.TestCase):
                 )
             }
         )
-        bundle = RuleBundle(
+        bundle = publish_playbook_bundle(RuleBundle(
             bundle_id="ocr-rules-v1",
             source_filename="ocr-rules.xlsx",
             source_sha256="d" * 64,
@@ -80,18 +81,18 @@ class OcrParserTests(unittest.TestCase):
                     source_snapshot="ocr-rules#1",
                 )
             ],
-        )
+        ))
         result = run_review(
             [self.pdf_path],
             package_id="package-ocr-review",
             rule_bundle=bundle,
-            contract_type="software",
+            review_context=ReviewContext(contract_type="software"),
             ocr_provider=provider,
             run_id="run-ocr-review",
         )
 
         self.assertEqual(result.documents[0].parse_status, "parsed")
-        self.assertEqual(result.findings[0].status, "UNKNOWN")
+        self.assertEqual(result.findings[0].status, "WARN")
         replayed = replay_review(
             result,
             [self.pdf_path],

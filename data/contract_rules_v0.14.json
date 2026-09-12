@@ -4,6 +4,11 @@
   "source_sha256": "9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
   "source_sheet": "Sheet1",
   "source_range": "A1:M54",
+  "release_status": "published",
+  "compatible_review_schema": "2.0",
+  "playbook_schema_version": "1.0",
+  "release_fingerprint": "32b7a9eff2b037e4d7381032b5c204b6b723347087c1e859d61cdf3c66b6ee8f",
+  "published_at": "2026-09-12T00:00:00Z",
   "source_notes": [
     "说明：\n1、每合同一份表；\n2、合同税率对公司的收益（0%【技术开发或转让】>13%【自主软件，需附著作权】>6%【一般性服务】>13%【一般商品或自产硬件，如：外购服务器、自产锁具】）\n3、著作权请参照：https://docs.qq.com/sheet/DVVNjRXpEUW5XU3BO?tab=000001核对，【名称】和【规格型号】要相同；\n4、根据合同类型将自查结果填在对应合同类型相邻列【检查说明】中。"
   ],
@@ -258,6 +263,7 @@
       "legacy_id": 6,
       "version": "v0.14",
       "title": "金额大小写一致",
+      "checker": "amount_case_consistency",
       "category": "金额",
       "applies_to": [
         "软件产品销售",
@@ -297,7 +303,10 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": [
+        "financial.contract_amount_numeric",
+        "financial.contract_amount_upper"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -311,6 +320,7 @@
       "legacy_id": 7,
       "version": "v0.14",
       "title": "金额明细汇总一致",
+      "checker": "amount_detail_total",
       "category": "金额",
       "applies_to": [
         "软件产品销售",
@@ -350,7 +360,10 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": [
+        "financial.detail_amount",
+        "financial.detail_total"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -364,6 +377,7 @@
       "legacy_id": 8,
       "version": "v0.14",
       "title": "不含税",
+      "checker": "untaxed_amount",
       "category": "金额",
       "applies_to": [
         "软件产品销售",
@@ -417,6 +431,7 @@
       "legacy_id": 9,
       "version": "v0.14",
       "title": "税率",
+      "checker": "tax_rate",
       "category": "金额",
       "applies_to": [
         "软件产品销售",
@@ -456,7 +471,7 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": ["tax_rate"],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -470,6 +485,7 @@
       "legacy_id": 10,
       "version": "v0.14",
       "title": "税额",
+      "checker": "tax_amount",
       "category": "金额",
       "applies_to": [
         "软件产品销售",
@@ -509,7 +525,11 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": [
+        "financial.tax_base_amount",
+        "tax_rate",
+        "financial.tax_amount"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -523,6 +543,7 @@
       "legacy_id": 11,
       "version": "v0.14",
       "title": "付款方式（付款比例）",
+      "checker": "payment_ratio",
       "category": "付款",
       "applies_to": [
         "软件产品销售",
@@ -562,7 +583,7 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": ["financial.payment_ratio"],
       "playbook": {
         "playbook_id": "payment-position-v1",
         "version": "v1",
@@ -590,6 +611,7 @@
       "legacy_id": 12,
       "version": "v0.14",
       "title": "是否有保函要求？",
+      "checker": "guarantee_requirement",
       "category": "付款",
       "applies_to": [
         "软件产品销售",
@@ -643,6 +665,7 @@
       "legacy_id": 13,
       "version": "v0.14",
       "title": "付款总额是否与合同额相等",
+      "checker": "payment_total",
       "category": "付款",
       "applies_to": [
         "软件产品销售",
@@ -682,7 +705,10 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": [
+        "financial.payment_amount",
+        "financial.contract_amount_numeric"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -696,6 +722,7 @@
       "legacy_id": 14,
       "version": "v0.14",
       "title": "发票类型",
+      "checker": "invoice_type",
       "category": "发票",
       "applies_to": [
         "软件产品销售",
@@ -735,7 +762,7 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": ["contract_element:invoice_type"],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -749,6 +776,7 @@
       "legacy_id": 15,
       "version": "v0.14",
       "title": "发票金额",
+      "checker": "invoice_amount",
       "category": "发票",
       "applies_to": [
         "软件产品销售",
@@ -788,7 +816,7 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": ["financial.invoice_amount"],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -802,6 +830,7 @@
       "legacy_id": 16,
       "version": "v0.14",
       "title": "发票总额是否与合同额相等",
+      "checker": "invoice_total",
       "category": "发票",
       "applies_to": [
         "软件产品销售",
@@ -841,7 +870,10 @@
           "note": null
         }
       },
-      "required_evidence": [],
+      "required_evidence": [
+        "financial.invoice_amount",
+        "financial.contract_amount_numeric"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
@@ -1795,6 +1827,7 @@
       "legacy_id": 35,
       "version": "v0.14",
       "title": "技术协议",
+      "checker": "attachment_completeness",
       "category": "合同主体",
       "applies_to": [
         "软件产品销售",

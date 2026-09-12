@@ -14,3 +14,19 @@ class RuleBundleTests(unittest.TestCase):
         self.assertEqual(bundle.source_range, "A1:M54")
         self.assertTrue(any(not rule.applies_to for rule in bundle.rules))
         self.assertTrue(all(rule.source_locator is not None for rule in bundle.rules))
+        self.assertTrue(
+            {
+                "amount_case_consistency",
+                "amount_detail_total",
+                "untaxed_amount",
+                "tax_rate",
+                "tax_amount",
+                "payment_ratio",
+                "guarantee_requirement",
+                "payment_total",
+                "invoice_type",
+                "invoice_amount",
+                "invoice_total",
+                "attachment_completeness",
+            }.issubset({rule.checker for rule in bundle.rules})
+        )

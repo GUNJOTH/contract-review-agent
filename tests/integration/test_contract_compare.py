@@ -1,5 +1,6 @@
 """合同文档对比：Word 差异列表与相似度。"""
 
+import json
 from io import BytesIO
 from xml.etree.ElementTree import Element, SubElement, tostring
 from zipfile import ZipFile
@@ -80,9 +81,23 @@ def test_compare_detects_added_and_modified_paragraphs():
     assert "一百二十万元" in result.compare.html
 
 
-def test_contract_compare_api_returns_diff_list():
+def test_contract_compare_api_returns_diff_list(monkeypatch):
     base = _docx_bytes("付款方式：银行转账")
     other = _docx_bytes("付款方式：支票支付")
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
+    review_response = client.post(
+        "/api/v1/contract-review",
+        headers=_auth_headers(),
+        files={
+            "files": (
+                "基准.docx",
+                base,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"PackageId": "pkg-compare-api", "ContractType": "software"},
+    )
+    assert review_response.status_code == 200, review_response.text
     response = client.post(
         "/api/v1/contract-compare",
         headers=_auth_headers(),
@@ -98,9 +113,29 @@ def test_contract_compare_api_returns_diff_list():
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ),
         },
+        data={
+            "ReviewResultPayload": json.dumps(
+                review_response.json()["review_result"], ensure_ascii=False
+            )
+        },
     )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["modified"] >= 1
     assert payload["changes"]
+    assert payload["review_result"]["version_comparisons"]
     assert "差异" in payload["report"] or "修改" in payload["report"]
+
+
+def test_contract_compare_api_requires_review_result():
+    base = _docx_bytes("付款方式：银行转账")
+    other = _docx_bytes("付款方式：支票支付")
+    response = client.post(
+        "/api/v1/contract-compare",
+        headers=_auth_headers(),
+        files={
+            "base_file": ("基准.docx", base, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "compare_file": ("比对.docx", other, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        },
+    )
+    assert response.status_code == 422, response.text

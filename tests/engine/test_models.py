@@ -121,17 +121,31 @@ class ModelTests(unittest.TestCase):
             source_version="parser-v1",
             content="合同正文",
             evidence_ids=["e-contract"],
+            source_kind=KnowledgeSourceKind.CONTRACT,
             metadata={"document_id": "document-1"},
         )
-        legacy_rule_chunk = KnowledgeChunk(
+        rule_chunk = KnowledgeChunk(
             chunk_id="chunk-rule-r1",
             source_name="规则快照",
             source_sha256="r" * 64,
             source_version="rules-v1",
             content="R1 | 规则定义",
             evidence_ids=["e-rule"],
+            source_kind=KnowledgeSourceKind.RULE,
             metadata={"rule_id": "R1"},
         )
 
         self.assertEqual(contract_chunk.source_kind, KnowledgeSourceKind.CONTRACT)
-        self.assertEqual(legacy_rule_chunk.source_kind, KnowledgeSourceKind.RULE)
+        self.assertEqual(rule_chunk.source_kind, KnowledgeSourceKind.RULE)
+
+    def test_knowledge_chunk_requires_explicit_business_source(self) -> None:
+        with self.assertRaises(ValidationError):
+            KnowledgeChunk(
+                chunk_id="chunk-without-source-kind",
+                source_name="合同.pdf",
+                source_sha256="c" * 64,
+                source_version="parser-v1",
+                content="合同正文",
+                evidence_ids=["e-contract"],
+                metadata={"document_id": "document-1"},
+            )

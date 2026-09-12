@@ -1,0 +1,501 @@
+{
+  "schema_version": "1.0",
+  "bundle_id": "contract-core-rules-v0.15-aa7e63cad664",
+  "source_filename": "contract_core_rules_v0.15.json",
+  "source_sha256": "aa7e63cad664a0bc7070d566d72a387d7dbaf89e29d057b9b7cb396ff791735a",
+  "source_sheet": "core_rules",
+  "source_range": "A1:G8",
+  "release_status": "published",
+  "compatible_review_schema": "2.0",
+  "playbook_schema_version": "1.0",
+  "release_fingerprint": "0331bc8f189b6b7453dd37dd2eb8322304c8da34ca2bab0f7ebdaab04b887bb9",
+  "published_at": "2026-09-12T00:00:00Z",
+  "source_notes": [
+    "核心业务规则扩展快照：付款、交付、验收、续期、终止、违约责任和跨文档一致性。",
+    "本快照只定义规则和 Playbook，不承载鉴权、监控、OCR、Redis、Celery 或外部模型配置。",
+    "checker 模式必须先形成带原文证据的 ContractFact；事实不足时由检查器输出 UNKNOWN。"
+  ],
+  "rules": [
+    {
+      "rule_id": "CONTRACT-CORE-PAYMENT-001",
+      "version": "v0.15",
+      "title": "付款条件与节点",
+      "category": "付款",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_amount_min": 0,
+          "note": "付款规则需要交易金额以执行 Playbook 升级阈值。"
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_amount_min": 0,
+          "note": "付款规则需要交易金额以执行 Playbook 升级阈值。"
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_amount_min": 0,
+          "note": "付款规则需要交易金额以执行 Playbook 升级阈值。"
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_amount_min": 0,
+          "note": "付款规则需要交易金额以执行 Playbook 升级阈值。"
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_amount_min": 0,
+          "note": "付款规则需要交易金额以执行 Playbook 升级阈值。"
+        }
+      },
+      "condition": "付款应有节点、条件和比例，并与交付或验收结果形成可执行绑定。",
+      "check_method": "deterministic",
+      "checker": "payment_terms",
+      "risk_level": "high",
+      "required_evidence": ["contract_term:payment"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#payment",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-PAYMENT-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["付款", "支付", "结算"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "付款应按交付、阶段成果和验收节点分期支付，任何单一节点的付款比例不得脱离已完成并确认的成果。",
+        "escalation_condition": "付款比例、付款条件或验收结果无法从合同原文确定。",
+        "escalation_thresholds": [
+          {
+            "threshold_id": "payment-amount-review-001",
+            "metric": "transaction_amount",
+            "operator": ">=",
+            "value": 1000000,
+            "action": "ESCALATE",
+            "reason": "交易金额达到一百万元时，付款节点和验收绑定需要人工复核。"
+          }
+        ]
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-DELIVERY-001",
+      "version": "v0.15",
+      "title": "交付与履行期限",
+      "category": "交付",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        }
+      },
+      "condition": "交付标的、期限、地点或方式应当可以被验收和追责。",
+      "check_method": "deterministic",
+      "checker": "delivery_terms",
+      "risk_level": "high",
+      "required_evidence": ["contract_term:delivery"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#delivery",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-DELIVERY-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["交付", "交货", "工期", "履行期限"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "乙方应于____年____月____日前，将约定的成果/货物交付至____地点，交付方式、交付材料和逾期责任以本合同约定为准。",
+        "escalation_condition": "合同仅使用‘按计划交付’等不可验证表述。"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-ACCEPTANCE-001",
+      "version": "v0.15",
+      "title": "验收标准与方法",
+      "category": "验收",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        }
+      },
+      "condition": "验收应有客观标准、材料/方法、期限以及不合格处理。",
+      "check_method": "deterministic",
+      "checker": "acceptance_terms",
+      "risk_level": "high",
+      "required_evidence": ["contract_term:acceptance"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#acceptance",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-ACCEPTANCE-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["验收", "验收标准", "验收方法"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "甲方依据双方确认的功能、性能和测试指标，在收到验收材料后____个工作日内完成验收；不合格的，乙方应在____日内整改。",
+        "escalation_condition": "验收标准或不合格处理依赖未随合同提供的附件。"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-RENEWAL-001",
+      "version": "v0.15",
+      "title": "续期与续签",
+      "category": "续期",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        }
+      },
+      "condition": "自动续期必须明确期限、通知和退出条件，不得让业务方在不知情状态下持续承担费用。",
+      "check_method": "deterministic",
+      "checker": "renewal_terms",
+      "risk_level": "medium",
+      "required_evidence": ["contract_term:renewal"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#renewal",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-RENEWAL-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["续期", "续签", "自动续期"],
+        "missing_clause_policy": "UNKNOWN",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "合同期满是否续期应由双方另行书面确认；如约定自动续期，应明确续期期限及至少____日前的书面通知退出机制。",
+        "escalation_condition": "续期费用、续期期限或退出通知期限不明确。"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-TERMINATION-001",
+      "version": "v0.15",
+      "title": "解除与终止",
+      "category": "终止",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        }
+      },
+      "condition": "解除/终止应明确触发事由、通知、交接和费用结算。",
+      "check_method": "deterministic",
+      "checker": "termination_terms",
+      "risk_level": "high",
+      "required_evidence": ["contract_term:termination"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#termination",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-TERMINATION-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["解除", "终止", "解约"],
+        "missing_clause_policy": "UNKNOWN",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "一方发生重大违约且在收到书面通知后____日内未改正的，守约方有权解除合同；合同终止后双方应在____日内完成资料交接和费用结算。",
+        "escalation_condition": "解除权、通知期限或终止后的交接结算责任不明确。"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-BREACH-001",
+      "version": "v0.15",
+      "title": "违约责任与责任范围",
+      "category": "违约责任",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"]
+        }
+      },
+      "condition": "违约情形、责任承担、违约金或损失计算口径应清晰，全面免责不得自动通过。",
+      "check_method": "deterministic",
+      "checker": "breach_liability_terms",
+      "risk_level": "critical",
+      "required_evidence": ["contract_term:breach"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#breach",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-BREACH-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["违约", "违约责任", "违约金", "赔偿"],
+        "missing_clause_policy": "BLOCK",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "任一方违约的，应承担继续履行、采取补救措施、支付违约金及赔偿对方损失等责任；责任上限和例外情形应另行明确。",
+        "escalation_condition": "责任上限、免责范围或损失计算口径需要结合交易风险人工确认。"
+      }
+    },
+    {
+      "rule_id": "CONTRACT-CORE-CROSS-DOCUMENT-001",
+      "version": "v0.15",
+      "title": "跨文档关键事实一致性",
+      "category": "跨文档一致性",
+      "applies_to": ["软件产品销售", "软件开发/转让服务", "一般商品销售合同", "混合合同", "其它服务合同"],
+      "applicability": {
+        "软件开发/转让服务": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_tags": ["multi_document"],
+          "document_kinds_any": [
+            "main_contract",
+            "annex",
+            "quotation",
+            "order",
+            "technical_agreement",
+            "acceptance",
+            "amendment"
+          ],
+          "exceptions": [
+            {
+              "exception_id": "cross-single-document-review",
+              "result": "not_applicable",
+              "transaction_tags": ["single_document_review"],
+              "reason": "单文档审查不触发跨文档一致性规则。"
+            }
+          ]
+        },
+        "软件产品销售": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_tags": ["multi_document"],
+          "document_kinds_any": [
+            "main_contract",
+            "annex",
+            "quotation",
+            "order",
+            "technical_agreement",
+            "acceptance",
+            "amendment"
+          ],
+          "exceptions": [
+            {
+              "exception_id": "cross-single-document-review-product",
+              "result": "not_applicable",
+              "transaction_tags": ["single_document_review"],
+              "reason": "单文档审查不触发跨文档一致性规则。"
+            }
+          ]
+        },
+        "一般商品销售合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_tags": ["multi_document"],
+          "document_kinds_any": [
+            "main_contract",
+            "annex",
+            "quotation",
+            "order",
+            "technical_agreement",
+            "acceptance",
+            "amendment"
+          ],
+          "exceptions": [
+            {
+              "exception_id": "cross-single-document-review-goods",
+              "result": "not_applicable",
+              "transaction_tags": ["single_document_review"],
+              "reason": "单文档审查不触发跨文档一致性规则。"
+            }
+          ]
+        },
+        "混合合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_tags": ["multi_document"],
+          "document_kinds_any": [
+            "main_contract",
+            "annex",
+            "quotation",
+            "order",
+            "technical_agreement",
+            "acceptance",
+            "amendment"
+          ],
+          "exceptions": [
+            {
+              "exception_id": "cross-single-document-review-mixed",
+              "result": "not_applicable",
+              "transaction_tags": ["single_document_review"],
+              "reason": "单文档审查不触发跨文档一致性规则。"
+            }
+          ]
+        },
+        "其它服务合同": {
+          "applicability": "required",
+          "party_positions": ["buyer", "seller", "both"],
+          "jurisdictions": ["中国大陆"],
+          "transaction_tags": ["multi_document"],
+          "document_kinds_any": [
+            "main_contract",
+            "annex",
+            "quotation",
+            "order",
+            "technical_agreement",
+            "acceptance",
+            "amendment"
+          ],
+          "exceptions": [
+            {
+              "exception_id": "cross-single-document-review-service",
+              "result": "not_applicable",
+              "transaction_tags": ["single_document_review"],
+              "reason": "单文档审查不触发跨文档一致性规则。"
+            }
+          ]
+        }
+      },
+      "condition": "主合同、技术协议、报价单、订单和验收文件中的主体、项目、金额、税率和交付事实应保持一致。",
+      "check_method": "deterministic",
+      "checker": "cross_document_consistency",
+      "risk_level": "high",
+      "required_evidence": ["contract_element:project_name", "financial.contract_amount_numeric"],
+      "human_review": false,
+      "source_snapshot": "contract_core_rules_v0.15.json#cross-document",
+      "playbook": {
+        "playbook_id": "PLAYBOOK-CROSS-DOCUMENT-001",
+        "version": "v0.15",
+        "evaluation_mode": "checker",
+        "clause_types": ["合同", "协议", "附件", "订单"],
+        "missing_clause_policy": "UNKNOWN",
+        "action_on_preferred": "ACCEPT",
+        "action_on_fallback": "REVISE",
+        "action_on_prohibited": "REJECT",
+        "suggested_language": "如主合同与附件、报价单或技术协议约定不一致，应明确文件优先顺序，并以双方最终书面确认的金额、范围和交付标准为准。",
+        "escalation_condition": "存在同类事实冲突但文件优先效力无法从合同包确定。"
+      }
+    }
+  ]
+}

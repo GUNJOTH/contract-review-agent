@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from .models import DocumentKind
+from .models import DocumentKind, ReviewContext
 from .parser import find_text_evidence, parse_pdf
 from .pipeline import parse_contract_package, run_review
 from .report import write_markdown_report
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             args.paths,
             package_id=args.package_id,
             rule_bundle=bundle,
-            contract_type=args.contract_type,
+            review_context=ReviewContext(contract_type=args.contract_type),
         )
         if args.audit_root:
             JsonAuditStore(args.audit_root).save(result)

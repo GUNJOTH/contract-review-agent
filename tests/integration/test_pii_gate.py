@@ -2,7 +2,16 @@
 
 import pytest
 
-from contract_review.models import KnowledgeChunk, SemanticModelRequest
+from contract_review.models import (
+    CandidateEvidence,
+    KnowledgeSourceKind,
+    RetrievalFilter,
+    RetrievalQuery,
+    RetrievalSource,
+    Rule,
+    ReviewContext,
+    SemanticModelRequest,
+)
 from contract_review.semantic import SemanticClientError
 from contract_review_app.config import settings
 from contract_review_app.services.pii_gate import gate_external_model_input, scan_text
@@ -49,6 +58,28 @@ def test_invalid_gate_switch_is_fail_closed(monkeypatch):
 
 
 def test_semantic_client_blocks_before_http_call(monkeypatch):
+    rule = Rule(
+        rule_id="R1",
+        version="v1",
+        title="联系人信息",
+        category="主体",
+        applies_to=["software"],
+        check_method="semantic",
+        source_snapshot="rules-v1",
+    )
+    retrieval_query = RetrievalQuery(
+        query_id="query-pii",
+        rule_id="R1",
+        rule_version="v1",
+        purpose="rule_review",
+        text="联系人信息",
+        retrieval_filter=RetrievalFilter(
+            document_ids=["doc-1"],
+            source_kinds=[KnowledgeSourceKind.CONTRACT],
+            applicable_rule_ids=["R1"],
+            rule_versions=["v1"],
+        ),
+    )
     request = SemanticModelRequest(
         request_id="req-pii",
         provider="test-provider",
@@ -56,17 +87,31 @@ def test_semantic_client_blocks_before_http_call(monkeypatch):
         prompt_version="prompt-v1",
         request_fingerprint="f" * 64,
         rule_ids=["R1"],
+        rule_definitions=[rule],
         system_instruction="只输出 JSON",
-        context_chunks=[
-            KnowledgeChunk(
-                chunk_id="chunk-1",
-                source_name="contract.pdf",
-                source_sha256="a" * 64,
-                source_version="parser-v1",
-                content="联系人电话：13800138000",
-                evidence_ids=["e1"],
-            )
-        ],
+        review_context=ReviewContext(contract_type="software"),
+        retrieval_queries_by_rule={"R1": retrieval_query},
+        candidate_evidence_by_rule={
+            "R1": [
+                CandidateEvidence(
+                    candidate_id="candidate-pii",
+                    query_id="query-pii",
+                    rule_id="R1",
+                    rule_version="v1",
+                    rank=1,
+                    chunk_id="chunk-1",
+                    document_id="doc-1",
+                    source_name="contract.pdf",
+                    source_sha256="a" * 64,
+                    source_version="parser-v1",
+                    source_kind=KnowledgeSourceKind.CONTRACT,
+                    content="联系人电话：13800138000",
+                    evidence_ids=["e1"],
+                    score=1.0,
+                    retrieval_sources=[RetrievalSource.LEXICAL],
+                )
+            ]
+        },
     )
     monkeypatch.setattr(
         "contract_review_app.services.semantic_client.httpx.post",

@@ -9,6 +9,7 @@ from contract_review.models import (
     RuleBundle,
 )
 from contract_review.event_store import InMemoryStageEventStore
+from contract_review.playbook import publish_playbook_bundle
 from contract_review.run import ReviewRunError, advance_review_run, create_review_run
 
 
@@ -29,7 +30,7 @@ class ReviewRunTests(unittest.TestCase):
             document_ids=["doc-1"],
             source_snapshot="package-snapshot-1",
         )
-        self.bundle = RuleBundle(
+        self.bundle = publish_playbook_bundle(RuleBundle(
             bundle_id="bundle-v0.14",
             source_filename="rules.xlsx",
             source_sha256="b" * 64,
@@ -41,11 +42,12 @@ class ReviewRunTests(unittest.TestCase):
                     version="v0.14",
                     title="测试规则",
                     category="测试",
+                    applies_to=["software"],
                     check_method="deterministic",
                     source_snapshot="rules.xlsx#snapshot",
                 )
             ],
-        )
+        ))
 
     def test_run_records_inputs_and_append_only_stage_events(self) -> None:
         run = create_review_run(

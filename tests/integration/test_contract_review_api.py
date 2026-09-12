@@ -50,7 +50,7 @@ def test_contract_review_returns_evidence_first_result(monkeypatch):
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert "review_result" in payload and "ai_analysis" in payload
+    assert set(payload) == {"review_result", "cached"}
     review = payload["review_result"]
     assert review["package"]["package_id"] == "pkg-test-001"
     assert review["documents"], "应返回文档信息"
@@ -59,11 +59,6 @@ def test_contract_review_returns_evidence_first_result(monkeypatch):
     assert review["report"]["finding_counts"], "报告应有状态统计"
     assert review["evidence"], "应生成证据对象"
     assert review["run"]["status"] is not None
-    assert payload["ai_analysis"] is not None
-    assert payload["ai_analysis"]["projection_version"]
-    assert payload["ai_analysis"]["analysis_id"].startswith("review-")
-    assert payload["ai_analysis"]["provider"] == "deterministic-rule-engine"
-    assert payload["ai_analysis"]["items"]
 
 
 def test_revision_set_api_returns_evidence_bound_contract(monkeypatch):
@@ -101,6 +96,66 @@ def test_revision_set_api_returns_evidence_bound_contract(monkeypatch):
     assert revision_set["base_result_fingerprint"]
     assert revision_set["revision_fingerprint"]
     assert all(change["evidence_ids"] for change in revision_set["changes"])
+
+
+def test_review_decision_and_finalize_api_update_the_core_result(monkeypatch):
+    """人工动作只接收完整 ReviewResult，并返回同一核心对象的更新版本。"""
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
+
+    class _EmptyOCR:
+        def recognize_seal(self, image_bytes, *, page_number=1):
+            del image_bytes, page_number
+            return None
+
+    monkeypatch.setattr(
+        "contract_review_app.services.seal_evidence.ocr_gateway_client",
+        _EmptyOCR(),
+    )
+    review_response = client.post(
+        "/api/v1/contract-review",
+        headers=_auth_headers(),
+        files=[("files", ("合同主文.pdf", _make_contract_pdf(), "application/pdf"))],
+        data={"PackageId": "pkg-actions-api", "ContractType": "software"},
+    )
+    assert review_response.status_code == 200, review_response.text
+    review_result = review_response.json()["review_result"]
+    actionable = [
+        finding
+        for finding in review_result["findings"]
+        if finding["status"] in {"WARN", "BLOCK", "UNKNOWN"}
+    ]
+    assert actionable
+
+    for finding in actionable:
+        decision_response = client.post(
+            "/api/v1/contract-review/decision",
+            headers=_auth_headers(),
+            json={
+                "review_result": review_result,
+                "finding_id": finding["finding_id"],
+                "decision": "ACCEPT",
+                "actor_id": "reviewer-api",
+                "actor_role": "legal",
+                "comment": "已核对合同原文和规则依据。",
+            },
+        )
+        assert decision_response.status_code == 200, decision_response.text
+        review_result = decision_response.json()["review_result"]
+
+    finalize_response = client.post(
+        "/api/v1/contract-review/finalize",
+        headers=_auth_headers(),
+        json={
+            "review_result": review_result,
+            "actor_id": "reviewer-api",
+            "comment": "完成合同审查人工确认。",
+        },
+    )
+    assert finalize_response.status_code == 200, finalize_response.text
+    finalized = finalize_response.json()["review_result"]
+    assert finalized["run"]["status"] == "FINALIZED"
+    assert finalized["report"]["review_required"] is False
+    assert len(finalized["decisions"]) == len(actionable)
 
 
 def test_contract_review_internal_failure_does_not_leak_exception(monkeypatch):
@@ -145,84 +200,28 @@ def test_contract_review_rejects_empty_package(monkeypatch):
 
 
 def test_formal_rule_bundle_is_read_only():
-    """规则目录由正式 RuleBundle 投影，应用层不再提供第二套 CRUD。"""
+    """规则接口直接返回正式 RuleBundle，不创建第二套列表契约。"""
     headers = _auth_headers()
-    response = client.get("/api/v1/rules", headers=headers)
+    response = client.get("/api/v1/contract-review/rule-bundle", headers=headers)
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["read_only"] is True
     assert payload["bundle_id"]
     assert payload["rules"]
-    assert all(rule["read_only"] is True for rule in payload["rules"])
-
-    # 历史路径保留 GET 兼容投影，但过滤和写操作不再复活旧 SQLite 规则库。
-    alias = client.get("/api/v1/ai-rules", headers=headers)
-    assert alias.status_code == 200, alias.text
-    assert alias.json()["bundle_id"] == payload["bundle_id"]
-    draft = client.get("/api/v1/ai-rules?status=draft", headers=headers)
-    assert draft.status_code == 200
-    assert draft.json()["rules"] == []
-    assert draft.json()["packs"]["approval"]["rules"] == []
-    invalid_module = client.get("/api/v1/rules?module=不存在", headers=headers)
-    assert invalid_module.status_code == 400
-
-    rule_id = payload["rules"][0]["rule_id"]
-    assert client.post("/api/v1/ai-rules", headers=headers, json={}).status_code == 405
-    assert client.put(f"/api/v1/ai-rules/{rule_id}", headers=headers, json={}).status_code in {404, 405}
-    assert client.delete(f"/api/v1/ai-rules/{rule_id}", headers=headers).status_code in {404, 405}
 
 
-def _make_element_pdf() -> bytes:
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text(
-        (72, 72),
-        "合同名称：软件开发合同\n"
-        "合同编号：HT-2026-001\n"
-        "甲方：某某科技有限公司\n"
-        "乙方：某某软件有限公司\n"
-        "合同金额：人民币1000000元\n"
-        "付款方式：银行转账\n"
-        "税率：13%\n"
-        "签订日期：2026年1月15日",
-        fontname="china-s",
-    )
-    data = doc.tobytes()
-    doc.close()
-    return data
-
-
-def test_contract_elements_extracts_fillable_fields(monkeypatch):
-    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
-    response = client.post(
-        "/api/v1/contract-elements",
-        headers=_auth_headers(),
-        files=[("files", ("合同主文.pdf", _make_element_pdf(), "application/pdf"))],
-        data={"PackageId": "pkg-extract-001"},
-    )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    fillable = payload["fillable"]
-    assert fillable["party_a"] == "某某科技有限公司"
-    assert fillable["party_b"] == "某某软件有限公司"
-    assert fillable["contract_no"] == "HT-2026-001"
-    assert "1000000" in fillable["amount"]
-    assert fillable["tax_rate"] == "13%"
-    assert fillable["payment_method"] == "银行转账"
-    assert "某某科技有限公司" in payload["suggestions"]["party_a"]
-    party_a = next(item for item in payload["fields"] if item["key"] == "party_a")
-    assert party_a["candidates"][0]["value"] == "某某科技有限公司"
-
-
-def test_contract_element_fields_are_read_only():
+def test_legacy_review_interfaces_are_removed():
+    """旧风险、要素和规则列表接口不再出现在产品路由中。"""
     headers = _auth_headers()
-    resp = client.get("/api/v1/contract-element-fields", headers=headers)
-    assert resp.status_code == 200, resp.text
-    fields = resp.json()["fields"]
-    keys = {item["key"] for item in fields}
-    assert "party_a" in keys
-    assert "amount" in keys
-    assert all(item["enabled"] is True for item in fields)
-    assert client.post("/api/v1/contract-element-fields", headers=headers, json={}).status_code == 405
-    assert client.put("/api/v1/contract-element-fields/party_a", headers=headers, json={}).status_code in {404, 405}
-    assert client.delete("/api/v1/contract-element-fields/party_a", headers=headers).status_code in {404, 405}
+    for path in (
+        "/api/v1/rules",
+        "/api/v1/ai-rules",
+        "/api/v1/contract-elements",
+        "/api/v1/contract-elements-async",
+        "/api/v1/contract-element-fields",
+    ):
+        assert client.get(path, headers=headers).status_code == 404
+    assert client.post(
+        "/api/v1/tasks",
+        headers=headers,
+        data={"task_type": "contract-review"},
+    ).status_code == 405

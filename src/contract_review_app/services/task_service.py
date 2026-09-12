@@ -41,13 +41,16 @@ class TaskService:
         self,
         *,
         task_type: str,
-        file: UploadFile | None = None,
-        files: list[UploadFile] | None = None,
-        image_base64: str | None = None,
-        image_url: str | None = None,
+        files: list[UploadFile],
         options: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> TaskCreateAcceptedResponse:
+        if not files:
+            raise AppError(
+                400,
+                "InvalidParameterValue.InvalidParameterValueLimit",
+                "合同审查任务至少需要一个文件",
+            )
         normalized_idempotency_key = _normalize_idempotency_key(idempotency_key)
         if normalized_idempotency_key and hasattr(
             self._store, "find_by_idempotency_key"
@@ -82,9 +85,8 @@ class TaskService:
         normalized_options = options or {}
         task_id = f"cr_{uuid.uuid4().hex}"
 
-        # Validate the dispatch contract before writing any upload bytes.  An
-        # invalid task type must not leave an orphaned task directory behind.
-        input_filename_hint, input_content_type_hint = _input_metadata(file, files)
+        # 在写入上传字节前校验任务分发契约，非法任务类型不能留下孤立目录。
+        input_filename_hint, input_content_type_hint = _input_metadata(files)
         try:
             dispatch = get_dispatch_config(
                 task_type,
@@ -103,12 +105,7 @@ class TaskService:
         )
         if deferred_input:
             input_mode, input_size, input_filename, input_content_type = (
-                _input_reservation(
-                    file=file,
-                    files=files,
-                    image_base64=image_base64,
-                    image_url=image_url,
-                )
+                _input_reservation(files)
             )
             input_path = self._input_path_hint(task_id)
         else:
@@ -126,10 +123,7 @@ class TaskService:
                     input_content_type,
                 ) = await self._persist_input(
                     task_id=task_id,
-                    file=file,
                     files=files,
-                    image_base64=image_base64,
-                    image_url=image_url,
                     options=normalized_options,
                 )
             except Exception:
@@ -204,10 +198,7 @@ class TaskService:
                     input_content_type,
                 ) = await self._persist_input(
                     task_id=task_id,
-                    file=file,
                     files=files,
-                    image_base64=image_base64,
-                    image_url=image_url,
                     options=normalized_options,
                 )
                 attached = await asyncio.to_thread(
@@ -391,9 +382,9 @@ class TaskService:
 
     def _enqueue_task(self, task_id: str, task_type: str, queue_name: str) -> None:
         try:
-            from contract_review_app.tasks.worker_tasks import execute_ocr_task
+            from contract_review_app.tasks.worker_tasks import execute_contract_review_task
 
-            execute_ocr_task.apply_async(args=[task_id], queue=queue_name)
+            execute_contract_review_task.apply_async(args=[task_id], queue=queue_name)
         except Exception as exc:
             logger.exception("任务入队失败", task_id=task_id, task_type=task_type)
             failed_at = _now_iso()
@@ -426,71 +417,35 @@ class TaskService:
         self,
         *,
         task_id: str,
-        file: UploadFile | None,
-        files: list[UploadFile] | None,
-        image_base64: str | None,
-        image_url: str | None,
+        files: list[UploadFile],
         options: dict[str, Any],
     ) -> tuple[str, str, int, str | None, str | None]:
-        if files:
-            payloads: list[tuple[str, bytes, str | None]] = []
-            total_size = 0
-            first_name: str | None = None
-            first_content_type: str | None = None
-            for upload in files:
-                data = await upload.read()
-                payloads.append(
-                    (upload.filename or "upload.bin", data, upload.content_type)
-                )
-                total_size += len(data)
-                if first_name is None:
-                    first_name = upload.filename
-                    first_content_type = upload.content_type
-            if not payloads:
+        payloads: list[tuple[str, bytes, str | None]] = []
+        total_size = 0
+        first_name: str | None = None
+        first_content_type: str | None = None
+        for upload in files:
+            data = await upload.read()
+            if len(data) > settings.MAX_IMAGE_SIZE:
                 raise AppError(
                     400,
-                    "InvalidParameterValue.InvalidParameterValueLimit",
-                    "合同包至少需要一个文件",
+                    "LimitExceeded.TooLargeFileError",
+                    f"文件 {upload.filename} 超过大小限制 ({settings.MAX_IMAGE_SIZE} bytes)",
                 )
-            input_path = await asyncio.to_thread(
-                self._file_store.save_files,
-                task_id=task_id,
-                files=payloads,
-                options=options,
+            payloads.append(
+                (upload.filename or "upload.bin", data, upload.content_type)
             )
-            return "files", input_path, total_size, first_name, first_content_type
-        if file is not None:
-            data = await file.read()
-            input_path = await asyncio.to_thread(
-                self._file_store.save_file,
-                task_id=task_id,
-                filename=file.filename,
-                content_type=file.content_type,
-                data=data,
-                options=options,
-            )
-            return "file", input_path, len(data), file.filename, file.content_type
-        if image_base64:
-            input_path = await asyncio.to_thread(
-                self._file_store.save_base64,
-                task_id=task_id,
-                encoded=image_base64,
-                options=options,
-            )
-            return "base64", input_path, len(image_base64.encode("utf-8")), None, None
-        if image_url:
-            input_path = await asyncio.to_thread(
-                self._file_store.save_url,
-                task_id=task_id,
-                url=image_url,
-                options=options,
-            )
-            return "url", input_path, len(image_url.encode("utf-8")), None, None
-        raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            "必须提供 file、ImageBase64、ImageUrl 其中之一",
+            total_size += len(data)
+            if first_name is None:
+                first_name = upload.filename
+                first_content_type = upload.content_type
+        input_path = await asyncio.to_thread(
+            self._file_store.save_files,
+            task_id=task_id,
+            files=payloads,
+            options=options,
         )
+        return "files", input_path, total_size, first_name, first_content_type
 
     def _input_path_hint(self, task_id: str) -> str:
         resolver = getattr(self._file_store, "input_path_for", None)
@@ -611,13 +566,10 @@ def _future_iso(seconds: int) -> str:
 
 
 def _input_metadata(
-    file: UploadFile | None,
-    files: list[UploadFile] | None,
+    files: list[UploadFile],
 ) -> tuple[str | None, str | None]:
     """读取上传元数据，但不消费请求体。"""
 
-    if file is not None:
-        return file.filename, file.content_type
     if files:
         first = files[0]
         return first.filename, first.content_type
@@ -625,27 +577,17 @@ def _input_metadata(
 
 
 def _input_reservation(
-    *,
-    file: UploadFile | None,
-    files: list[UploadFile] | None,
-    image_base64: str | None,
-    image_url: str | None,
+    files: list[UploadFile],
 ) -> tuple[str, int, str | None, str | None]:
     """只读取输入元数据，为原子准入构造不含正文的任务预约。"""
 
     if files:
         first = files[0]
         return "files", 0, first.filename, first.content_type
-    if file is not None:
-        return "file", 0, file.filename, file.content_type
-    if image_base64:
-        return "base64", len(image_base64.encode("utf-8")), None, None
-    if image_url:
-        return "url", len(image_url.encode("utf-8")), None, None
     raise AppError(
         400,
         "InvalidParameterValue.InvalidParameterValueLimit",
-        "必须提供 file、ImageBase64、ImageUrl 其中之一",
+        "合同审查任务至少需要一个文件",
     )
 
 

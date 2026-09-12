@@ -40,7 +40,7 @@ def test_run_task_handler_contract_review_files_mode(monkeypatch):
         files=[("合同主文.pdf", _make_contract_pdf(), "application/pdf")],
         options={
             "PackageId": "pkg-task-001",
-            "ContractType": "software",
+            "ReviewContextPayload": {"contract_type": "software"},
         },
     )
     try:
@@ -49,14 +49,11 @@ def test_run_task_handler_contract_review_files_mode(monkeypatch):
 
         result = asyncio.run(run_task_handler("contract-review", manifest))
 
-        assert "review_result" in result and "ai_analysis" in result
+        assert set(result) == {"review_result"}
         review = result["review_result"]
         assert review["package"]["package_id"] == "pkg-task-001"
         assert review["documents"], "应返回文档信息"
         assert review["findings"], "确定性规则应产出审核发现"
         assert review["report"]["finding_counts"]
-        assert result["ai_analysis"]["projection_version"]
-        assert result["ai_analysis"]["analysis_id"].startswith("review-")
-        assert result["ai_analysis"]["provider"] == "deterministic-rule-engine"
     finally:
         task_file_store.delete_task_files(task_id)

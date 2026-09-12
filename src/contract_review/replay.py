@@ -9,7 +9,7 @@ from typing import Any
 
 from .models import Document, ModelBase, ReviewResult, ReviewRun, RuleBundle
 
-REPLAY_VERSION = "replay-fingerprint-0.1.0"
+REPLAY_VERSION = "replay-fingerprint-0.2.0"
 
 
 def _jsonable(value: Any) -> Any:
@@ -65,25 +65,12 @@ def build_replay_fingerprint(
         ],
         "parser_version": parser_version,
         "rule_bundle": {
-            "bundle_id": rule_bundle.bundle_id,
-            "source_sha256": rule_bundle.source_sha256,
-            "source_sheet": rule_bundle.source_sheet,
-            "source_range": rule_bundle.source_range,
-            "rules": [
-                {
-                    "rule_id": rule.rule_id,
-                    "version": rule.version,
-                    "title": rule.title,
-                    "category": rule.category,
-                    "check_method": rule.check_method,
-                    "risk_level": rule.risk_level,
-                    "applicability": rule.applicability,
-                    "playbook": rule.playbook,
-                }
-                for rule in sorted(
-                    rule_bundle.rules, key=lambda item: item.rule_id
+            **_without_runtime_timestamps(
+                rule_bundle.model_dump(
+                    mode="json",
+                    exclude={"imported_at", "published_at"},
                 )
-            ],
+            ),
         },
         "model_version": model_version,
         "configuration": _jsonable(configuration or {}),
@@ -138,33 +125,17 @@ def build_result_fingerprint(result: ReviewResult) -> str:
         "package": {
             "package_id": result.package.package_id,
             "document_ids": sorted(result.package.document_ids),
+            "document_precedence": result.package.document_precedence,
             "source_snapshot": result.package.source_snapshot,
         },
-        "review_context": (
-            result.review_context.model_dump(mode="json")
-            if result.review_context is not None
-            else None
-        ),
+        "review_context": result.review_context.model_dump(mode="json"),
         "rule_bundle": {
-            "bundle_id": result.rule_bundle.bundle_id,
-            "source_sha256": result.rule_bundle.source_sha256,
-            "source_sheet": result.rule_bundle.source_sheet,
-            "source_range": result.rule_bundle.source_range,
-            "rules": [
-                {
-                    "rule_id": rule.rule_id,
-                    "version": rule.version,
-                    "title": rule.title,
-                    "category": rule.category,
-                    "check_method": rule.check_method,
-                    "risk_level": rule.risk_level,
-                    "applicability": rule.applicability,
-                    "playbook": rule.playbook,
-                }
-                for rule in sorted(
-                    result.rule_bundle.rules, key=lambda item: item.rule_id
+            **_without_runtime_timestamps(
+                result.rule_bundle.model_dump(
+                    mode="json",
+                    exclude={"imported_at", "published_at"},
                 )
-            ],
+            ),
         },
         "documents": [
             {
@@ -200,6 +171,12 @@ def build_result_fingerprint(result: ReviewResult) -> str:
                 result.retrieval_traces, key=lambda value: value.trace_id
             )
         ],
+        "candidate_evidence": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.candidate_evidence, key=lambda value: value.candidate_id
+            )
+        ],
         "semantic_response": result.semantic_response.model_dump(
             mode="json", exclude={"created_at"}
         )
@@ -223,6 +200,12 @@ def build_result_fingerprint(result: ReviewResult) -> str:
         "clauses": [
             item.model_dump(mode="json")
             for item in sorted(result.clauses, key=lambda value: value.clause_id)
+        ],
+        "clause_relations": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.clause_relations, key=lambda value: value.relation_id
+            )
         ],
         "obligations": [
             item.model_dump(mode="json")
@@ -260,6 +243,15 @@ def build_result_fingerprint(result: ReviewResult) -> str:
             }
             for item in sorted(result.decisions, key=lambda value: value.finding_id)
         ],
+        "version_comparisons": [
+            _without_runtime_timestamps(item.model_dump(mode="json"))
+            for item in result.version_comparisons
+        ],
+        "revision_sets": [
+            _without_runtime_timestamps(item.model_dump(mode="json"))
+            for item in result.revision_sets
+        ],
+        "post_review_sequence": result.post_review_sequence,
         "run": {
             "status": result.run.status,
             "input_document_sha256": result.run.input_document_sha256,
@@ -268,11 +260,15 @@ def build_result_fingerprint(result: ReviewResult) -> str:
             "model_version": result.run.model_version,
             "configuration": result.run.configuration,
             "configuration_fingerprint": result.run.configuration_fingerprint,
+            "comparison_ids": result.run.comparison_ids,
+            "revision_ids": result.run.revision_ids,
         },
         "report": {
             "overall_status": result.report.overall_status,
             "finding_counts": result.report.finding_counts,
             "finding_ids": sorted(result.report.finding_ids),
+            "comparison_ids": sorted(result.report.comparison_ids),
+            "revision_ids": sorted(result.report.revision_ids),
             "review_required": result.report.review_required,
             "report_version": result.report.report_version,
         },

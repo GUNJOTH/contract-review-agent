@@ -21,31 +21,6 @@ class TaskFileStore:
     def ensure_directories(self) -> None:
         self._input_root.mkdir(parents=True, exist_ok=True)
 
-    def save_file(
-        self,
-        *,
-        task_id: str,
-        filename: str | None,
-        content_type: str | None,
-        data: bytes,
-        options: dict[str, Any],
-    ) -> str:
-        task_dir = self._task_dir(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(filename or "upload.bin").name
-        file_path = task_dir / safe_name
-        file_path.write_bytes(data)
-        manifest = {
-            "input_mode": "file",
-            "filename": safe_name,
-            "content_type": content_type,
-            "payload": {
-                "file_path": str(file_path),
-            },
-            "options": options,
-        }
-        return self._write_manifest(task_dir, manifest)
-
     def save_files(
         self,
         *,
@@ -71,32 +46,6 @@ class TaskFileStore:
         manifest = {
             "input_mode": "files",
             "payload": {"file_paths": entries},
-            "options": options,
-        }
-        return self._write_manifest(task_dir, manifest)
-
-    def save_base64(
-        self, *, task_id: str, encoded: str, options: dict[str, Any]
-    ) -> str:
-        task_dir = self._task_dir(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        manifest = {
-            "input_mode": "base64",
-            "payload": {
-                "ImageBase64": encoded,
-            },
-            "options": options,
-        }
-        return self._write_manifest(task_dir, manifest)
-
-    def save_url(self, *, task_id: str, url: str, options: dict[str, Any]) -> str:
-        task_dir = self._task_dir(task_id)
-        task_dir.mkdir(parents=True, exist_ok=True)
-        manifest = {
-            "input_mode": "url",
-            "payload": {
-                "ImageUrl": url,
-            },
             "options": options,
         }
         return self._write_manifest(task_dir, manifest)

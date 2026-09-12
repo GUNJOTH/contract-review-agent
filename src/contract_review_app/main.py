@@ -14,7 +14,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -26,7 +25,6 @@ from contract_review_app.api.errors import (
 )
 from contract_review_app.api.middleware import RequestContextMiddleware, RequestMonitoringMiddleware
 from contract_review_app.api.router import router
-from contract_review_app.api.task_routes import TASK_TYPE_DESCRIPTION, TASK_TYPE_VALUES
 from contract_review_app.config import settings
 from contract_review_app.telemetry.logging import configure_logging
 
@@ -85,41 +83,6 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
-
-
-def _custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    task_schema = (
-        openapi_schema.get("components", {})
-        .get("schemas", {})
-        .get("Body_create_task_api_v1_tasks_post", {})
-        .get("properties", {})
-        .get("task_type")
-    )
-    if task_schema is not None:
-        task_schema.clear()
-        task_schema.update(
-            {
-                "type": "string",
-                "enum": TASK_TYPE_VALUES,
-                "title": "Task Type",
-                "description": TASK_TYPE_DESCRIPTION,
-            }
-        )
-
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-
-app.openapi = _custom_openapi
 
 if STATIC_DIR.exists():
 

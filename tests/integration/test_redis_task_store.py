@@ -32,7 +32,7 @@ def _task() -> AsyncTaskRecord:
         stage=AsyncTaskStage.QUEUED,
         queue_name="contract.heavy",
         request_id="request-1",
-        input_mode="file",
+        input_mode="files",
         input_path="runtime/tasks/input/cr-admission-1/input.pdf",
         created_at="2026-09-11T00:00:00+08:00",
     )

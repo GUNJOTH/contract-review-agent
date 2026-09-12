@@ -31,8 +31,11 @@ class TaskExecutionFailure(Exception):
         return self.error_message
 
 
-@celery_app.task(name="contract_review_app.tasks.execute_ocr_task", bind=True)
-def execute_ocr_task(self, task_id: str) -> dict[str, Any] | None:
+@celery_app.task(
+    name="contract_review_app.tasks.execute_contract_review_task",
+    bind=True,
+)
+def execute_contract_review_task(self, task_id: str) -> dict[str, Any] | None:
     task = task_store.get(task_id)
     if task is None:
         return None
@@ -97,7 +100,7 @@ def execute_ocr_task(self, task_id: str) -> dict[str, Any] | None:
         return {"task_id": task_id, "status": "FAILED", "error_code": exc.error_code}
     except Exception as exc:
         failure = TaskExecutionFailure(
-            error_code="FailedOperation.OcrFailed",
+            error_code="FailedOperation.ContractReviewTaskFailed",
             error_message=f"任务执行异常: {exc}",
             stage=AsyncTaskStage.FAILED.value,
             dead_letter=True,

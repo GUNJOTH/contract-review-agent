@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from loguru import logger
 
 from contract_review import (
+    attach_revision_set,
+    attach_version_comparison,
+    build_comparison_from_files,
     build_revision_set,
-    list_contract_element_definitions,
-    load_rule_bundle,
-    project_element_extraction,
-    project_review_analysis,
-    project_rule_bundle,
-    RuleBundleProjection,
-    RuleGroupProjection,
-    RulePackProjection,
-    RulePacksProjection,
+    load_active_rule_bundle,
+    finalize_review,
+    record_review_decision,
+    validate_playbook_bundle,
 )
 from contract_review.pipeline import ReviewPipelineError
 
@@ -29,24 +28,33 @@ from contract_review_app.config import settings
 from contract_review_app.models import (
     ContractReviewResponse,
     ContractRevisionSetResponse,
+    ReviewDecisionRequest,
+    ReviewFinalizationRequest,
+    ReviewResultResponse,
     TaskCreateAcceptedResponse,
 )
 from contract_review_app.services.result_cache import cache_get
-from contract_review_app.services.document_compare import compare_contract_documents
+from contract_review_app.services.document_compare import (
+    ContractCompareResponse,
+    compare_contract_documents,
+)
 from contract_review_app.services.document_preview import preview_contract_document
 from contract_review_app.services.review_service import (
     _review_fingerprint,
+    core_rules_path,
     rules_path,
     run_contract_review,
 )
 from contract_review_app.services.review_context import (
     ReviewContextInputError,
     build_review_context,
+    parse_context_list,
+    parse_document_kinds,
 )
 from contract_review_app.services.task_service import task_service
 from contract_review_app.telemetry.logging import log_error, log_request_end, log_request_start
 
-from contract_review.models import ReviewResult
+from contract_review.models import ReviewResult, RuleBundle
 
 router = APIRouter()
 
@@ -61,7 +69,10 @@ async def review_contract(
     _: bool = Depends(verify_api_token),
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
-    ContractType: Optional[str] = Form(None, description="合同类型，如 software"),
+    ContractType: Optional[str] = Form(
+        None,
+        description="合同类型规范名称，如 软件开发/转让服务；software 为已登记短名称",
+    ),
     PartyPosition: Optional[str] = Form(
         None,
         description="本方交易立场：buyer/甲方、seller/乙方、both/双方、unknown/未知",
@@ -70,6 +81,25 @@ async def review_contract(
     TransactionContext: Optional[str] = Form(
         None,
         description="交易背景和本次审查需要关注的业务前提",
+    ),
+    TransactionTags: Optional[str] = Form(
+        None,
+        description="结构化交易背景标签，支持逗号分隔或 JSON 数组",
+    ),
+    TransactionAmount: Optional[str] = Form(
+        None,
+        description="交易金额，用于规则金额区间和 Playbook 升级阈值",
+    ),
+    DocumentPrecedence: Optional[str] = Form(
+        None,
+        description="合同文件优先顺序，支持文件名逗号分隔或 JSON 数组",
+    ),
+    DocumentKinds: Optional[str] = Form(
+        None,
+        description=(
+            "文件名到文档角色的 JSON 对象，例如 "
+            "{\"主合同.docx\":\"main_contract\",\"报价单.xlsx\":\"quotation\"}"
+        ),
     ),
     ReviewScope: Optional[str] = Form(
         None,
@@ -92,7 +122,15 @@ async def review_contract(
             party_position=PartyPosition,
             jurisdiction=Jurisdiction,
             transaction_context=TransactionContext,
+            transaction_tags=TransactionTags,
+            transaction_amount=TransactionAmount,
             review_scope=ReviewScope,
+        )
+        document_kinds = parse_document_kinds(DocumentKinds)
+        document_precedence = (
+            []
+            if DocumentPrecedence is None
+            else parse_context_list(DocumentPrecedence, "DocumentPrecedence")
         )
     except ReviewContextInputError as exc:
         raise AppError(
@@ -132,14 +170,15 @@ async def review_contract(
             file_payloads,
             package_id=PackageId,
             review_context=review_context,
+            document_precedence=document_precedence,
+            document_kinds=document_kinds,
         )
-        compatibility = project_review_analysis(result)
-
-        # 缓存命中标记只由核心 ReviewResult 决定；投影没有独立缓存。
         review_cache_key = _review_fingerprint(
             file_payloads,
             package_id=PackageId,
             review_context=review_context,
+            document_precedence=document_precedence,
+            document_kinds=document_kinds,
         )
         review_cached = cache_get(review_cache_key) is not None
 
@@ -153,13 +192,11 @@ async def review_contract(
             fields_extracted={
                 "findings": len(result.findings),
                 "overall": result.report.overall_status.value,
-                "risk_items": len(compatibility.items),
                 "cached": review_cached,
             },
         )
         return ContractReviewResponse(
             review_result=result,
-            ai_analysis=compatibility,
             cached=review_cached,
         )
     except AppError:
@@ -224,23 +261,79 @@ async def create_contract_revision_set(
 
     try:
         revision = await asyncio.to_thread(build_revision_set, payload)
+        result = await asyncio.to_thread(attach_revision_set, payload, revision)
     except ValueError as exc:
         raise AppError(
             400,
             "InvalidParameterValue.InvalidParameterValueLimit",
             str(exc),
         ) from exc
-    return ContractRevisionSetResponse(revision_set=revision)
+    return ContractRevisionSetResponse(
+        revision_set=result.revision_sets[-1],
+        review_result=result,
+    )
 
 
-@router.get("/contract-element-fields", summary="合同标准要素目录（只读）")
-async def get_contract_element_fields(
+@router.post(
+    "/contract-review/decision",
+    response_model=ReviewResultResponse,
+    summary="记录合同审查人工决定",
+)
+async def append_contract_review_decision(
+    payload: ReviewDecisionRequest,
     _: bool = Depends(verify_api_token),
-    enabled: Optional[bool] = Query(None, description="兼容参数；核心目录始终返回启用字段"),
 ):
-    del enabled
-    fields = await asyncio.to_thread(list_contract_element_definitions)
-    return {"fields": fields}
+    """为一条发现追加人工决定，并返回更新后的核心 ``ReviewResult``。"""
+
+    try:
+        result = await asyncio.to_thread(
+            record_review_decision,
+            payload.review_result,
+            payload.finding_id,
+            decision=payload.decision,
+            actor_id=payload.actor_id,
+            actor_role=payload.actor_role,
+            comment=payload.comment,
+            evidence_ids=payload.evidence_ids,
+        )
+    except (ReviewPipelineError, ValueError) as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
+    return ReviewResultResponse(
+        review_result=result,
+    )
+
+
+@router.post(
+    "/contract-review/finalize",
+    response_model=ReviewResultResponse,
+    summary="完成合同审查人工确认",
+)
+async def finalize_contract_review(
+    payload: ReviewFinalizationRequest,
+    _: bool = Depends(verify_api_token),
+):
+    """所有可行动发现完成决定后，关闭人工复核阶段。"""
+
+    try:
+        result = await asyncio.to_thread(
+            finalize_review,
+            payload.review_result,
+            actor_id=payload.actor_id,
+            comment=payload.comment,
+        )
+    except (ReviewPipelineError, ValueError) as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
+    return ReviewResultResponse(
+        review_result=result,
+    )
 
 
 @router.post("/contract-preview", summary="打开合同原文（PDF 内嵌，Word/Excel 转成可预览 HTML）")
@@ -249,7 +342,7 @@ async def preview_contract(
     _: bool = Depends(verify_api_token),
     file: UploadFile = File(..., description="合同文件（PDF/DOCX/XLSX）"),
 ):
-    """要素抽取时打开上传文件：浏览器无法直接内嵌 DOCX，这里转成原文 HTML。"""
+    """为合同审查和版本比对提供统一的原文预览。"""
     del request
     content = await file.read()
     if len(content) > settings.MAX_IMAGE_SIZE:
@@ -272,7 +365,11 @@ async def preview_contract(
         ) from exc
 
 
-@router.post("/contract-compare", summary="文档对比（Word/PDF 差异列表与相似度）")
+@router.post(
+    "/contract-compare",
+    response_model=ContractCompareResponse,
+    summary="文档对比（差异列表与 ReviewResult 挂载）",
+)
 async def compare_contract(
     request: Request,
     _: bool = Depends(verify_api_token),
@@ -285,8 +382,12 @@ async def compare_contract(
     ignore_header_footer: bool = Form(False),
     ignore_tables: bool = Form(False),
     ignore_handwriting: bool = Form(False),
+    ReviewResultPayload: str = Form(
+        ...,
+        description="当前审查的完整 ReviewResult JSON；版本差异必须挂入该核心结果。",
+    ),
 ):
-    """上传基准文档与比对文档，返回新增/修改/删除差异和相似度。"""
+    """对比两个合同版本，并将差异证据挂入当前 ``ReviewResult``。"""
     del request
     payloads: list[tuple[str, bytes]] = []
     for upload in (base_file, compare_file):
@@ -308,116 +409,75 @@ async def compare_contract(
         "ignore_handwriting": ignore_handwriting,
     }
     try:
+        try:
+            review_result = ReviewResult.model_validate_json(ReviewResultPayload)
+        except ValueError as exc:
+            raise AppError(
+                400,
+                "InvalidParameterValue.InvalidParameterValueLimit",
+                f"ReviewResultPayload 不是有效的 ReviewResult：{exc}",
+            ) from exc
         result = await asyncio.to_thread(
             compare_contract_documents,
             payloads[0],
             payloads[1],
             options=options,
         )
+        reviewed_documents_by_hash = {
+            document.source_sha256: document
+            for document in review_result.documents
+        }
+        base_source_sha256 = hashlib.sha256(payloads[0][1]).hexdigest()
+        base_document = reviewed_documents_by_hash.get(base_source_sha256)
+        if base_document is None:
+            raise AppError(
+                400,
+                "InvalidParameterValue.InvalidParameterValueLimit",
+                "比对基准文档的内容未出现在当前 ReviewResult 合同包中。",
+            )
+        compare_source_sha256 = hashlib.sha256(payloads[1][1]).hexdigest()
+        compare_document = reviewed_documents_by_hash.get(compare_source_sha256)
+        comparison = build_comparison_from_files(
+            run_id=review_result.run.run_id,
+            # 审查服务为临时文件增加了内部前缀；哈希确认同一文档后，
+            # 以 ReviewResult 的规范文件名作为版本比对身份，避免上传文件名
+            # 与临时解析文件名不同而产生伪冲突。
+            base_filename=base_document.filename,
+            base_content=payloads[0][1],
+            compare_filename=(
+                compare_document.filename
+                if compare_document is not None
+                else result.compare_filename
+            ),
+            compare_content=payloads[1][1],
+            similarity=result.similarity,
+            added=result.added,
+            deleted=result.deleted,
+            modified=result.modified,
+            changes=[item.model_dump(mode="json") for item in result.changes],
+            options=result.options,
+        )
+        review_result = await asyncio.to_thread(
+            attach_version_comparison,
+            review_result,
+            comparison,
+        )
+        result = result.model_copy(update={"review_result": review_result})
         return result.model_dump(mode="json")
+    except AppError:
+        raise
+    except (ReviewPipelineError, ValueError) as exc:
+        raise AppError(
+            400,
+            "InvalidParameterValue.InvalidParameterValueLimit",
+            str(exc),
+        ) from exc
     except Exception as exc:
         raise AppError(
             500,
             "FailedOperation.ContractCompareFailed",
             "合同文档对比失败，请检查文件后重试。",
         ) from exc
-
-
-@router.post("/contract-elements", summary="合同要素提取（可修改后填入合同模块）")
-async def extract_contract_fields(
-    request: Request,
-    _: bool = Depends(verify_api_token),
-    files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
-    PackageId: str = Form(..., description="合同包 ID"),
-):
-    """上传合同后抽取关键字段，供修改确认后填充到合同模块。"""
-    request_id = getattr(request.state, "request_id", None) or "unknown-request"
-    endpoint = "/contract-elements"
-    start_time = time.time()
-    log_request_start(
-        request_id=request_id,
-        endpoint=endpoint,
-        method="POST",
-        file_type="package",
-        source="file_upload",
-    )
-    try:
-        file_payloads: list[tuple[str, bytes]] = []
-        for upload in files:
-            content = await upload.read()
-            if len(content) > settings.MAX_IMAGE_SIZE:
-                raise AppError(
-                    400,
-                    "LimitExceeded.TooLargeFileError",
-                    f"文件 {upload.filename} 超过大小限制 ({settings.MAX_IMAGE_SIZE} bytes)",
-                )
-            file_payloads.append((upload.filename or f"file-{len(file_payloads)}", content))
-        if not file_payloads:
-            raise AppError(
-                400,
-                "InvalidParameterValue.InvalidParameterValueLimit",
-                "合同包至少需要一个文件",
-            )
-        result = await asyncio.to_thread(
-            run_contract_review,
-            file_payloads,
-            package_id=PackageId,
-            allow_semantic=False,
-        )
-        duration_ms = (time.time() - start_time) * 1000
-        log_request_end(
-            request_id=request_id,
-            endpoint=endpoint,
-            duration_ms=duration_ms,
-            status="success",
-            status_code=200,
-            fields_extracted={"facts": len(result.facts)},
-        )
-        return project_element_extraction(result).model_dump(mode="json")
-    except AppError:
-        raise
-    except Exception as exc:
-        duration_ms = (time.time() - start_time) * 1000
-        logger.error(f"[{request_id}] 合同要素提取失败: {exc}")
-        log_error(
-            error=exc,
-            error_type="InternalError",
-            request_id=request_id,
-            endpoint=endpoint,
-            layer="api",
-        )
-        log_request_end(
-            request_id=request_id,
-            endpoint=endpoint,
-            duration_ms=duration_ms,
-            status="failed",
-            status_code=500,
-            error_code="FailedOperation.ContractElementExtractFailed",
-            error_message=str(exc),
-        )
-        raise AppError(
-            500,
-            "FailedOperation.ContractElementExtractFailed",
-            "合同要素提取失败，请稍后重试。",
-        )
-
-
-@router.post("/contract-elements-async", summary="异步合同要素提取")
-async def extract_contract_fields_async(
-    request: Request,
-    _: bool = Depends(verify_api_token),
-    files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
-    PackageId: str = Form(..., description="合同包 ID"),
-    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
-):
-    """上传合同并创建异步要素提取任务。"""
-    del request
-    return await task_service.create_task(
-        task_type="contract-elements",
-        files=files,
-        options={"PackageId": PackageId},
-        idempotency_key=idempotency_key,
-    )
 
 
 @router.post(
@@ -430,7 +490,10 @@ async def review_contract_async(
     _: bool = Depends(verify_api_token),
     files: list[UploadFile] = File(..., description="合同附件文件（PDF/DOCX/XLSX）"),
     PackageId: str = Form(..., description="合同包 ID"),
-    ContractType: Optional[str] = Form(None, description="合同类型，如 software"),
+    ContractType: Optional[str] = Form(
+        None,
+        description="合同类型规范名称，如 软件开发/转让服务；software 为已登记短名称",
+    ),
     PartyPosition: Optional[str] = Form(
         None,
         description="本方交易立场：buyer/甲方、seller/乙方、both/双方、unknown/未知",
@@ -439,6 +502,25 @@ async def review_contract_async(
     TransactionContext: Optional[str] = Form(
         None,
         description="交易背景和本次审查需要关注的业务前提",
+    ),
+    TransactionTags: Optional[str] = Form(
+        None,
+        description="结构化交易背景标签，支持逗号分隔或 JSON 数组",
+    ),
+    TransactionAmount: Optional[str] = Form(
+        None,
+        description="交易金额，用于规则金额区间和 Playbook 升级阈值",
+    ),
+    DocumentPrecedence: Optional[str] = Form(
+        None,
+        description="合同文件优先顺序，支持文件名逗号分隔或 JSON 数组",
+    ),
+    DocumentKinds: Optional[str] = Form(
+        None,
+        description=(
+            "文件名到文档角色的 JSON 对象，例如 "
+            "{\"主合同.docx\":\"main_contract\",\"报价单.xlsx\":\"quotation\"}"
+        ),
     ),
     ReviewScope: Optional[str] = Form(
         None,
@@ -459,7 +541,15 @@ async def review_contract_async(
             party_position=PartyPosition,
             jurisdiction=Jurisdiction,
             transaction_context=TransactionContext,
+            transaction_tags=TransactionTags,
+            transaction_amount=TransactionAmount,
             review_scope=ReviewScope,
+        )
+        document_kinds = parse_document_kinds(DocumentKinds)
+        document_precedence = (
+            []
+            if DocumentPrecedence is None
+            else parse_context_list(DocumentPrecedence, "DocumentPrecedence")
         )
     except ReviewContextInputError as exc:
         raise AppError(
@@ -473,61 +563,55 @@ async def review_contract_async(
         options={
             "PackageId": PackageId,
             "ReviewContextPayload": review_context.model_dump(mode="json"),
+            "DocumentPrecedence": document_precedence,
+            "DocumentKinds": {
+                filename: document_kind.value
+                for filename, document_kind in document_kinds.items()
+            },
         },
         idempotency_key=idempotency_key,
     )
 
 
-@router.get("/rules", response_model=RuleBundleProjection, summary="正式规则包（只读）")
-@router.get("/ai-rules", include_in_schema=False)
-async def get_rules(
+@router.get(
+    "/contract-review/rule-bundle",
+    response_model=RuleBundle,
+    summary="当前正式 RuleBundle（只读）",
+)
+async def get_rule_bundle(
     _: bool = Depends(verify_api_token),
-    status: Optional[str] = Query(None, description="兼容参数；正式规则仅有 active 状态"),
-    module: Optional[str] = Query(None, description="风险点 / 合理性 / 内控 / 资信"),
-    enabled: Optional[bool] = Query(None, description="兼容参数；正式规则始终启用"),
 ):
-    """返回正式 ``RuleBundle`` 的只读兼容投影。"""
+    """返回审查执行使用的正式规则快照，不转换为第二套列表契约。"""
 
-    if module is not None and module not in {"风险点", "合理性", "内控", "资信"}:
+    return await asyncio.to_thread(
+        load_active_rule_bundle,
+        rules_path(),
+        core_rules_path(),
+    )
+
+
+@router.get("/contract-review/playbook-gate", summary="Playbook 校验与版本兼容门禁")
+async def get_playbook_gate(
+    _: bool = Depends(verify_api_token),
+):
+    """返回当前核心规则合并快照的 Playbook 校验结果。"""
+
+    try:
+        bundle = await asyncio.to_thread(
+            load_active_rule_bundle,
+            rules_path(),
+            core_rules_path(),
+        )
+        report = await asyncio.to_thread(
+            validate_playbook_bundle,
+            bundle,
+            review_schema_version="2.0",
+            require_published=True,
+        )
+    except ValueError as exc:
         raise AppError(
-            400,
-            "InvalidParameterValue.InvalidParameterValueLimit",
-            "module 仅支持 风险点 / 合理性 / 内控 / 资信",
-    )
-    projection = await asyncio.to_thread(
-        project_rule_bundle,
-        await asyncio.to_thread(load_rule_bundle, rules_path()),
-    )
-    if status not in {None, "active"} or enabled is False:
-        return projection.model_copy(
-            update={
-                "rules": [],
-                "groups": [],
-                "packs": RulePacksProjection(
-                    approval=RulePackProjection(),
-                    ai=RulePackProjection(),
-                ),
-            }
-        )
-    if module is None:
-        return projection
-    rules = [item for item in projection.rules if item.module == module]
-    groups = [
-        RuleGroupProjection(
-            name=group.name,
-            count=sum(1 for rule in rules if rule.topic == group.name),
-            rules=[rule for rule in rules if rule.topic == group.name],
-        )
-        for group in projection.groups
-        if any(rule.topic == group.name for rule in rules)
-    ]
-    return projection.model_copy(
-        update={
-            "rules": rules,
-            "groups": groups,
-            "packs": RulePacksProjection(
-                approval=RulePackProjection(rules=rules, groups=groups),
-                ai=RulePackProjection(),
-            ),
-        }
-    )
+            500,
+            "FailedOperation.ContractReviewFailed",
+            f"规则包 Playbook 门禁加载失败：{exc}",
+        ) from exc
+    return report.model_dump(mode="json")

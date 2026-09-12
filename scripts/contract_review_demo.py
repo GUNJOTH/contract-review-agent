@@ -15,7 +15,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from contract_review import KnowledgeSourceKind, project_review_analysis
+from contract_review import KnowledgeSourceKind, ReviewContext
 from contract_review_app.services.review_service import run_contract_review
 
 CONTRACT_TYPES = {
@@ -50,7 +50,7 @@ def main() -> int:
         result = run_contract_review(
             [(path.name, path.read_bytes())],
             package_id=args.package_id,
-            contract_type=args.contract_type,
+            review_context=ReviewContext(contract_type=args.contract_type),
         )
     except Exception as exc:
         print(f"审查失败: {exc}")
@@ -83,16 +83,18 @@ def main() -> int:
         print(f"模型判断分布: {dict(Counter(item.status.value for item in items))}")
 
     print("\n" + "=" * 74)
-    analysis = project_review_analysis(result)
-    print(f"★ 风险清单投影（共 {len(analysis.items)} 项；来源为 ReviewResult）")
-    for item in analysis.items:
-        mark = "★" if item.risk_level in ("BLOCK", "WARN") else " "
-        print(f"{mark}[{item.risk_level:>14}] {item.title}")
-        print(f"         {item.reason[:110]}")
-        if item.quote:
-            print(f"         原文: {item.quote[:70]}")
-        if item.suggested_action:
-            print(f"         建议: {item.suggested_action[:80]}")
+    actionable_findings = [
+        finding
+        for finding in result.findings
+        if finding.status.value not in {"PASS", "NOT_APPLICABLE"}
+    ]
+    print(f"★ 核心审查发现（共 {len(actionable_findings)} 项；来源为 ReviewResult）")
+    for finding in actionable_findings:
+        mark = "★" if finding.status.value in ("BLOCK", "WARN") else " "
+        print(f"{mark}[{finding.status.value:>14}] {finding.title}")
+        print(f"         {finding.reason[:110]}")
+        if finding.recommended_action:
+            print(f"         建议: {finding.recommended_action[:80]}")
 
     print(f"\n正式规则包: {result.rule_bundle.bundle_id}（{len(result.rule_bundle.rules)} 条）")
     return 0

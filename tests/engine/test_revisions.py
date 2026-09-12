@@ -3,17 +3,19 @@ import fitz
 from contract_review.models import (
     PlaybookAction,
     PlaybookSpec,
+    ReviewContext,
     RiskLevel,
     Rule,
     RuleBundle,
     RevisionOperation,
 )
 from contract_review.pipeline import run_review
+from contract_review.playbook import publish_playbook_bundle
 from contract_review.revisions import build_revision_set
 
 
 def _bundle() -> RuleBundle:
-    return RuleBundle(
+    return publish_playbook_bundle(RuleBundle(
         bundle_id="revision-rules-v1",
         source_filename="revision-rules.json",
         source_sha256="c" * 64,
@@ -45,7 +47,7 @@ def _bundle() -> RuleBundle:
                 ),
             )
         ],
-    )
+    ))
 
 
 def test_revision_set_turns_playbook_revise_into_evidence_bound_replace(tmp_path):
@@ -60,7 +62,7 @@ def test_revision_set_turns_playbook_revise_into_evidence_bound_replace(tmp_path
         [pdf_path],
         package_id="revision-package",
         rule_bundle=_bundle(),
-        contract_type="software",
+        review_context=ReviewContext(contract_type="software"),
         run_id="revision-run",
     )
     finding = result.findings[0]
@@ -93,7 +95,7 @@ def test_revision_set_keeps_escalation_as_comment_when_clause_is_missing(tmp_pat
         [pdf_path],
         package_id="revision-missing-package",
         rule_bundle=_bundle(),
-        contract_type="software",
+        review_context=ReviewContext(contract_type="software"),
         run_id="revision-missing-run",
     )
     finding = result.findings[0]

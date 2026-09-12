@@ -48,19 +48,15 @@ class RelaySemanticReviewer:
             raise SemanticClientError(
                 "request model_version does not match client configuration"
             )
-        context_payload = (
-            request.review_context.model_dump(mode="json")
-            if request.review_context is not None
-            else None
-        )
+        context_payload = request.review_context.model_dump(mode="json")
         pii_gate = gate_external_model_input(
             [
-                *({"text": chunk.content} for chunk in request.context_chunks),
                 *(
-                    [{"text": json.dumps(context_payload, ensure_ascii=False)}]
-                    if context_payload is not None
-                    else []
+                    {"text": candidate.content}
+                    for candidates in request.candidate_evidence_by_rule.values()
+                    for candidate in candidates
                 ),
+                {"text": json.dumps(context_payload, ensure_ascii=False)},
             ]
         )
         if pii_gate.blocked:
@@ -76,18 +72,26 @@ class RelaySemanticReviewer:
                         {
                             "request_fingerprint": request.request_fingerprint,
                             "rule_ids": request.rule_ids,
+                            "rule_definitions": {
+                                rule.rule_id: rule.model_dump(mode="json")
+                                for rule in request.rule_definitions
+                            },
                             "review_context": context_payload,
-                            "context_chunks": [
-                                {
-                                    "chunk_id": chunk.chunk_id,
-                                    "content": chunk.content,
-                                    "evidence_ids": chunk.evidence_ids,
-                                    "source_name": chunk.source_name,
-                                    "source_version": chunk.source_version,
-                                    "source_kind": chunk.source_kind.value,
-                                }
-                                for chunk in request.context_chunks
-                            ],
+                            "retrieval_queries_by_rule": {
+                                rule_id: query.model_dump(mode="json")
+                                for rule_id, query in sorted(
+                                    request.retrieval_queries_by_rule.items()
+                                )
+                            },
+                            "candidate_evidence_by_rule": {
+                                rule_id: [
+                                    candidate.model_dump(mode="json")
+                                    for candidate in candidates
+                                ]
+                                for rule_id, candidates in sorted(
+                                    request.candidate_evidence_by_rule.items()
+                                )
+                            },
                         },
                         ensure_ascii=False,
                     ),
@@ -107,7 +111,10 @@ class RelaySemanticReviewer:
                 "provider": request.provider,
                 "model_version": self.model_version,
                 "rule_count": len(request.rule_ids),
-                "context_count": len(request.context_chunks),
+                "context_count": sum(
+                    len(candidates)
+                    for candidates in request.candidate_evidence_by_rule.values()
+                ),
             },
         ):
             try:

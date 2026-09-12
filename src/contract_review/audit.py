@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections import Counter
 from collections.abc import Sequence
 
@@ -10,16 +11,38 @@ from pydantic import Field
 
 from .models import (
     AssessmentOutcome,
+    CandidateEvidence,
+    ClauseRelationResolution,
+    ClauseRelationTargetType,
+    ClauseRelationType,
+    EvidenceQuality,
     EvidenceType,
     FindingStatus,
     KnowledgeSourceKind,
     ModelBase,
+    RetrievalMode,
+    RetrievalFusion,
+    RetrievalSource,
     ReviewResult,
     ReviewStatus,
     RiskLevel,
 )
+from .knowledge import (
+    RRF_K,
+    _retrieval_trace_id,
+    chunk_matches_retrieval_filter,
+)
+from .retrieval import (
+    build_candidate_evidence,
+    build_retrieval_query,
+    build_rule_retrieval_filter,
+)
 from .replay import build_replay_fingerprint, build_result_fingerprint
-from .rules import is_rule_in_scope
+from .rules import (
+    assert_rule_bundle_compatible,
+    is_rule_in_scope,
+    resolve_rule_applicability,
+)
 from .semantic import build_semantic_batch_request_fingerprint, is_model_judged_rule
 
 
@@ -66,6 +89,21 @@ def audit_result(result: ReviewResult) -> AuditReport:
     )
     if not checks["package_documents"]:
         issues.append("package document manifest does not match result documents")
+    expected_document_kinds = list(
+        dict.fromkeys(document.document_kind for document in result.documents)
+    )
+    checks["review_context_document_kinds"] = (
+        result.review_context.document_kinds == expected_document_kinds
+    )
+    if not checks["review_context_document_kinds"]:
+        issues.append("review context document roles do not match package documents")
+    checks["document_precedence"] = (
+        len(result.package.document_precedence)
+        == len(set(result.package.document_precedence))
+        and set(result.package.document_precedence).issubset(document_ids)
+    )
+    if not checks["document_precedence"]:
+        issues.append("package document precedence references unknown or duplicate documents")
 
     parsed_document_ids = [
         parsed.document.document_id for parsed in result.parsed_documents
@@ -127,6 +165,12 @@ def audit_result(result: ReviewResult) -> AuditReport:
     )
     missing_references.update(
         evidence_id
+        for candidate in result.candidate_evidence
+        for evidence_id in candidate.evidence_ids
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
         for clause in result.clauses
         for evidence_id in clause.evidence_ids
         if evidence_id not in evidence_set
@@ -135,6 +179,12 @@ def audit_result(result: ReviewResult) -> AuditReport:
         evidence_id
         for obligation in result.obligations
         for evidence_id in obligation.evidence_ids
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
+        for relation in result.clause_relations
+        for evidence_id in relation.evidence_ids
         if evidence_id not in evidence_set
     )
     missing_references.update(
@@ -149,11 +199,32 @@ def audit_result(result: ReviewResult) -> AuditReport:
         for evidence_id in event.evidence_ids
         if evidence_id not in evidence_set
     )
+    missing_references.update(
+        evidence_id
+        for comparison in result.version_comparisons
+        for evidence_id in [
+            *comparison.evidence_ids,
+            *[
+                evidence_id
+                for change in comparison.changes
+                for evidence_id in change.evidence_ids
+            ],
+        ]
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
+        for revision in result.revision_sets
+        for change in revision.changes
+        for evidence_id in change.evidence_ids
+        if evidence_id not in evidence_set
+    )
     if result.semantic_request is not None:
         missing_references.update(
             evidence_id
-            for chunk in result.semantic_request.context_chunks
-            for evidence_id in chunk.evidence_ids
+            for candidates in result.semantic_request.candidate_evidence_by_rule.values()
+            for candidate in candidates
+            for evidence_id in candidate.evidence_ids
             if evidence_id not in evidence_set
         )
     if result.semantic_response is not None:
@@ -173,10 +244,21 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["knowledge_integrity"]:
         issues.append("knowledge chunks or retrieval traces are inconsistent")
 
+    candidate_by_id = {
+        candidate.candidate_id: candidate for candidate in result.candidate_evidence
+    }
     fact_ids = [fact.fact_id for fact in result.facts]
     checks["unique_fact_ids"] = len(fact_ids) == len(set(fact_ids))
     if not checks["unique_fact_ids"]:
         issues.append("duplicate fact IDs")
+    checks["fact_integrity"] = _fact_integrity_is_valid(
+        result,
+        document_ids=document_ids,
+        evidence_set=evidence_set,
+        candidate_by_id=candidate_by_id,
+    )
+    if not checks["fact_integrity"]:
+        issues.append("事实未绑定统一候选证据，或引用了未知文档/证据")
 
     checks["contract_domain"] = _contract_domain_integrity_is_valid(
         result,
@@ -184,15 +266,34 @@ def audit_result(result: ReviewResult) -> AuditReport:
         document_ids,
     )
     if not checks["contract_domain"]:
-        issues.append("条款、义务、审查问题或问题结论的引用关系不完整")
+        issues.append("条款、条款关系、义务、审查问题或问题结论的引用关系不完整")
 
     attachment_ids = [item.reference_id for item in result.attachment_references]
-    checks["attachment_integrity"] = len(attachment_ids) == len(set(attachment_ids))
+    checks["attachment_integrity"] = (
+        len(attachment_ids) == len(set(attachment_ids))
+        and all(
+            reference.candidate_ids
+            and set(reference.candidate_ids).issubset(candidate_by_id)
+            and any(
+                set(reference.evidence_ids).intersection(
+                    candidate_by_id[candidate_id].evidence_ids
+                )
+                for candidate_id in reference.candidate_ids
+            )
+            for reference in result.attachment_references
+        )
+    )
     if not checks["attachment_integrity"]:
-        issues.append("duplicate attachment reference IDs")
+        issues.append("附件引用未绑定统一候选证据，或存在重复引用 ID")
 
     rule_id_list = [rule.rule_id for rule in result.rule_bundle.rules]
     rule_ids = set(rule_id_list)
+    try:
+        assert_rule_bundle_compatible(result.rule_bundle)
+        checks["rule_bundle_gate"] = True
+    except ValueError as exc:
+        checks["rule_bundle_gate"] = False
+        issues.append(f"rule bundle release gate failed: {exc}")
     checks["unique_rule_ids"] = len(rule_id_list) == len(rule_ids)
     if not checks["unique_rule_ids"]:
         issues.append("duplicate rule IDs")
@@ -210,15 +311,52 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["rule_coverage"]:
         issues.append("rule coverage is incomplete or contains duplicate findings")
 
+    retrieval_rule_ids = {
+        trace.retrieval_query.rule_id for trace in result.retrieval_traces
+    }
+    expected_retrieval_rule_ids = {
+        rule.rule_id
+        for rule in result.rule_bundle.rules
+        if rule.rule_id in selected_rule_ids
+        and is_rule_in_scope(rule, result.review_context)
+        and resolve_rule_applicability(
+            rule, review_context=result.review_context
+        )
+        != "not_applicable"
+    }
+    checks["retrieval_rule_coverage"] = (
+        selection_is_valid
+        and len(retrieval_rule_ids) == len(result.retrieval_traces)
+        and retrieval_rule_ids == expected_retrieval_rule_ids
+    )
+    if not checks["retrieval_rule_coverage"]:
+        issues.append("适用规则没有完整经过统一 RetrievalQuery 检索链路")
+
     checks["finding_integrity"] = _finding_integrity_is_valid(result, evidence_set)
     if not checks["finding_integrity"]:
         issues.append("findings do not match their rules, facts, or evidence")
+
+    checks["comparison_integrity"] = _comparison_integrity_is_valid(
+        result, evidence_set
+    )
+    if not checks["comparison_integrity"]:
+        issues.append("version comparisons are not bound to this ReviewResult")
+
+    checks["revision_integrity"] = _revision_integrity_is_valid(
+        result, evidence_set
+    )
+    if not checks["revision_integrity"]:
+        issues.append("revision sets are not bound to findings, evidence, or base result")
 
     checks["finding_report_alignment"] = result.report.finding_ids == [
         finding.finding_id for finding in result.findings
     ] and result.run.finding_ids == [finding.finding_id for finding in result.findings]
     if not checks["finding_report_alignment"]:
         issues.append("finding IDs are inconsistent between report and run")
+
+    checks["post_review_alignment"] = _post_review_alignment_is_valid(result)
+    if not checks["post_review_alignment"]:
+        issues.append("version comparisons or revision sets are not aligned with run/report")
 
     checks["stage_event_ledger"] = _stage_event_ledger_is_valid(result, evidence_set)
     if not checks["stage_event_ledger"]:
@@ -380,7 +518,11 @@ def _knowledge_integrity_is_valid(
             return False
         if document_id is not None:
             document = documents_by_id.get(str(document_id))
-            if document is None or chunk.source_sha256 != document.source_sha256:
+            if (
+                document is None
+                or chunk.source_sha256 != document.source_sha256
+                or chunk.metadata.get("document_kind") != document.document_kind.value
+            ):
                 return False
         if rule_id is not None:
             if not any(rule.rule_id == rule_id for rule in result.rule_bundle.rules):
@@ -410,14 +552,126 @@ def _knowledge_integrity_is_valid(
     trace_ids = [trace.trace_id for trace in result.retrieval_traces]
     if len(trace_ids) != len(set(trace_ids)):
         return False
-    rule_ids = {rule.rule_id for rule in result.rule_bundle.rules}
+    rules_by_id = {rule.rule_id: rule for rule in result.rule_bundle.rules}
+    rule_ids = set(rules_by_id)
+    rule_versions = {rule.rule_id: rule.version for rule in result.rule_bundle.rules}
+    allowed_retrieval_sources = {
+        RetrievalSource.LEXICAL,
+        RetrievalSource.VECTOR,
+    }
+    expected_candidates = []
     for trace in result.retrieval_traces:
+        query = trace.retrieval_query
+        rule = rules_by_id.get(query.rule_id)
+        if rule is None:
+            return False
+        try:
+            expected_query = build_retrieval_query(
+                rule,
+                review_context=result.review_context,
+                retrieval_filter=build_rule_retrieval_filter(
+                    rule,
+                    rule_bundle=result.rule_bundle,
+                    documents=result.documents,
+                    clauses=result.clauses,
+                    review_context=result.review_context,
+                ),
+            )
+        except (TypeError, ValueError):
+            return False
+        if query != expected_query:
+            return False
+        if trace.trace_id != _retrieval_trace_id(
+            query,
+            trace.used_for_rule_ids,
+            top_k=trace.top_k,
+        ):
+            return False
+        if (
+            query.rule_id not in rule_ids
+            or query.rule_id not in trace.used_for_rule_ids
+            or query.rule_version != rule_versions[query.rule_id]
+            or query.retrieval_filter.applicable_rule_ids
+            and query.rule_id not in query.retrieval_filter.applicable_rule_ids
+        ):
+            return False
+        expected_document_kinds = (
+            query.retrieval_filter.document_kinds
+            or result.review_context.document_kinds
+        )
+        if set(query.document_kinds) != set(expected_document_kinds):
+            return False
         if not set(trace.used_for_rule_ids).issubset(rule_ids):
+            return False
+        if query.retrieval_filter.applicable_rule_ids and not set(
+            trace.used_for_rule_ids
+        ).issubset(query.retrieval_filter.applicable_rule_ids):
+            return False
+        retrieval_sources = {
+            source for hit in trace.hits for source in hit.retrieval_sources
+        }
+        if not retrieval_sources.issubset(allowed_retrieval_sources):
+            return False
+        if (
+            trace.retrieval_mode == RetrievalMode.LEXICAL
+            and RetrievalSource.VECTOR in retrieval_sources
+        ) or (
+            trace.retrieval_mode == RetrievalMode.VECTOR
+            and RetrievalSource.LEXICAL in retrieval_sources
+        ):
+            return False
+        if (
+            trace.retrieval_mode == RetrievalMode.HYBRID
+            and trace.fusion_method != RetrievalFusion.RRF
+        ) or (
+            trace.retrieval_mode != RetrievalMode.HYBRID
+            and trace.fusion_method != RetrievalFusion.NONE
+        ):
+            return False
+        hit_ids = [hit.chunk_id for hit in trace.hits]
+        if len(hit_ids) != len(set(hit_ids)) or len(hit_ids) > trace.top_k:
             return False
         for hit in trace.hits:
             chunk = chunks_by_id.get(hit.chunk_id)
-            if chunk is None or set(hit.evidence_ids) != set(chunk.evidence_ids):
+            if (
+                chunk is None
+                or not hit.retrieval_sources
+                or set(hit.evidence_ids) != set(chunk.evidence_ids)
+                or not chunk_matches_retrieval_filter(
+                    chunk, query.retrieval_filter
+                )
+            ):
                 return False
+            if (
+                (RetrievalSource.LEXICAL in hit.retrieval_sources)
+                != (hit.lexical_rank is not None)
+                or (RetrievalSource.VECTOR in hit.retrieval_sources)
+                != (hit.vector_rank is not None)
+            ):
+                return False
+            if trace.fusion_method == RetrievalFusion.RRF:
+                expected_score = round(
+                    (1 / (RRF_K + hit.lexical_rank) if hit.lexical_rank else 0.0)
+                    + (1 / (RRF_K + hit.vector_rank) if hit.vector_rank else 0.0),
+                    12,
+                )
+                if not math.isclose(hit.score, expected_score, abs_tol=1e-12):
+                    return False
+        try:
+            expected_candidates.extend(build_candidate_evidence(trace, chunks_by_id))
+        except ValueError:
+            return False
+    candidate_by_id = {item.candidate_id: item for item in result.candidate_evidence}
+    if len(candidate_by_id) != len(result.candidate_evidence):
+        return False
+    expected_by_id = {item.candidate_id: item for item in expected_candidates}
+    if candidate_by_id != expected_by_id:
+        return False
+    candidate_query_ids = {
+        trace.retrieval_query.query_id for trace in result.retrieval_traces
+    }
+    if any(candidate.query_id not in candidate_query_ids for candidate in result.candidate_evidence):
+        return False
     return True
 
 
@@ -439,12 +693,196 @@ def _finding_integrity_is_valid(result: ReviewResult, evidence_set: set[str]) ->
             return False
         if not set(finding.fact_ids).issubset(fact_by_id):
             return False
+        if finding.status == FindingStatus.UNKNOWN and finding.automatic:
+            return False
+        if finding.status == FindingStatus.PASS and (
+            finding.evidence_quality != EvidenceQuality.SUFFICIENT
+            or not finding.evidence_ids
+        ):
+            return False
+        if finding.automatic and finding.evidence_quality != EvidenceQuality.SUFFICIENT:
+            return False
         if any(
             not set(fact_by_id[fact_id].evidence_ids).intersection(finding.evidence_ids)
             for fact_id in finding.fact_ids
         ):
             return False
     return True
+
+
+def _comparison_integrity_is_valid(
+    result: ReviewResult,
+    evidence_set: set[str],
+) -> bool:
+    comparison_ids = [item.comparison_id for item in result.version_comparisons]
+    if len(comparison_ids) != len(set(comparison_ids)):
+        return False
+    clause_ids = {item.clause_id for item in result.clauses}
+    obligations_by_id = {item.obligation_id: item for item in result.obligations}
+    finding_ids = {item.finding_id for item in result.findings}
+    evidence_by_id = {item.evidence_id: item for item in result.evidence}
+    reviewed_source_hashes = {
+        document.source_sha256 for document in result.documents
+    }
+    documents_by_hash = {
+        document.source_sha256: document for document in result.documents
+    }
+    for comparison in result.version_comparisons:
+        if comparison.run_id != result.run.run_id:
+            return False
+        if comparison.base_source_sha256 not in reviewed_source_hashes:
+            return False
+        base_document = documents_by_hash[comparison.base_source_sha256]
+        if comparison.base_filename != base_document.filename:
+            return False
+        compare_document = documents_by_hash.get(comparison.compare_source_sha256)
+        if (
+            compare_document is not None
+            and comparison.compare_filename != compare_document.filename
+        ):
+            return False
+        if not set(comparison.evidence_ids).issubset(evidence_set):
+            return False
+        if not set(comparison.finding_ids).issubset(finding_ids):
+            return False
+        if not comparison.evidence_ids:
+            return False
+        impact_rule_ids = [
+            impact.rule_id
+            for impact in comparison.impacts
+            if impact.rule_id is not None
+        ]
+        if len(impact_rule_ids) != len(set(impact_rule_ids)):
+            return False
+        expected_retrigger_rule_ids = set(impact_rule_ids)
+        if any(impact.rule_id is None for impact in comparison.impacts):
+            configured_rule_ids = result.run.configuration.get("selected_rule_ids")
+            expected_retrigger_rule_ids.update(
+                str(rule_id)
+                for rule_id in (
+                    configured_rule_ids
+                    or [rule.rule_id for rule in result.rule_bundle.rules]
+                )
+                if str(rule_id) in {rule.rule_id for rule in result.rule_bundle.rules}
+            )
+        if set(comparison.retrigger_rule_ids) != expected_retrigger_rule_ids:
+            return False
+        if len(comparison.retrigger_rule_ids) != len(set(comparison.retrigger_rule_ids)):
+            return False
+        impact_ids = [impact.impact_id for impact in comparison.impacts]
+        if len(impact_ids) != len(set(impact_ids)):
+            return False
+        if not set(impact_rule_ids).issubset(
+            {rule.rule_id for rule in result.rule_bundle.rules}
+        ):
+            return False
+        if any(
+            obligation_id not in obligations_by_id
+            for impact in comparison.impacts
+            for obligation_id in impact.obligation_ids
+        ):
+            return False
+        comparison_change_ids = {change.change_id for change in comparison.changes}
+        changes_by_id = {
+            change.change_id: change for change in comparison.changes
+        }
+        impact_change_ids = [
+            change_id
+            for impact in comparison.impacts
+            for change_id in impact.change_ids
+        ]
+        if comparison_change_ids:
+            if not impact_change_ids or set(impact_change_ids) != comparison_change_ids:
+                return False
+        elif impact_change_ids or comparison.impacts or comparison.retrigger_rule_ids:
+            return False
+        if any(
+            not set(impact.evidence_ids).issubset(set(comparison.evidence_ids))
+            or not impact.evidence_ids
+            for impact in comparison.impacts
+        ):
+            return False
+        for impact in comparison.impacts:
+            if len(impact.change_ids) != len(set(impact.change_ids)):
+                return False
+            changed_clause_ids = {
+                clause_id
+                for change_id in impact.change_ids
+                for clause_id in changes_by_id[change_id].clause_ids
+            }
+            if any(
+                obligations_by_id[obligation_id].clause_id
+                not in changed_clause_ids
+                for obligation_id in impact.obligation_ids
+            ):
+                return False
+        for evidence_id in comparison.evidence_ids:
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is None or evidence.evidence_type != EvidenceType.COMPARISON:
+                return False
+        change_ids = [item.change_id for item in comparison.changes]
+        if len(change_ids) != len(set(change_ids)):
+            return False
+        for change in comparison.changes:
+            if not change.base_text and not change.compare_text:
+                return False
+            if not set(change.evidence_ids).issubset(set(comparison.evidence_ids)):
+                return False
+            if not set(change.clause_ids).issubset(clause_ids):
+                return False
+    return True
+
+
+def _revision_integrity_is_valid(
+    result: ReviewResult,
+    evidence_set: set[str],
+) -> bool:
+    revision_ids = [item.revision_id for item in result.revision_sets]
+    if len(revision_ids) != len(set(revision_ids)):
+        return False
+    finding_by_id = {item.finding_id: item for item in result.findings}
+    clause_ids = {item.clause_id for item in result.clauses}
+    for revision in result.revision_sets:
+        if revision.run_id != result.run.run_id:
+            return False
+        if len(revision.base_result_fingerprint) != 64:
+            return False
+        if not revision.revision_fingerprint:
+            return False
+        change_ids = [item.change_id for item in revision.changes]
+        if len(change_ids) != len(set(change_ids)):
+            return False
+        for change in revision.changes:
+            finding = finding_by_id.get(change.finding_id)
+            if (
+                finding is None
+                or (change.clause_id is not None and change.clause_id not in clause_ids)
+                or not set(change.evidence_ids).issubset(evidence_set)
+                or not set(change.evidence_ids).intersection(finding.evidence_ids)
+            ):
+                return False
+    return True
+
+
+def _post_review_alignment_is_valid(result: ReviewResult) -> bool:
+    """校验比较/修订附件的指针和实际挂载顺序。"""
+
+    comparison_ids = [item.comparison_id for item in result.version_comparisons]
+    revision_ids = [item.revision_id for item in result.revision_sets]
+    expected = [
+        *(f"comparison:{comparison_id}" for comparison_id in comparison_ids),
+        *(f"revision:{revision_id}" for revision_id in revision_ids),
+    ]
+    sequence = result.post_review_sequence
+    return (
+        result.run.comparison_ids == comparison_ids
+        and result.report.comparison_ids == comparison_ids
+        and result.run.revision_ids == revision_ids
+        and result.report.revision_ids == revision_ids
+        and len(sequence) == len(expected)
+        and set(sequence) == set(expected)
+        and len(sequence) == len(set(sequence))
+    )
 
 
 def _overall_status(findings: Sequence) -> FindingStatus:
@@ -472,6 +910,10 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         for rule in result.rule_bundle.rules
         if is_model_judged_rule(rule)
         and is_rule_in_scope(rule, result.review_context)
+        and resolve_rule_applicability(
+            rule, review_context=result.review_context
+        )
+        in {"required", "expected_value"}
     ]
     candidate_rule_ids = {rule.rule_id for rule in candidate_semantic_rules}
     if not set(request.rule_ids).issubset(candidate_rule_ids):
@@ -479,6 +921,17 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
     semantic_rules = [
         rule for rule in candidate_semantic_rules if rule.rule_id in set(request.rule_ids)
     ]
+    rule_by_id = {rule.rule_id: rule for rule in result.rule_bundle.rules}
+    request_rule_definitions = {
+        rule.rule_id: rule for rule in request.rule_definitions
+    }
+    if set(request_rule_definitions) != set(request.rule_ids):
+        return False
+    if any(
+        request_rule_definitions[rule_id] != rule_by_id.get(rule_id)
+        for rule_id in request.rule_ids
+    ):
+        return False
     if request.request_fingerprint != response.request_fingerprint:
         return False
     if request.model_version != response.model_version:
@@ -489,26 +942,47 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         return False
     if request.review_context != result.review_context:
         return False
-    if set(item.rule_id for item in response.items) - set(request.rule_ids):
+    response_rule_ids = [item.rule_id for item in response.items]
+    if set(response_rule_ids) != set(request.rule_ids):
         return False
-    if not set(
-        evidence_id
-        for chunk in request.context_chunks
-        for evidence_id in chunk.evidence_ids
-    ).issubset(evidence_set):
+    result_queries_by_rule = {
+        trace.retrieval_query.rule_id: trace.retrieval_query
+        for trace in result.retrieval_traces
+    }
+    result_candidates_by_rule: dict[str, list] = {}
+    for candidate in result.candidate_evidence:
+        result_candidates_by_rule.setdefault(candidate.rule_id, []).append(candidate)
+    if set(request.retrieval_queries_by_rule) != set(request.rule_ids):
+        return False
+    if any(
+        request.retrieval_queries_by_rule[rule_id]
+        != result_queries_by_rule.get(rule_id)
+        for rule_id in request.rule_ids
+    ):
+        return False
+    if set(request.candidate_evidence_by_rule) != set(request.rule_ids):
+        return False
+    if any(
+        request.candidate_evidence_by_rule[rule_id]
+        != result_candidates_by_rule.get(rule_id, [])
+        for rule_id in request.rule_ids
+    ):
         return False
     context_evidence_ids = {
         evidence_id
-        for chunk in request.context_chunks
-        for evidence_id in chunk.evidence_ids
+        for candidates in request.candidate_evidence_by_rule.values()
+        for candidate in candidates
+        for evidence_id in candidate.evidence_ids
     }
+    if not context_evidence_ids.issubset(evidence_set):
+        return False
     contract_context_evidence_ids = {
         evidence_id
-        for chunk in request.context_chunks
-        if chunk.source_kind == KnowledgeSourceKind.CONTRACT
-        for evidence_id in chunk.evidence_ids
+        for candidates in request.candidate_evidence_by_rule.values()
+        for candidate in candidates
+        if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+        for evidence_id in candidate.evidence_ids
     }
-    response_rule_ids = [item.rule_id for item in response.items]
     if len(response_rule_ids) != len(set(response_rule_ids)):
         return False
     if any(
@@ -521,35 +995,75 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         for item in response.items
     ):
         return False
-    chunks_by_id = {chunk.chunk_id: chunk for chunk in result.knowledge_chunks}
-    chunks_by_rule: dict[str, list] = {}
-    for rule_id in request.rule_ids:
-        chunks_by_rule[rule_id] = []
-        for trace in result.retrieval_traces:
-            if rule_id not in trace.used_for_rule_ids:
-                continue
-            for hit in trace.hits:
-                chunk = chunks_by_id.get(hit.chunk_id)
-                if chunk is None:
-                    return False
-                if chunk not in chunks_by_rule[rule_id]:
-                    chunks_by_rule[rule_id].append(chunk)
-    expected_context = {
-        chunk.chunk_id: chunk for chunks in chunks_by_rule.values() for chunk in chunks
+    contract_context_evidence_by_rule = {
+        rule_id: {
+            evidence_id
+            for candidate in request.candidate_evidence_by_rule.get(rule_id, [])
+            if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+            for evidence_id in candidate.evidence_ids
+        }
+        for rule_id in request.rule_ids
     }
-    actual_context = {chunk.chunk_id: chunk for chunk in request.context_chunks}
-    if actual_context != expected_context:
+    if any(
+        not set(item.evidence_ids).issubset(
+            contract_context_evidence_by_rule.get(item.rule_id, set())
+        )
+        for item in response.items
+    ):
         return False
     expected = build_semantic_batch_request_fingerprint(
         rules=semantic_rules,
-        chunks_by_rule=chunks_by_rule,
+        candidates_by_rule=request.candidate_evidence_by_rule,
         prompt_version=request.prompt_version,
         model_version=request.model_version,
         system_instruction=request.system_instruction,
         configuration=request.configuration,
         review_context=request.review_context,
+        retrieval_queries_by_rule=request.retrieval_queries_by_rule,
     )
     return request.request_fingerprint == expected
+
+
+def _fact_integrity_is_valid(
+    result: ReviewResult,
+    *,
+    document_ids: set[str],
+    evidence_set: set[str],
+    candidate_by_id: dict[str, CandidateEvidence],
+) -> bool:
+    """校验事实只能由自己的候选证据形成，不能回读全量合同正文。"""
+
+    for fact in result.facts:
+        if not (
+            set(fact.source_document_ids).issubset(document_ids)
+            and set(fact.evidence_ids).issubset(evidence_set)
+            and set(fact.candidate_ids).issubset(candidate_by_id)
+        ):
+            return False
+        if not fact.candidate_ids:
+            continue
+        candidates = [candidate_by_id[item] for item in fact.candidate_ids]
+        if any(
+            candidate.source_kind != KnowledgeSourceKind.CONTRACT
+            or not candidate.document_id
+            for candidate in candidates
+        ):
+            return False
+        candidate_evidence_ids = {
+            evidence_id
+            for candidate in candidates
+            for evidence_id in candidate.evidence_ids
+        }
+        candidate_document_ids = {
+            candidate.document_id
+            for candidate in candidates
+            if candidate.document_id
+        }
+        if not set(fact.evidence_ids).issubset(candidate_evidence_ids):
+            return False
+        if not set(fact.source_document_ids).issubset(candidate_document_ids):
+            return False
+    return True
 
 
 def _contract_domain_integrity_is_valid(
@@ -562,6 +1076,7 @@ def _contract_domain_integrity_is_valid(
         return False
     chunks_by_id = {item.chunk_id: item for item in result.knowledge_chunks}
     clauses_by_id = {item.clause_id: item for item in result.clauses}
+    clause_ids_by_chunk: dict[str, str] = {}
     for clause in result.clauses:
         if clause.document_id not in document_ids:
             return False
@@ -573,6 +1088,69 @@ def _contract_domain_integrity_is_valid(
                 return False
             if not set(chunk.evidence_ids).issubset(clause.evidence_ids):
                 return False
+            previous_clause_id = clause_ids_by_chunk.get(chunk_id)
+            if previous_clause_id is not None and previous_clause_id != clause.clause_id:
+                return False
+            clause_ids_by_chunk[chunk_id] = clause.clause_id
+
+    for chunk in result.knowledge_chunks:
+        if chunk.source_kind == KnowledgeSourceKind.CONTRACT:
+            expected_clause_ids = (
+                [clause_ids_by_chunk[chunk.chunk_id]]
+                if chunk.chunk_id in clause_ids_by_chunk
+                else []
+            )
+            if chunk.clause_ids != expected_clause_ids:
+                return False
+        elif chunk.clause_ids:
+            return False
+
+    relation_ids = [item.relation_id for item in result.clause_relations]
+    if len(relation_ids) != len(set(relation_ids)):
+        return False
+    for relation in result.clause_relations:
+        source = clauses_by_id.get(relation.source_clause_id)
+        if source is None:
+            return False
+        if not set(relation.evidence_ids).issubset(evidence_set):
+            return False
+        if relation.target_type == ClauseRelationTargetType.TERM:
+            if (
+                relation.relation_type != ClauseRelationType.DEFINES
+                or relation.resolution != ClauseRelationResolution.RESOLVED
+                or relation.target_clause_id is not None
+                or not set(relation.evidence_ids).issubset(source.evidence_ids)
+            ):
+                return False
+            continue
+        if relation.target_type != ClauseRelationTargetType.CLAUSE:
+            return False
+        target = (
+            clauses_by_id.get(relation.target_clause_id)
+            if relation.target_clause_id is not None
+            else None
+        )
+        if relation.resolution == ClauseRelationResolution.RESOLVED:
+            if target is None or target.clause_id == source.clause_id:
+                return False
+            if target.document_id != source.document_id:
+                return False
+            if not set(relation.evidence_ids).issubset(
+                set(source.evidence_ids) | set(target.evidence_ids)
+            ):
+                return False
+        elif relation.resolution == ClauseRelationResolution.UNRESOLVED:
+            if relation.target_clause_id is not None:
+                return False
+            if not set(relation.evidence_ids).issubset(source.evidence_ids):
+                return False
+        else:
+            return False
+        if relation.relation_type not in {
+            ClauseRelationType.PARENT_OF,
+            ClauseRelationType.REFERENCES,
+        }:
+            return False
 
     obligation_ids = [item.obligation_id for item in result.obligations]
     if len(obligation_ids) != len(set(obligation_ids)):

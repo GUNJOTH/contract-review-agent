@@ -1,5 +1,24 @@
 [
   {
+    "id": "financial-consistent",
+    "package_id": "eval-financial-consistent",
+    "contract_type": "软件开发/转让服务",
+    "text": "软件开发服务合同。合同金额：小写1000000元，大写：壹佰万元整。不含税金额：1000000元；税率：0%；税额：0元。付款方式：验收合格后支付，付款比例50%，付款金额：1000000元。发票类型：增值税专用发票；发票金额：1000000元。",
+    "min_findings": 1,
+    "min_financial_facts": 7,
+    "expected_checker_statuses": {
+      "amount_case_consistency": "PASS",
+      "untaxed_amount": "PASS",
+      "tax_rate": "PASS",
+      "tax_amount": "PASS",
+      "payment_total": "PASS",
+      "invoice_amount": "PASS",
+      "invoice_total": "PASS"
+    },
+    "expected_report_status": "BLOCK",
+    "required_evidence_types": ["text"]
+  },
+  {
     "id": "software-complete",
     "package_id": "eval-software-complete",
     "contract_type": "软件开发/转让服务",

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from contract_review import parse_contract_package
 from contract_review.models import BlockType
+from contract_review.models import ReviewResult
 from contract_review.parser import parse_document
 
 from contract_review_app.services.document_preview import render_docx_preview, render_xlsx_preview
@@ -71,6 +72,14 @@ class DocumentCompareResult(BaseModel):
     compare: CompareDocumentView
     report: str = ""
     options: dict[str, bool] = Field(default_factory=dict)
+    # 纯文档比较可独立运行；应用层挂载后必须返回核心 ReviewResult。
+    review_result: ReviewResult | None = None
+
+
+class ContractCompareResponse(DocumentCompareResult):
+    """版本比对 HTTP 响应：差异结果必须挂载到核心审查结果。"""
+
+    review_result: ReviewResult
 
 
 def compare_contract_documents(
