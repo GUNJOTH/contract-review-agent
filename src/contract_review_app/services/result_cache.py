@@ -2,7 +2,7 @@
 
 AI 模型（尤其推理模型）存在采样随机性，同一文件两次分析可能给出不同结论。
 缓存按"输入指纹"（文件内容 + 包ID + 规则 + 模型/提示词版本 + AI 规则库状态）
-保存首次结果；指纹不变时直接返回缓存，从而对同一输入给出完全一致的结果。
+保存首次结果；指纹不变时由审查服务完成绑定和完整性审计后复用，从而对同一输入给出完全一致的结果。
 输入任一变化（文件修改、规则升级、模型更换、提示词升级、AI 规则库变更）
 都会自动重算。缓存目录默认 ``runtime/review_cache``。
 """
@@ -18,6 +18,9 @@ from pathlib import Path
 from loguru import logger
 
 from contract_review_app.config import settings
+
+
+RESULT_CACHE_PAYLOAD_VERSION = "review-result-cache-0.2.0"
 
 
 def fingerprint(parts: list[str]) -> str:

@@ -165,7 +165,7 @@ def test_hybrid_index_fuses_lexical_and_vector_candidates(monkeypatch):
 
     assert trace.retrieval_mode == RetrievalMode.HYBRID
     assert trace.fusion_method == RetrievalFusion.RRF
-    assert trace.index_version.endswith("+hybrid-knowledge-rrf-0.3.0")
+    assert trace.index_version.endswith("+hybrid-knowledge-rrf-0.4.0")
     assert trace.hits[0].chunk_id == "chunk-payment"
     assert set(trace.hits[0].retrieval_sources) == {"lexical", "vector"}
     assert trace.hits[0].lexical_rank == 1

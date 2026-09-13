@@ -19,15 +19,20 @@
 3. 每条适用规则必须先形成 `RetrievalQuery`；应用层的 embedding 适配器再以 BM25
    词法候选和
    向量候选的名次执行固定 `RRF_K=60` 的确定性融合。词法层保留数字、否定词、
-   定义词和有限长度中文 n-gram；规则定义槽位和合同正文槽位保持隔离；向量
-   服务失败时返回带过滤条件的词法降级轨迹。
+   定义词和有限长度中文 n-gram；当前词法实现使用 2-3 gram，不用中文单字
+   参与 BM25 累积，合同业务背景不进入正文词项。合同正文低于最低词法分时不
+   为凑满 `top_k` 强行补候选，但足够长的精确锚点仍可保留；证据不足继续由下游
+   进入 `UNKNOWN`。规则定义槽位和合同正文槽位保持隔离；向量服务失败时返回
+   带过滤条件的词法降级轨迹。
 4. `RetrievalQuery` 携带规则版本、查询意图、条款类型、精确/数字/否定锚点和
    `RetrievalFilter`；过滤在候选产生前按文档、条款、来源、版本、适用规则和证据
    白名单执行。`RetrievalTrace` 记录查询、`retrieval_mode`、`fusion_method`、
    过滤条件，每个 `RetrievalHit` 记录 `retrieval_sources` 及对应名次；审计和结果
    指纹覆盖这些字段。
-5. `RetrievalTrace` 命中只能规范化为带规则和查询身份的 `CandidateEvidence`。
-   确定性事实抽取、Playbook、规则检查器和语义请求共享同一候选集合；检索器
+5. `RetrievalTrace` 命中只能规范化为带规则和查询身份的 `CandidateEvidence`，
+   随后必须生成同一结果中的 `EvidenceAssessment`。确定性事实抽取、Playbook
+   和规则检查器只消费资格为 `ACCEPT` 的合同候选；语义请求可以查看
+   `INSUFFICIENT` 候选，但只能引用合同候选并在语义引用后留下资格记录。检索器
    不创建或修改 `Finding`，最终结论必须再次通过合同证据门禁。
 6. 关键词扫描只作为候选生成器；规则核心条款识别不得直接调用全文扫描。
    检索专项专家集在离线环境统计 Recall@5、Recall@10、证据引用准确率和

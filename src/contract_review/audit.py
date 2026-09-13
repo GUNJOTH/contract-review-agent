@@ -9,12 +9,21 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from .evidence import (
+    DETERMINISTIC_EVIDENCE_ASSESSOR,
+    EVIDENCE_ASSESSMENT_VERSION,
+    SEMANTIC_EVIDENCE_ASSESSOR,
+    assess_candidate_evidence,
+    assessment_by_candidate_id,
+)
 from .models import (
     AssessmentOutcome,
     CandidateEvidence,
     ClauseRelationResolution,
     ClauseRelationTargetType,
     ClauseRelationType,
+    EvidenceAssessment,
+    EvidenceAssessmentOutcome,
     EvidenceQuality,
     EvidenceType,
     FindingStatus,
@@ -171,6 +180,12 @@ def audit_result(result: ReviewResult) -> AuditReport:
     )
     missing_references.update(
         evidence_id
+        for assessment in result.evidence_assessments
+        for evidence_id in assessment.evidence_ids
+        if evidence_id not in evidence_set
+    )
+    missing_references.update(
+        evidence_id
         for clause in result.clauses
         for evidence_id in clause.evidence_ids
         if evidence_id not in evidence_set
@@ -247,6 +262,23 @@ def audit_result(result: ReviewResult) -> AuditReport:
     candidate_by_id = {
         candidate.candidate_id: candidate for candidate in result.candidate_evidence
     }
+    try:
+        assessments_by_candidate_id = assessment_by_candidate_id(
+            result.evidence_assessments
+        )
+    except ValueError:
+        assessments_by_candidate_id = {}
+    checks["evidence_assessment_integrity"] = (
+        _evidence_assessment_integrity_is_valid(result, candidate_by_id)
+    )
+    if not checks["evidence_assessment_integrity"]:
+        issues.append("CandidateEvidence 未经过完整的证据资格裁决")
+    checks["evidence_assessment_version"] = (
+        result.run.configuration.get("evidence_assessment_version")
+        == EVIDENCE_ASSESSMENT_VERSION
+    )
+    if not checks["evidence_assessment_version"]:
+        issues.append("运行配置未声明当前 EvidenceAssessment 版本")
     fact_ids = [fact.fact_id for fact in result.facts]
     checks["unique_fact_ids"] = len(fact_ids) == len(set(fact_ids))
     if not checks["unique_fact_ids"]:
@@ -256,6 +288,7 @@ def audit_result(result: ReviewResult) -> AuditReport:
         document_ids=document_ids,
         evidence_set=evidence_set,
         candidate_by_id=candidate_by_id,
+        assessments_by_candidate_id=assessments_by_candidate_id,
     )
     if not checks["fact_integrity"]:
         issues.append("事实未绑定统一候选证据，或引用了未知文档/证据")
@@ -274,6 +307,14 @@ def audit_result(result: ReviewResult) -> AuditReport:
         and all(
             reference.candidate_ids
             and set(reference.candidate_ids).issubset(candidate_by_id)
+            and all(
+                assessments_by_candidate_id.get(candidate_id) is not None
+                and assessments_by_candidate_id[candidate_id].outcome
+                == EvidenceAssessmentOutcome.ACCEPT
+                and assessments_by_candidate_id[candidate_id].assessed_by
+                == DETERMINISTIC_EVIDENCE_ASSESSOR
+                for candidate_id in reference.candidate_ids
+            )
             and any(
                 set(reference.evidence_ids).intersection(
                     candidate_by_id[candidate_id].evidence_ids
@@ -332,7 +373,11 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["retrieval_rule_coverage"]:
         issues.append("适用规则没有完整经过统一 RetrievalQuery 检索链路")
 
-    checks["finding_integrity"] = _finding_integrity_is_valid(result, evidence_set)
+    checks["finding_integrity"] = _finding_integrity_is_valid(
+        result,
+        evidence_set,
+        assessments_by_candidate_id,
+    )
     if not checks["finding_integrity"]:
         issues.append("findings do not match their rules, facts, or evidence")
 
@@ -675,9 +720,109 @@ def _knowledge_integrity_is_valid(
     return True
 
 
-def _finding_integrity_is_valid(result: ReviewResult, evidence_set: set[str]) -> bool:
+def _evidence_assessment_integrity_is_valid(
+    result: ReviewResult,
+    candidate_by_id: dict[str, CandidateEvidence],
+) -> bool:
+    """校验每个检索候选都有唯一、可复算且来源明确的资格裁决。"""
+
+    assessments = result.evidence_assessments
+    assessment_ids = [assessment.assessment_id for assessment in assessments]
+    assessment_candidate_ids = [
+        assessment.candidate_id for assessment in assessments
+    ]
+    candidate_ids = set(candidate_by_id)
+    if (
+        len(assessment_ids) != len(set(assessment_ids))
+        or len(assessment_candidate_ids) != len(set(assessment_candidate_ids))
+    ):
+        return False
+    if {assessment.candidate_id for assessment in assessments} != candidate_ids:
+        return False
+
+    queries_by_id = {}
+    for trace in result.retrieval_traces:
+        query = trace.retrieval_query
+        previous = queries_by_id.get(query.query_id)
+        if previous is not None and previous != query:
+            return False
+        queries_by_id[query.query_id] = query
+
+    semantic_candidate_ids: set[str] = set()
+    if result.semantic_response is not None:
+        for item in result.semantic_response.items:
+            if item.status == FindingStatus.UNKNOWN:
+                continue
+            cited_evidence_ids = set(item.evidence_ids)
+            semantic_candidate_ids.update(
+                candidate.candidate_id
+                for candidate in result.candidate_evidence
+                if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+                and candidate.rule_id == item.rule_id
+                and cited_evidence_ids.intersection(candidate.evidence_ids)
+            )
+
+    for assessment in assessments:
+        candidate = candidate_by_id.get(assessment.candidate_id)
+        query = queries_by_id.get(assessment.query_id)
+        if candidate is None or query is None:
+            return False
+        if assessment.assessment_version != EVIDENCE_ASSESSMENT_VERSION:
+            return False
+        if (
+            assessment.query_id != candidate.query_id
+            or assessment.rule_id != candidate.rule_id
+            or assessment.rule_version != candidate.rule_version
+            or assessment.source_kind != candidate.source_kind
+            or assessment.evidence_ids != candidate.evidence_ids
+        ):
+            return False
+        try:
+            expected = assess_candidate_evidence(candidate, query)
+        except ValueError:
+            return False
+        if (
+            assessment.assessment_id != expected.assessment_id
+            or assessment.matched_exact_anchors != expected.matched_exact_anchors
+            or assessment.matched_required_fact_anchors
+            != expected.matched_required_fact_anchors
+            or assessment.matched_numeric_anchors != expected.matched_numeric_anchors
+            or assessment.matched_negation_anchors != expected.matched_negation_anchors
+        ):
+            return False
+        if assessment.assessed_by == DETERMINISTIC_EVIDENCE_ASSESSOR:
+            if (
+                assessment.outcome != expected.outcome
+                or assessment.reason != expected.reason
+            ):
+                return False
+        elif assessment.assessed_by == SEMANTIC_EVIDENCE_ASSESSOR:
+            if (
+                assessment.outcome != EvidenceAssessmentOutcome.ACCEPT
+                or assessment.candidate_id not in semantic_candidate_ids
+                or not assessment.reason
+            ):
+                return False
+        else:
+            return False
+    return True
+
+
+def _finding_integrity_is_valid(
+    result: ReviewResult,
+    evidence_set: set[str],
+    assessments_by_candidate_id: dict[str, EvidenceAssessment],
+) -> bool:
     rule_by_id = {rule.rule_id: rule for rule in result.rule_bundle.rules}
     fact_by_id = {fact.fact_id: fact for fact in result.facts}
+    candidate_ids_by_evidence: dict[str, set[str]] = {}
+    for candidate in result.candidate_evidence:
+        if candidate.source_kind != KnowledgeSourceKind.CONTRACT:
+            continue
+        for evidence_id in candidate.evidence_ids:
+            candidate_ids_by_evidence.setdefault(evidence_id, set()).add(
+                candidate.candidate_id
+            )
     for finding in result.findings:
         rule = rule_by_id.get(finding.rule_id)
         if rule is None:
@@ -702,6 +847,21 @@ def _finding_integrity_is_valid(result: ReviewResult, evidence_set: set[str]) ->
             return False
         if finding.automatic and finding.evidence_quality != EvidenceQuality.SUFFICIENT:
             return False
+        if finding.automatic:
+            allowed_assessors = {DETERMINISTIC_EVIDENCE_ASSESSOR}
+            if is_model_judged_rule(rule):
+                allowed_assessors.add(SEMANTIC_EVIDENCE_ASSESSOR)
+            for evidence_id in finding.evidence_ids:
+                linked_candidate_ids = candidate_ids_by_evidence.get(evidence_id, set())
+                if linked_candidate_ids and not any(
+                    assessments_by_candidate_id.get(candidate_id) is not None
+                    and assessments_by_candidate_id[candidate_id].outcome
+                    == EvidenceAssessmentOutcome.ACCEPT
+                    and assessments_by_candidate_id[candidate_id].assessed_by
+                    in allowed_assessors
+                    for candidate_id in linked_candidate_ids
+                ):
+                    return False
         if any(
             not set(fact_by_id[fact_id].evidence_ids).intersection(finding.evidence_ids)
             for fact_id in finding.fact_ids
@@ -1030,8 +1190,9 @@ def _fact_integrity_is_valid(
     document_ids: set[str],
     evidence_set: set[str],
     candidate_by_id: dict[str, CandidateEvidence],
+    assessments_by_candidate_id: dict[str, EvidenceAssessment],
 ) -> bool:
-    """校验事实只能由自己的候选证据形成，不能回读全量合同正文。"""
+    """校验事实只能由已获得资格的候选证据形成，不能回读全量合同正文。"""
 
     for fact in result.facts:
         if not (
@@ -1046,6 +1207,15 @@ def _fact_integrity_is_valid(
         if any(
             candidate.source_kind != KnowledgeSourceKind.CONTRACT
             or not candidate.document_id
+            for candidate in candidates
+        ):
+            return False
+        if any(
+            assessments_by_candidate_id.get(candidate.candidate_id) is None
+            or assessments_by_candidate_id[candidate.candidate_id].outcome
+            != EvidenceAssessmentOutcome.ACCEPT
+            or assessments_by_candidate_id[candidate.candidate_id].assessed_by
+            != DETERMINISTIC_EVIDENCE_ASSESSOR
             for candidate in candidates
         ):
             return False

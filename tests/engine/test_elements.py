@@ -96,6 +96,44 @@ class ContractElementFactTests(unittest.TestCase):
         )
         self.assertTrue(all(fact.extractor_version for fact in facts))
 
+    def test_same_chunk_across_rules_is_extracted_once_with_all_bindings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="contract-elements-group-") as temp_dir:
+            pdf_path = Path(temp_dir) / "contract.pdf"
+            document = fitz.open()
+            page = document.new_page()
+            page.insert_text((72, 72), "合同编号：HT-2026-001\n合同金额：1000000元", fontname="china-s")
+            document.save(str(pdf_path))
+            document.close()
+
+            parsed = parse_pdf(
+                pdf_path,
+                package_id="pkg-elements-group",
+                document_kind=DocumentKind.MAIN_CONTRACT,
+            )
+            candidates, _ = _candidates(parsed)
+            duplicate = candidates[0].model_copy(
+                update={
+                    "candidate_id": "candidate-element-second-rule",
+                    "query_id": "query-element-second-rule",
+                    "rule_id": "element-second-rule",
+                    "rank": candidates[0].rank + 1,
+                }
+            )
+            facts = extract_contract_element_facts_from_candidates(
+                [candidates[0], duplicate]
+            )
+
+        contract_no_facts = [
+            fact
+            for fact in facts
+            if fact.fact_type == "contract_element:contract_no"
+        ]
+        self.assertEqual(len(contract_no_facts), 1)
+        self.assertEqual(
+            contract_no_facts[0].candidate_ids,
+            [candidates[0].candidate_id, duplicate.candidate_id],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

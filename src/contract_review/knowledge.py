@@ -30,14 +30,29 @@ from .models import (
     SourceLocator,
 )
 
-KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.5.0"
+KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.7.0"
 BM25_K1 = 1.2
 BM25_B = 0.75
 EXACT_PHRASE_BOOST = 1.0
 # 规则声明的事实锚点是候选层的高区分度信号。它只改变候选排序，事实仍
 # 必须由后续抽取器从 CandidateEvidence 中重新确认。
 REQUIRED_FACT_ANCHOR_BOOST = 10.0
-PRECISION_NGRAM_MAX_LENGTH = 6
+# 合同正文的中文单字重合度过高，容易把项目、合同等泛词扩散到无关片段。
+# 2-3 gram 保留法律短语的局部精确性；单字仍可通过 exact/required anchor
+# 的原文子串检查命中，不依赖 BM25 单字累积分数。
+PRECISION_NGRAM_MAX_LENGTH = 3
+# 该门槛只约束合同正文候选；规则定义候选仍由其规则过滤范围单独保留。
+# 低于门槛的合同片段不会被强行补齐到 top_k，后续按证据不足进入 UNKNOWN。
+MIN_CONTRACT_LEXICAL_SCORE = 4.0
+# 在同一查询的合同候选中，明显低于最佳候选的弱相关片段不应继续占用
+# 证据窗口；精确锚点和完整查询短语由独立保护条件保留。
+MIN_CONTRACT_RELATIVE_SCORE_RATIO = 0.55
+# 没有 required_fact_anchors 的规则仍可能依靠标题短语取得证据资格；保留
+# 足够长的精确锚点，避免中文短片段因 BM25 累积分不足而被误删。
+MIN_EXACT_ANCHOR_LENGTH = 3
+# 直接调用索引时，短的否定词等法律表达也属于有效精确查询；它们不应
+# 因为正文片段短、BM25 分值低而丢失。
+MIN_EXACT_QUERY_LENGTH = 2
 RRF_K = 60
 
 _TOKEN_PATTERN = re.compile(
@@ -57,9 +72,10 @@ def _normalized_text(text: str) -> str:
 def _tokenize(text: str) -> list[str]:
     """生成保留数字、否定词和中文法律短语的确定性词元。
 
-    中文不依赖外部分词器：保留单字用于同义召回，同时生成有限长度的
-    n-gram 使“不得”“除非”“不超过30日”等精确表达不会被拆散。数字额外
-    保留去千分位形式，兼顾“1,000”与“1000”的书写差异。
+    中文不依赖外部分词器：生成有限长度的 2-3 gram，避免法律正文中大量
+    泛化单字造成词频污染，同时使“不得”“除非”“不超过30日”等表达保持
+    局部精确性。数字额外保留去千分位形式，兼顾“1,000”与“1000”的书写差异。
+    单字锚点由检索器的原文子串匹配保留，不参与 BM25 的单字累积。
     """
 
     normalized = _normalized_text(text)
@@ -75,7 +91,6 @@ def _tokenize(text: str) -> list[str]:
         if token[0].isascii():
             tokens.append(token)
             continue
-        tokens.extend(token)
         for ngram_length in range(2, PRECISION_NGRAM_MAX_LENGTH + 1):
             tokens.extend(
                 token[index : index + ngram_length]
@@ -102,6 +117,33 @@ class KnowledgeIndex(Protocol):
 
 def _terms(text: str) -> set[str]:
     return set(_tokenize(text))
+
+
+def _query_phrases(text: str) -> list[str]:
+    """提取较长中文查询短语，供命中元数据复用。"""
+
+    phrases: list[str] = []
+    for match in re.finditer(r"[\u4e00-\u9fff]+", _normalized_text(text)):
+        token = match.group(0)
+        for ngram_length in range(4, min(6, len(token)) + 1):
+            phrases.extend(
+                token[index : index + ngram_length]
+                for index in range(len(token) - ngram_length + 1)
+            )
+    return list(dict.fromkeys(phrases))
+
+
+def _matched_query_phrases(
+    phrases: Sequence[str],
+    normalized_content: str,
+) -> list[str]:
+    """提取命中的较长中文查询短语，仅用于可解释的命中元数据。
+
+    长 n-gram 不进入 BM25 词频统计，避免改变小语料上的分数分布；保留在
+    ``matched_terms`` 中是为了让“不得超过”等精确法律表达仍可被审计查看。
+    """
+
+    return [phrase for phrase in phrases if phrase in normalized_content]
 
 
 def chunk_matches_retrieval_filter(
@@ -339,6 +381,7 @@ class LexicalKnowledgeIndex:
 
     def __init__(self, chunks: Sequence[KnowledgeChunk]) -> None:
         self.chunks = tuple(chunks)
+        self._chunk_by_id = {chunk.chunk_id: chunk for chunk in self.chunks}
         self._token_counts = {
             chunk.chunk_id: Counter(_tokenize(chunk.content)) for chunk in self.chunks
         }
@@ -369,6 +412,7 @@ class LexicalKnowledgeIndex:
             *query.negation_anchors,
         ]
         query_terms = _terms("\x1f".join(query_parts))
+        query_phrases = _query_phrases(query.text)
         normalized_exact_anchors = [
             _normalized_text(anchor).strip()
             for anchor in query.exact_anchors
@@ -407,7 +451,9 @@ class LexicalKnowledgeIndex:
             for term in self._token_counts[chunk.chunk_id]
         )
         normalized_query = _normalized_text(query.text).strip()
+        compact_query = "".join(normalized_query.split())
         scored: list[RetrievalHit] = []
+        protected_contract_chunk_ids: set[str] = set()
         for chunk in candidate_chunks:
             token_counts = self._token_counts[chunk.chunk_id]
             matched = sorted(query_terms.intersection(token_counts))
@@ -417,6 +463,10 @@ class LexicalKnowledgeIndex:
                 for anchor in normalized_exact_anchors
                 if anchor in normalized_content
             ]
+            matched_query_phrases = _matched_query_phrases(
+                query_phrases,
+                normalized_content,
+            )
             required_fact_anchor_matches = [
                 anchor
                 for anchor in normalized_required_fact_anchors
@@ -468,12 +518,32 @@ class LexicalKnowledgeIndex:
                 anchor in normalized_content
                 for anchor in normalized_negation_anchors
             )
+            has_precise_exact_anchor = any(
+                len(anchor) >= MIN_EXACT_ANCHOR_LENGTH
+                for anchor in exact_anchor_matches
+            )
+            has_exact_query_phrase = (
+                len(compact_query) >= MIN_EXACT_QUERY_LENGTH
+                and compact_query in normalized_content
+            )
+            if chunk.source_kind == KnowledgeSourceKind.CONTRACT and (
+                has_precise_exact_anchor or has_exact_query_phrase
+            ):
+                protected_contract_chunk_ids.add(chunk.chunk_id)
+            if (
+                chunk.source_kind == KnowledgeSourceKind.CONTRACT
+                and score < MIN_CONTRACT_LEXICAL_SCORE
+                and not has_precise_exact_anchor
+                and not has_exact_query_phrase
+            ):
+                continue
             matched_terms = list(
                 dict.fromkeys(
                     [
                         *matched,
                         *exact_anchor_matches,
                         *required_fact_anchor_matches,
+                        *matched_query_phrases,
                     ]
                 )
             )
@@ -486,6 +556,23 @@ class LexicalKnowledgeIndex:
                     retrieval_sources=[RetrievalSource.LEXICAL],
                 )
             )
+        contract_scores = [
+            hit.score
+            for hit in scored
+            if self._chunk_by_id[hit.chunk_id].source_kind
+            == KnowledgeSourceKind.CONTRACT
+        ]
+        best_contract_score = max(contract_scores, default=0.0)
+        if best_contract_score > 0:
+            scored = [
+                hit
+                for hit in scored
+                if self._chunk_by_id[hit.chunk_id].source_kind
+                != KnowledgeSourceKind.CONTRACT
+                or hit.chunk_id in protected_contract_chunk_ids
+                or hit.score
+                >= best_contract_score * MIN_CONTRACT_RELATIVE_SCORE_RATIO
+            ]
         scored.sort(key=lambda hit: (-hit.score, hit.chunk_id))
         hits = [
             hit.model_copy(update={"lexical_rank": rank})

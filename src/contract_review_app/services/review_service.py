@@ -15,6 +15,7 @@ from contract_review import (
     run_review,
     run_review_with_semantic_client,
 )
+from contract_review.audit import audit_result
 from contract_review.rule_checkers import RULE_CHECKER_VERSION
 from contract_review.pipeline import PIPELINE_VERSION
 from contract_review.models import (
@@ -27,7 +28,12 @@ from contract_review.ocr import OCRProvider
 from contract_review.semantic import CONTRACT_REVIEW_SYSTEM_INSTRUCTION
 
 from contract_review_app.config import settings
-from contract_review_app.services.result_cache import cache_get, cache_set, fingerprint
+from contract_review_app.services.result_cache import (
+    RESULT_CACHE_PAYLOAD_VERSION,
+    cache_get,
+    cache_set,
+    fingerprint,
+)
 from contract_review_app.services.seal_evidence import SealEvidenceDetector
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 from contract_review_app.services.pii_gate import gate_paths
@@ -69,6 +75,29 @@ def _knowledge_index_factory():
     ):
         return HybridKnowledgeIndex
     return None
+
+
+def _load_verified_cached_result(
+    payload: Mapping[str, object],
+    *,
+    cache_key: str,
+) -> ReviewResult:
+    """只返回与当前输入绑定且通过完整审计的缓存结果。"""
+
+    if payload.get("schema_version") != RESULT_CACHE_PAYLOAD_VERSION:
+        raise ValueError("审查结果缓存版本不受支持")
+    if payload.get("cache_key") != cache_key:
+        raise ValueError("审查结果缓存与当前输入指纹不一致")
+    serialized_result = payload.get("result")
+    if not isinstance(serialized_result, str):
+        raise ValueError("审查结果缓存缺少有效的 ReviewResult JSON")
+    result = ReviewResult.model_validate_json(serialized_result)
+    audit = audit_result(result)
+    if not audit.passed:
+        raise ValueError(
+            "审查结果缓存未通过完整性审计：" + ";".join(audit.issues[:3])
+        )
+    return result
 
 
 def _collect_seal_evidence(
@@ -185,7 +214,7 @@ def run_contract_review(
     cached = cache_get(cache_key)
     if cached is not None:
         try:
-            return ReviewResult.model_validate_json(cached["result"])
+            return _load_verified_cached_result(cached, cache_key=cache_key)
         except Exception as exc:
             logger.warning(f"审查缓存读取失败，重新审查: {exc}")
 
@@ -284,5 +313,12 @@ def run_contract_review(
                 "run_id": result.run.run_id,
             },
         )
-    cache_set(cache_key, {"result": result.model_dump_json()})
+    cache_set(
+        cache_key,
+        {
+            "schema_version": RESULT_CACHE_PAYLOAD_VERSION,
+            "cache_key": cache_key,
+            "result": result.model_dump_json(),
+        },
+    )
     return result

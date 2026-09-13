@@ -63,6 +63,8 @@ ContractClause / ClauseRelation / ContractObligation（条款、关系与履约�
         ↓
 RuleBundle / PlaybookSpec（规则快照与企业立场）
         ↓
+RetrievalQuery → RetrievalTrace → CandidateEvidence → EvidenceAssessment（候选证据与资格裁决）
+        ↓
 Finding / ReviewQuestion / QuestionAssessment（审查结论）
         ↓
 ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认、版本比对与红线建议）
@@ -79,7 +81,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - 财务事实先由 `facts.py` 以带证据的 `ContractFact` 形成，检查器只消费 `RuleCheckContext`，因此“事实抽取—规则判断—发现输出”三层职责可独立替换和回放。
 - `ClauseRelation` 是条款关系的唯一结果对象：确定性构建器只登记明确的父子层级、定义项和条款编号引用；引用目标不存在或编号重复时保留 `UNRESOLVED`，不得把未解析的关系当作审查通过。
 - `KnowledgeChunk.source_kind` 统一区分合同事实和规则依据；来源类型必须显式声明，不再从旧元数据推断。语义检索没有合同正文命中时不调用外部模型，规则发现保持 `UNKNOWN` 并进入人工复核。
-- 每条适用规则都必须走同一条 `RetrievalQuery → RetrievalTrace → CandidateEvidence` 链路；确定性规则、Playbook 和语义模型只能消费按规则绑定的候选证据。关键词扫描仍可作为词法候选生成器，但不得成为条款识别或事实抽取的旁路入口。
+- 每条适用规则都必须走同一条 `RetrievalQuery → RetrievalTrace → CandidateEvidence → EvidenceAssessment` 链路；`CandidateEvidence` 只是召回候选，`EvidenceAssessment` 才裁决候选是否具备确定性事实/规则消费资格。关键词扫描仍可作为词法候选生成器，但不得成为条款识别或事实抽取的旁路入口。
 - 配置 embedding 后由应用适配层执行 BM25 词法与向量候选召回，并使用固定 `RRF_K=60` 的 Reciprocal Rank Fusion 融合名次：词法命中保留精确术语、数字、否定和定义短语，向量命中补充语义相近表达。`RetrievalQuery` 携带规则版本、查询意图、精确/数字/否定锚点和结构化过滤；`RetrievalTrace` 持久化过滤条件、融合方式和各来源名次，轨迹命中再规范化为 `CandidateEvidence`。召回结果仍只是候选证据，不产生 `Finding` 或其它审核结论，最终判断只能来自规则检查器或通过证据门禁的语义审查。
 - 同步 `POST /api/v1/contract-review` 使用显式表单字段 `PackageId`、`ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext`、`TransactionTags`、`TransactionAmount`、`DocumentKinds`、`DocumentPrecedence`、`ReviewScope`，返回 `ContractReviewResponse`；异步接口把同一上下文和合同包角色序列化进任务 manifest，由任务处理器还原为 `ReviewContext` 与 `ContractPackage`。
 - `POST /contract-review/decision` 和 `POST /contract-review/finalize` 的请求体分别是 `ReviewDecisionRequest`、`ReviewFinalizationRequest`，都必须携带完整 `ReviewResult`；应用服务先执行完整性、证据和指纹门禁，再追加 `ReviewDecision` 或推进 `FINALIZED`，不接受只传旧风险清单的部分更新。
@@ -109,7 +111,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 1. API 读取并限制每个上传文件大小。
 2. 应用服务在线程池中运行确定性审查；文件按稳定 `document_id` 排序，保证上传顺序不影响指纹。
 3. 解析质量门、证据索引、条款关系构建、知识检索和规则执行产生 `ReviewResult`。
-4. 对每条适用规则先构造 `RetrievalQuery`，索引返回 `RetrievalTrace`，再生成 `CandidateEvidence`；确定性事实抽取、Playbook/规则检查器和语义请求共享这一按规则候选集合。
+4. 对每条适用规则先构造 `RetrievalQuery`，索引返回 `RetrievalTrace`，再生成 `CandidateEvidence` 并执行 `EvidenceAssessment`；确定性事实抽取、Playbook/规则检查器只消费 `ACCEPT` 候选，语义请求可以查看未决候选但必须引用合同候选证据。
 5. 如配置了模型，再调用语义客户端；模型请求/响应指纹、规则 ID 和证据 ID 在引擎边界复核。
 6. HTTP 层直接返回 `ReviewResult`；缓存命中不跳过证据校验，也不生成第二套风险清单。
 7. 返回报告并停在 `HUMAN_REVIEW`；人工决定、版本比对和最终确认继续以 `ReviewResult` 为输入，形成可回放的后置附件、`ReviewDecision` 和 `FINALIZED` 状态。

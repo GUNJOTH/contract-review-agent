@@ -19,6 +19,9 @@
   数量或摘要的工件拒绝加载。
 - `ReviewResult` 必须包含 `ContractClause`、`ContractObligation`、
   `ReviewQuestion` 和 `QuestionAssessment` 四类领域对象。
+- `ReviewResult` 必须为每个 `CandidateEvidence` 保存一个 `EvidenceAssessment`；
+  缺少资格裁决的候选不能进入事实、Playbook 或规则检查，旧结果不提供该字段时
+  不能继续作为审查输入。
 - 规则结论使用 `SUPPORTED`、`CONTRADICTED`、`NOT_MENTIONED`、`UNKNOWN` 和
   `NOT_APPLICABLE`，每个结论必须绑定已经持久化的证据 ID。
 - 当前条款分段采用“一知识块一最小条款片段”；没有版面证据时不跨块自动合并。

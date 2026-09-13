@@ -11,31 +11,13 @@ from .models import (
     AttachmentReference,
     CandidateEvidence,
     ContractFact,
-    KnowledgeSourceKind,
 )
-FACT_EXTRACTOR_VERSION = "deterministic-facts-0.3.0"
+from .retrieval import (
+    CandidateEvidenceGroup,
+    group_contract_candidate_evidence,
+)
 
-
-def _contract_candidates(
-    candidates: Sequence[CandidateEvidence],
-) -> list[CandidateEvidence]:
-    """按候选身份去重合同候选，保留每条规则对知识块的归属。
-
-    同一个 ``chunk_id`` 可能被多个 ``RetrievalQuery`` 命中。这里不能按
-    知识块去重，否则事实只会挂到第一个规则的候选上，后续规则虽然共享
-    原文，却无法通过自己的候选边界消费该事实。
-    """
-
-    unique: list[CandidateEvidence] = []
-    seen_candidate_ids: set[str] = set()
-    for candidate in sorted(candidates, key=lambda item: (item.rank, item.candidate_id)):
-        if candidate.source_kind != KnowledgeSourceKind.CONTRACT:
-            continue
-        if not candidate.document_id or candidate.candidate_id in seen_candidate_ids:
-            continue
-        seen_candidate_ids.add(candidate.candidate_id)
-        unique.append(candidate)
-    return unique
+FACT_EXTRACTOR_VERSION = "deterministic-facts-0.4.0"
 
 
 def extract_keyword_facts_from_candidates(
@@ -45,21 +27,28 @@ def extract_keyword_facts_from_candidates(
     """从候选证据确认关键字事实；关键字不再扫描候选之外的全文。"""
 
     facts: list[ContractFact] = []
-    contract_candidates = _contract_candidates(candidates)
+    contract_candidate_groups = group_contract_candidate_evidence(candidates)
     for term in sorted({term.strip() for term in terms if term.strip()}):
-        by_document: dict[str, list[CandidateEvidence]] = {}
-        for candidate in contract_candidates:
+        by_document: dict[str, list[CandidateEvidenceGroup]] = {}
+        for group in contract_candidate_groups:
+            candidate = group.representative
             if term in candidate.content and candidate.document_id:
-                by_document.setdefault(candidate.document_id, []).append(candidate)
+                by_document.setdefault(candidate.document_id, []).append(group)
         for document_id, matches in sorted(by_document.items()):
             evidence_ids = list(
                 dict.fromkeys(
                     evidence_id
-                    for candidate in matches
-                    for evidence_id in candidate.evidence_ids
+                    for group in matches
+                    for evidence_id in group.evidence_ids
                 )
             )
-            candidate_ids = [candidate.candidate_id for candidate in matches]
+            candidate_ids = list(
+                dict.fromkeys(
+                    candidate_id
+                    for group in matches
+                    for candidate_id in group.candidate_ids
+                )
+            )
             digest = hashlib.sha256(
                 f"{document_id}\x1f{term}".encode("utf-8")
             ).hexdigest()[:16]
@@ -93,8 +82,9 @@ def extract_tax_rate_facts_from_candidates(
     """从统一候选中提取税率事实，不访问候选之外的解析正文。"""
 
     facts: list[ContractFact] = []
-    seen: set[tuple[str, str, str, int]] = set()
-    for candidate in _contract_candidates(candidates):
+    seen: set[tuple[str, str, int]] = set()
+    for group in group_contract_candidate_evidence(candidates):
+        candidate = group.representative
         for match in _TAX_RATE_PATTERN.finditer(candidate.content):
             window = candidate.content[
                 max(0, match.start() - _TAX_CONTEXT_WINDOW) :
@@ -103,7 +93,6 @@ def extract_tax_rate_facts_from_candidates(
             if not any(keyword in window for keyword in _TAX_CONTEXT_KEYWORDS):
                 continue
             key = (
-                candidate.candidate_id,
                 candidate.chunk_id,
                 match.group(0),
                 match.start(),
@@ -113,7 +102,7 @@ def extract_tax_rate_facts_from_candidates(
             seen.add(key)
             value = float(match.group(1)) / 100
             digest = hashlib.sha256(
-                f"{candidate.document_id}\x1f{candidate.candidate_id}\x1f"
+                f"{candidate.document_id}\x1f"
                 f"{candidate.chunk_id}\x1f{match.start()}".encode(
                     "utf-8"
                 )
@@ -126,8 +115,8 @@ def extract_tax_rate_facts_from_candidates(
                     normalized_value=value,
                     unit="ratio",
                     source_document_ids=[candidate.document_id],
-                    evidence_ids=list(candidate.evidence_ids),
-                    candidate_ids=[candidate.candidate_id],
+                    evidence_ids=list(group.evidence_ids),
+                    candidate_ids=list(group.candidate_ids),
                     confidence=1.0,
                     extractor_version=FACT_EXTRACTOR_VERSION,
                 )
@@ -293,7 +282,7 @@ def extract_financial_facts_from_candidates(
     seen: set[tuple[str, str, str, int, str]] = set()
 
     def add_fact(
-        candidate: CandidateEvidence,
+        group: CandidateEvidenceGroup,
         raw_text: str,
         value_start: int,
         kind: str,
@@ -301,8 +290,9 @@ def extract_financial_facts_from_candidates(
         *,
         unit: str = "CNY",
     ) -> None:
+        candidate = group.representative
         key = (
-            candidate.candidate_id,
+            candidate.document_id or "",
             candidate.chunk_id,
             kind,
             value_start,
@@ -315,7 +305,6 @@ def extract_financial_facts_from_candidates(
             "\x1f".join(
                 (
                     candidate.document_id,
-                    candidate.candidate_id,
                     candidate.chunk_id,
                     kind,
                     str(value_start),
@@ -331,14 +320,15 @@ def extract_financial_facts_from_candidates(
                 normalized_value=format(value, "f"),
                 unit=unit,
                 source_document_ids=[candidate.document_id],
-                evidence_ids=list(candidate.evidence_ids),
-                candidate_ids=[candidate.candidate_id],
+                evidence_ids=list(group.evidence_ids),
+                candidate_ids=list(group.candidate_ids),
                 confidence=1.0,
                 extractor_version=FACT_EXTRACTOR_VERSION,
             )
         )
 
-    for candidate in _contract_candidates(candidates):
+    for group in group_contract_candidate_evidence(candidates):
+        candidate = group.representative
         source_text = candidate.content
         is_table = candidate.metadata.get("block_type") == "table_cell"
         for label_match in _FINANCIAL_LABEL_PATTERN.finditer(source_text):
@@ -369,7 +359,7 @@ def extract_financial_facts_from_candidates(
             if kind == "financial.contract_amount_numeric" and chinese_numeral_literal:
                 actual_kind = "financial.contract_amount_upper"
             add_fact(
-                candidate,
+                group,
                 raw_match,
                 label_match.end() + literal_match.start(),
                 actual_kind,
@@ -392,7 +382,7 @@ def extract_financial_facts_from_candidates(
                 else "financial.contract_amount_numeric"
             )
             add_fact(
-                candidate,
+                group,
                 marker_match.group(0),
                 marker_match.start("literal"),
                 actual_kind,
@@ -407,7 +397,7 @@ def extract_financial_facts_from_candidates(
             except InvalidOperation:
                 continue
             add_fact(
-                candidate,
+                group,
                 ratio_match.group(0),
                 ratio_match.start("ratio"),
                 "financial.payment_ratio",
@@ -446,12 +436,11 @@ def extract_contract_term_facts_from_candidates(
     """
 
     facts: list[ContractFact] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for candidate in candidates:
-        if candidate.source_kind != KnowledgeSourceKind.CONTRACT:
-            continue
+    seen: set[tuple[str, str, str]] = set()
+    for group in group_contract_candidate_evidence(candidates):
+        candidate = group.representative
         compact = " ".join(candidate.content.split())
-        if not compact or not candidate.document_id:
+        if not compact:
             continue
         for term_kind, keywords in _CONTRACT_TERM_KEYWORDS.items():
             matched_keyword = next(
@@ -461,7 +450,6 @@ def extract_contract_term_facts_from_candidates(
             if matched_keyword is None:
                 continue
             key = (
-                candidate.candidate_id,
                 candidate.document_id,
                 candidate.chunk_id,
                 term_kind,
@@ -473,7 +461,6 @@ def extract_contract_term_facts_from_candidates(
                 "\x1f".join(
                     (
                         candidate.document_id,
-                        candidate.candidate_id,
                         candidate.chunk_id,
                         term_kind,
                         compact,
@@ -488,8 +475,8 @@ def extract_contract_term_facts_from_candidates(
                     normalized_value=compact[:2000],
                     unit="text",
                     source_document_ids=[candidate.document_id],
-                    evidence_ids=list(candidate.evidence_ids),
-                    candidate_ids=[candidate.candidate_id],
+                    evidence_ids=list(group.evidence_ids),
+                    candidate_ids=list(group.candidate_ids),
                     confidence=1.0,
                     extractor_version=FACT_EXTRACTOR_VERSION,
                 )
@@ -540,9 +527,8 @@ def extract_attachment_references_from_candidates(
     """从合同候选中识别附件引用，引用本身也保留 CandidateEvidence 归属。"""
 
     grouped: dict[tuple[str, str], dict[str, list[str]]] = {}
-    for candidate in _contract_candidates(candidates):
-        if not candidate.document_id:
-            continue
+    for candidate_group in group_contract_candidate_evidence(candidates):
+        candidate = candidate_group.representative
         for match in _ATTACHMENT_PATTERN.finditer(candidate.content):
             name = _normalize_attachment_name(match.group(1))
             if not name:
@@ -552,8 +538,8 @@ def extract_attachment_references_from_candidates(
                 key,
                 {"evidence_ids": [], "candidate_ids": []},
             )
-            group["evidence_ids"].extend(candidate.evidence_ids)
-            group["candidate_ids"].append(candidate.candidate_id)
+            group["evidence_ids"].extend(candidate_group.evidence_ids)
+            group["candidate_ids"].extend(candidate_group.candidate_ids)
 
     references: list[AttachmentReference] = []
     for (document_id, name), group in grouped.items():

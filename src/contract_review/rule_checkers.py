@@ -33,7 +33,7 @@ from .models import (
 )
 
 
-RULE_CHECKER_VERSION = "rule-checkers-0.1.0"
+RULE_CHECKER_VERSION = "rule-checkers-0.2.0"
 MONEY_SCALE = Decimal("0.01")
 
 
@@ -1114,15 +1114,33 @@ def _fact_document_ids(
 
 
 def check_cross_document_consistency(context: RuleCheckContext) -> RuleCheckResult:
-    """比较多份合同材料中的同类事实，单文件不产生虚假的通过结论。"""
+    """比较多份合同材料中的同类事实，区分不适用与合同包不完整。
+
+    单文档例外由规则适用性层（Playbook）先行裁决；能够进入本检查器的
+    单文档请求，说明规则已经被判定为需要执行，此时缺少可比较文档只能
+    输出 ``UNKNOWN``，不能把输入缺失折叠成 ``NOT_APPLICABLE``。
+    """
 
     if len(context.documents) < 2:
         return _base_result(
             context,
-            status=FindingStatus.NOT_APPLICABLE,
-            reason="合同包只有一份文档，不适用跨文档一致性检查。",
-            comparison={"document_count": len(context.documents)},
-            automatic=True,
+            status=FindingStatus.UNKNOWN,
+            reason=(
+                "跨文档一致性检查至少需要两份已解析文档；"
+                f"当前合同包只有 {len(context.documents)} 份，不能据此判定事实一致。"
+            ),
+            recommended_action=(
+                "补充主合同、技术协议或附件后重新审查；若本次确为单文档审查，"
+                "请在业务上下文中声明 single_document_review。"
+            ),
+            confidence=0.0,
+            comparison={
+                "document_count": len(context.documents),
+                "required_document_count": 2,
+            },
+            uncertainty_reason="insufficient_documents_for_cross_document_check",
+            evidence_quality=EvidenceQuality.INSUFFICIENT,
+            automatic=False,
         )
     comparable: list[ContractFact] = []
     values_by_type: dict[str, dict[str, set[str]]] = {}

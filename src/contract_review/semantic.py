@@ -29,11 +29,12 @@ from .models import (
 from .rule_checkers import is_rule_checker_configured
 from .rules import is_rule_in_scope, resolve_rule_applicability
 
-SEMANTIC_GATE_VERSION = "semantic-evidence-gate-0.3.0"
+SEMANTIC_GATE_VERSION = "semantic-evidence-gate-0.4.0"
 MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS = 0.5
 MIN_CONFIDENCE_FOR_AUTOMATIC_PASS = 0.8
 DEFAULT_SYSTEM_INSTRUCTION = (
     "你是合同条款审查模型。只能依据给定上下文判断；每条结论必须引用上下文中的 evidence_id。"
+    "检索候选只是待核对证据，不是审核结论；不得把规则来源或语义相似候选当作合同事实。"
     "无法确定时返回 UNKNOWN，不得补造事实或法律依据。请仅返回 JSON。"
 )
 CONTRACT_REVIEW_SYSTEM_INSTRUCTION = (
@@ -42,6 +43,8 @@ CONTRACT_REVIEW_SYSTEM_INSTRUCTION = (
     "retrieval_queries_by_rule 和按规则拆分的 candidate_evidence_by_rule；"
     "候选证据来自统一 RetrievalQuery→RetrievalTrace→CandidateEvidence 链路，"
     "source_kind=rule 的是规则定义候选块，source_kind=contract 的是合同正文候选块。"
+    "CandidateEvidence 只是检索候选，不是审核结论；必须先核对其合同来源、"
+    "条款范围以及否定词、数字和定义词等必要表达，再据此形成判断。"
     "优先依据每条规则定义及其 Playbook 立场判断，"
     "不得用模型自己的常识替换规则快照。对每条规则必须给出明确结论，不要回避："
     "规则要求的事项在合同中有明确约定且符合 → PASS；有约定但存在瑕疵或风险 → WARN/BLOCK；"

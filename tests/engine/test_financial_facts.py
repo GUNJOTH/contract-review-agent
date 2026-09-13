@@ -123,6 +123,42 @@ class FinancialFactTests(unittest.TestCase):
         )
         self.assertTrue(all(fact.extractor_version for fact in facts))
 
+    def test_same_chunk_across_rules_is_extracted_once_with_all_bindings(self) -> None:
+        def candidate(candidate_id: str, rule_id: str, rank: int) -> CandidateEvidence:
+            return CandidateEvidence(
+                candidate_id=candidate_id,
+                query_id=f"query-{rule_id}",
+                rule_id=rule_id,
+                rule_version="v1",
+                rank=rank,
+                chunk_id="chunk-shared-amount",
+                document_id="document-main",
+                source_name="contract.docx",
+                source_sha256="a" * 64,
+                source_version="docx-text-v1",
+                source_kind=KnowledgeSourceKind.CONTRACT,
+                content="合同金额：1000000元。",
+                evidence_ids=["evidence-shared-amount"],
+                clause_ids=[],
+                score=5.0,
+                retrieval_sources=[RetrievalSource.LEXICAL],
+                metadata={"document_id": "document-main"},
+            )
+
+        facts = extract_financial_facts_from_candidates(
+            [
+                candidate("candidate-payment", "payment-rule", 2),
+                candidate("candidate-amount", "amount-rule", 1),
+            ]
+        )
+
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0].candidate_ids, [
+            "candidate-amount",
+            "candidate-payment",
+        ])
+        self.assertEqual(facts[0].evidence_ids, ["evidence-shared-amount"])
+
 
 if __name__ == "__main__":
     unittest.main()

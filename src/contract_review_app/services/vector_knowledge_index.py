@@ -43,7 +43,9 @@ from contract_review_app.services.pii_gate import gate_external_model_input
 from contract_review_app.telemetry.tracing import start_span
 
 VECTOR_INDEX_VERSION = "vector-knowledge-0.4.0"
-HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.3.0"
+# 混合索引包含词法分支；词法候选门控或分词策略变化时必须生成新的
+# 轨迹版本，避免旧的融合结果被误认为可直接回放。
+HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.4.0"
 MIN_VECTOR_DOCUMENT_SCORE = 0.1
 HYBRID_CANDIDATE_MULTIPLIER = 3
 

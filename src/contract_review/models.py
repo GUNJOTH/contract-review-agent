@@ -344,7 +344,7 @@ class ReviewContext(ModelBase):
     transaction_tags: list[str] = Field(
         default_factory=list,
         max_length=32,
-        description="结构化交易背景标签，用于规则适用性和检索查询构建。",
+        description="结构化交易背景标签，用于规则适用性和上下文留痕，不作为正文词法词项。",
     )
     transaction_amount: Decimal | None = Field(
         default=None,
@@ -391,7 +391,7 @@ class ReviewContext(ModelBase):
     @field_validator("transaction_tags", mode="before")
     @classmethod
     def normalize_transaction_tags(cls, value: object) -> list[str]:
-        """清理交易标签，避免同一业务条件产生多个查询指纹。"""
+        """清理交易标签，保持同一业务条件的上下文快照稳定。"""
 
         if value is None:
             return []
@@ -637,6 +637,49 @@ class CandidateEvidence(ModelBase):
         self.clause_ids = list(dict.fromkeys(self.clause_ids))
         self.retrieval_sources = list(dict.fromkeys(self.retrieval_sources))
         self.matched_terms = list(dict.fromkeys(self.matched_terms))
+        return self
+
+
+class EvidenceAssessmentOutcome(StrEnum):
+    """检索候选是否具备进入事实或语义判断的证据资格。"""
+
+    ACCEPT = "ACCEPT"
+    INSUFFICIENT = "INSUFFICIENT"
+    REJECT = "REJECT"
+
+
+class EvidenceAssessment(ModelBase):
+    """对单个检索候选执行的证据资格裁决，不等同于规则结论。"""
+
+    assessment_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
+    query_id: str = Field(min_length=1)
+    rule_id: str = Field(min_length=1)
+    rule_version: str = Field(min_length=1)
+    source_kind: KnowledgeSourceKind
+    outcome: EvidenceAssessmentOutcome
+    reason: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(min_length=1)
+    matched_exact_anchors: list[str] = Field(default_factory=list)
+    matched_required_fact_anchors: list[str] = Field(default_factory=list)
+    matched_numeric_anchors: list[str] = Field(default_factory=list)
+    matched_negation_anchors: list[str] = Field(default_factory=list)
+    assessed_by: Literal["deterministic_gate", "semantic_model"]
+    assessment_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def normalize_anchor_matches(self) -> "EvidenceAssessment":
+        """保证审计快照中的证据和锚点引用稳定且不重复。"""
+
+        self.evidence_ids = list(dict.fromkeys(self.evidence_ids))
+        for field_name in (
+            "matched_exact_anchors",
+            "matched_required_fact_anchors",
+            "matched_numeric_anchors",
+            "matched_negation_anchors",
+        ):
+            values = getattr(self, field_name)
+            setattr(self, field_name, list(dict.fromkeys(values)))
         return self
 
 
@@ -1343,6 +1386,7 @@ class ReviewResult(ModelBase):
     knowledge_chunks: list[KnowledgeChunk] = Field(default_factory=list)
     retrieval_traces: list[RetrievalTrace] = Field(default_factory=list)
     candidate_evidence: list[CandidateEvidence] = Field(default_factory=list)
+    evidence_assessments: list[EvidenceAssessment]
     semantic_request: SemanticModelRequest | None = None
     semantic_response: SemanticReviewResponse | None = None
     attachment_references: list[AttachmentReference] = Field(default_factory=list)

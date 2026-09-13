@@ -7,12 +7,14 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import Field
 
+from .evidence import accepted_candidates, assessment_by_candidate_id
 from .models import (
     AttachmentReference,
     CandidateEvidence,
     ContractClause,
     ContractFact,
     Evidence,
+    EvidenceAssessment,
     EvidenceQuality,
     EvidenceType,
     Document,
@@ -36,7 +38,7 @@ from .rules import (
     select_rules,
 )
 
-ENGINE_VERSION = "rule-engine-0.3.0"
+ENGINE_VERSION = "rule-engine-0.4.0"
 
 
 class RuleExecutionResult(ModelBase):
@@ -125,6 +127,7 @@ def execute_rule_bundle(
     contract_type_fact: ContractFact | None = None,
     facts: Sequence[ContractFact] = (),
     candidate_evidence_by_rule: Mapping[str, Sequence[CandidateEvidence]],
+    evidence_assessments: Sequence[EvidenceAssessment],
     attachment_references: Sequence[AttachmentReference] = (),
     documents: Sequence[Document] = (),
     visual_evidence: Sequence[Evidence] = (),
@@ -136,7 +139,8 @@ def execute_rule_bundle(
 ) -> RuleExecutionResult:
     """执行所有规则，未实现的检查显式输出 UNKNOWN。
 
-    缺少实现的规则必须进入可见复核队列，不能隐式变成 PASS 后从报告中消失。
+    缺少实现的规则必须进入可见复核队列，不能隐式变成 PASS 后从报告中消失；
+    所有确定性分支只消费经过 EvidenceAssessment 的合同候选。
     """
 
     if package_evidence.package_id != package_id:
@@ -174,6 +178,20 @@ def execute_rule_bundle(
         for candidate in candidates
     ):
         raise ValueError("CandidateEvidence 不能挂到其他规则的候选分组")
+    assessments_by_candidate_id = assessment_by_candidate_id(evidence_assessments)
+    candidate_ids = {
+        candidate.candidate_id
+        for candidates in candidate_evidence_by_rule.values()
+        for candidate in candidates
+    }
+    if set(assessments_by_candidate_id) != candidate_ids:
+        raise ValueError(
+            "EvidenceAssessment 必须覆盖且仅覆盖当前运行的 CandidateEvidence"
+        )
+    accepted_candidate_evidence_by_rule = {
+        rule_id: accepted_candidates(candidates, evidence_assessments)
+        for rule_id, candidates in candidate_evidence_by_rule.items()
+    }
 
     evidence: dict[str, Evidence] = {
         package_evidence.evidence_id: package_evidence,
@@ -195,7 +213,14 @@ def execute_rule_bundle(
         rule_evidence = _rule_source_evidence(rule, rule_bundle.source_sha256)
         evidence[rule_evidence.evidence_id] = rule_evidence
         rule_candidates = tuple(
-            candidate_evidence_by_rule.get(rule.rule_id, ())
+            accepted_candidate_evidence_by_rule.get(rule.rule_id, ())
+        )
+        raw_rule_candidate_evidence_ids = list(
+            dict.fromkeys(
+                evidence_id
+                for candidate in candidate_evidence_by_rule.get(rule.rule_id, ())
+                for evidence_id in candidate.evidence_ids
+            )
         )
         rule_candidate_evidence_ids = list(
             dict.fromkeys(
@@ -385,9 +410,7 @@ def execute_rule_bundle(
             continue
 
         if rule.check_method == "keyword":
-            candidates = list(
-                candidate_evidence_by_rule.get(rule.rule_id, ())
-            )
+            candidates = list(rule_candidates)
             matched_evidence_ids = list(
                 dict.fromkeys(
                     evidence_id
@@ -434,7 +457,7 @@ def execute_rule_bundle(
                         evidence_ids=[
                             rule_evidence.evidence_id,
                             package_evidence.evidence_id,
-                            *rule_candidate_evidence_ids,
+                            *raw_rule_candidate_evidence_ids,
                         ],
                         recommended_action="补充更高召回的检索结果或由审核人核对全文，再确认关键字规则。",
                         confidence=0.0,
@@ -467,7 +490,7 @@ def execute_rule_bundle(
                     evidence_ids=[
                         rule_evidence.evidence_id,
                         package_evidence.evidence_id,
-                        *rule_candidate_evidence_ids,
+                        *raw_rule_candidate_evidence_ids,
                         *visual_evidence_ids,
                     ],
                     recommended_action="人工核验页面图像中的印章位置和覆盖范围。",
@@ -483,7 +506,7 @@ def execute_rule_bundle(
                 evidence_ids=[
                     rule_evidence.evidence_id,
                     package_evidence.evidence_id,
-                    *rule_candidate_evidence_ids,
+                    *raw_rule_candidate_evidence_ids,
                 ],
                 recommended_action=method_action,
                 confidence=0.0,

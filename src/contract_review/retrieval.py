@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from .models import (
     CandidateEvidence,
@@ -28,7 +29,7 @@ from .models import (
 from .knowledge import chunk_matches_retrieval_filter
 
 
-RETRIEVAL_QUERY_VERSION = "retrieval-query-0.3.0"
+RETRIEVAL_QUERY_VERSION = "retrieval-query-0.4.0"
 _NUMERIC_ANCHOR_PATTERN = re.compile(
     r"(?:\d[\d,]*(?:\.\d+)?\s*(?:%|元|万元|日|天|工作日|月|年)?|"
     r"[一二三四五六七八九十百千万零〇]+\s*(?:%|元|万元|日|天|工作日|月|年))"
@@ -139,8 +140,13 @@ def _stringify(value: object) -> str:
     return str(value)
 
 
-def _query_parts(rule: Rule, context: ReviewContext) -> list[str]:
-    """按稳定顺序收集规则、Playbook 和业务上下文查询片段。"""
+def _query_parts(rule: Rule) -> list[str]:
+    """按稳定顺序收集规则和 Playbook 的合同证据查询片段。
+
+    ``ReviewContext`` 继续参与规则适用性和结构化过滤，但交易背景、标签、
+    合同类型等描述不进入正文词法打分。它们通常会在多个合同片段中重复，
+    将业务背景当成证据词会放大泛化词命中，降低候选精度。
+    """
 
     parts = [rule.title, rule.condition or "", _stringify(rule.expected_value)]
     parts.extend(rule.required_evidence)
@@ -160,21 +166,6 @@ def _query_parts(rule: Rule, context: ReviewContext) -> list[str]:
             )
             if position
         )
-    parts.extend(
-        item
-        for item in (
-            context.contract_type,
-            context.party_position.value,
-            context.jurisdiction,
-            context.transaction_context,
-            str(context.transaction_amount)
-            if context.transaction_amount is not None
-            else None,
-        )
-        if item
-    )
-    parts.extend(context.transaction_tags)
-    parts.extend(item.value for item in context.document_kinds)
     return _unique(parts)
 
 
@@ -196,7 +187,7 @@ def build_retrieval_query(
 ) -> RetrievalQuery:
     """从一条规则生成唯一、可审计、可回放的检索查询对象。"""
 
-    parts = _query_parts(rule, review_context)
+    parts = _query_parts(rule)
     text = "；".join(parts)[:4000]
     required_fact_anchors = _required_fact_anchors(rule)
     exact_anchors = _unique(
@@ -345,6 +336,59 @@ def build_candidate_evidence(
             )
         )
     return candidates
+
+
+@dataclass
+class CandidateEvidenceGroup:
+    """同一合同知识块在多条规则候选中的聚合结果。"""
+
+    representative: CandidateEvidence
+    candidate_ids: list[str]
+    evidence_ids: list[str]
+
+
+def group_contract_candidate_evidence(
+    candidates: Sequence[CandidateEvidence],
+) -> list[CandidateEvidenceGroup]:
+    """按底层合同知识块聚合候选，同时保留全部规则绑定身份。
+
+    一个合同片段可能被多条规则分别检索并生成不同的 ``candidate_id``。
+    事实抽取只应对同一原文片段执行一次，但事实仍需携带所有候选身份，
+    这样每条规则都能通过自己的候选边界消费该事实。
+    """
+
+    groups: dict[tuple[str, ...], CandidateEvidenceGroup] = {}
+    seen_candidate_ids: set[str] = set()
+    for candidate in sorted(candidates, key=lambda item: (item.rank, item.candidate_id)):
+        if (
+            candidate.source_kind != KnowledgeSourceKind.CONTRACT
+            or not candidate.document_id
+            or candidate.candidate_id in seen_candidate_ids
+        ):
+            continue
+        seen_candidate_ids.add(candidate.candidate_id)
+        group_key = (
+            candidate.document_id,
+            candidate.chunk_id,
+            candidate.source_name,
+            candidate.source_sha256,
+            candidate.source_version,
+        )
+        group = groups.get(group_key)
+        if group is None:
+            groups[group_key] = CandidateEvidenceGroup(
+                representative=candidate,
+                candidate_ids=[candidate.candidate_id],
+                evidence_ids=list(candidate.evidence_ids),
+            )
+            continue
+        group.candidate_ids.append(candidate.candidate_id)
+        group.evidence_ids.extend(candidate.evidence_ids)
+
+    for group in groups.values():
+        group.candidate_ids = list(dict.fromkeys(group.candidate_ids))
+        group.evidence_ids = list(dict.fromkeys(group.evidence_ids))
+    return list(groups.values())
 
 
 def group_candidate_evidence(

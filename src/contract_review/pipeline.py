@@ -20,6 +20,13 @@ from .clause_relations import build_clause_relations
 from .comparisons import attach_version_comparison
 from .engine import execute_rule_bundle
 from .elements import extract_contract_element_facts_from_candidates
+from .evidence import (
+    EVIDENCE_ASSESSMENT_VERSION,
+    allowed_contract_evidence_ids_by_rule,
+    assess_candidates_for_query,
+    accepted_candidates,
+    promote_semantic_evidence_assessments,
+)
 from .event_store import InMemoryStageEventStore, StageEventStore
 from .facts import (
     extract_attachment_references_from_candidates,
@@ -47,10 +54,10 @@ from .models import (
     Document,
     DocumentKind,
     Evidence,
+    EvidenceAssessment,
     Finding,
     FindingStatus,
     KnowledgeChunk,
-    KnowledgeSourceKind,
     ParsedDocument,
     ReviewDecision,
     ReviewReport,
@@ -84,7 +91,7 @@ from .semantic import (
     SemanticReviewer,
 )
 
-PIPELINE_VERSION = "review-pipeline-0.8.0"
+PIPELINE_VERSION = "review-pipeline-0.9.0"
 REPORT_VERSION = "review-report-0.3.0"
 
 
@@ -325,6 +332,7 @@ def run_review(
     retrieval_traces = []
     candidate_evidence_by_rule: dict[str, list[CandidateEvidence]] = {}
     candidate_evidence: list[CandidateEvidence] = []
+    evidence_assessments: list[EvidenceAssessment] = []
     chunks_by_id = {chunk.chunk_id: chunk for chunk in knowledge_chunks}
     for rule in selected_rules:
         if resolve_rule_applicability(
@@ -354,16 +362,34 @@ def run_review(
         candidates = build_candidate_evidence(trace, chunks_by_id)
         candidate_evidence_by_rule[rule.rule_id] = candidates
         candidate_evidence.extend(candidates)
+        evidence_assessments.extend(
+            assess_candidates_for_query(candidates, retrieval_query)
+        )
+    accepted_candidate_evidence_by_rule = {
+        rule_id: accepted_candidates(candidates, evidence_assessments)
+        for rule_id, candidates in candidate_evidence_by_rule.items()
+    }
+    accepted_candidate_evidence = [
+        candidate
+        for rule_id in candidate_evidence_by_rule
+        for candidate in accepted_candidate_evidence_by_rule[rule_id]
+    ]
     keyword_facts = extract_keyword_facts_from_candidates(
-        candidate_evidence, keyword_terms
+        accepted_candidate_evidence, keyword_terms
     )
-    tax_facts = extract_tax_rate_facts_from_candidates(candidate_evidence)
-    financial_facts = extract_financial_facts_from_candidates(candidate_evidence)
-    element_facts = extract_contract_element_facts_from_candidates(candidate_evidence)
+    tax_facts = extract_tax_rate_facts_from_candidates(accepted_candidate_evidence)
+    financial_facts = extract_financial_facts_from_candidates(
+        accepted_candidate_evidence
+    )
+    element_facts = extract_contract_element_facts_from_candidates(
+        accepted_candidate_evidence
+    )
     attachment_references = extract_attachment_references_from_candidates(
-        candidate_evidence
+        accepted_candidate_evidence
     )
-    contract_term_facts = extract_contract_term_facts_from_candidates(candidate_evidence)
+    contract_term_facts = extract_contract_term_facts_from_candidates(
+        accepted_candidate_evidence
+    )
     effective_model_version = model_version or (
         semantic_response.model_version if semantic_response is not None else None
     )
@@ -376,6 +402,7 @@ def run_review(
         "pipeline_version": PIPELINE_VERSION,
         "rule_checker_version": RULE_CHECKER_VERSION,
         "playbook_engine_version": PLAYBOOK_ENGINE_VERSION,
+        "evidence_assessment_version": EVIDENCE_ASSESSMENT_VERSION,
         "contract_type": effective_context.contract_type,
         "review_context": effective_context.model_dump(mode="json"),
         "document_precedence": list(package.document_precedence),
@@ -475,6 +502,7 @@ def run_review(
             *([contract_type_fact] if contract_type_fact else []),
         ],
         candidate_evidence_by_rule=candidate_evidence_by_rule,
+        evidence_assessments=evidence_assessments,
         attachment_references=attachment_references,
         documents=documents,
         visual_evidence=extra_evidence,
@@ -593,15 +621,15 @@ def run_review(
             rules=rule_by_id,
             known_evidence=evidence_by_id(evidence_items),
             expected_rule_ids=semantic_request.rule_ids,
-            allowed_evidence_ids_by_rule={
-                rule_id: {
-                    evidence_id
-                    for candidate in candidates
-                    if candidate.source_kind == KnowledgeSourceKind.CONTRACT
-                    for evidence_id in candidate.evidence_ids
-                }
-                for rule_id, candidates in semantic_request.candidate_evidence_by_rule.items()
-            },
+            allowed_evidence_ids_by_rule=allowed_contract_evidence_ids_by_rule(
+                semantic_request.candidate_evidence_by_rule,
+                evidence_assessments,
+            ),
+        )
+        evidence_assessments = promote_semantic_evidence_assessments(
+            evidence_assessments,
+            candidate_evidence,
+            semantic_response,
         )
         semantic_by_rule = {finding.rule_id: finding for finding in semantic_findings}
         preserved_rule_ids = {
@@ -685,6 +713,7 @@ def run_review(
         knowledge_chunks=knowledge_chunks,
         retrieval_traces=retrieval_traces,
         candidate_evidence=candidate_evidence,
+        evidence_assessments=evidence_assessments,
         semantic_response=semantic_response,
         semantic_request=semantic_request,
         attachment_references=attachment_references,

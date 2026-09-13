@@ -177,6 +177,13 @@ def build_result_fingerprint(result: ReviewResult) -> str:
                 result.candidate_evidence, key=lambda value: value.candidate_id
             )
         ],
+        "evidence_assessments": [
+            item.model_dump(mode="json")
+            for item in sorted(
+                result.evidence_assessments,
+                key=lambda value: value.assessment_id,
+            )
+        ],
         "semantic_response": result.semantic_response.model_dump(
             mode="json", exclude={"created_at"}
         )

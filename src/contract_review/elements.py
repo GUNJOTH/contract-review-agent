@@ -12,10 +12,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Iterator
 
-from .models import CandidateEvidence, ContractFact, KnowledgeSourceKind
+from .models import CandidateEvidence, ContractFact
+from .retrieval import group_contract_candidate_evidence
 
 
-CONTRACT_ELEMENT_EXTRACTOR_VERSION = "contract-elements-facts-0.1.0"
+CONTRACT_ELEMENT_EXTRACTOR_VERSION = "contract-elements-facts-0.2.0"
 MAX_ELEMENT_VALUE_LENGTH = 120
 
 
@@ -167,22 +168,11 @@ def extract_contract_element_facts_from_candidates(
     """从统一候选提取标准要素事实，不扫描候选之外的全文。"""
 
     facts: list[ContractFact] = []
-    unique_candidates: list[CandidateEvidence] = []
-    seen_candidate_ids: set[str] = set()
-    for candidate in sorted(
-        candidates, key=lambda item: (item.rank, item.candidate_id)
-    ):
-        if (
-            candidate.source_kind != KnowledgeSourceKind.CONTRACT
-            or not candidate.document_id
-            or candidate.candidate_id in seen_candidate_ids
-        ):
-            continue
-        seen_candidate_ids.add(candidate.candidate_id)
-        unique_candidates.append(candidate)
+    candidate_groups = group_contract_candidate_evidence(candidates)
 
     for definition in CONTRACT_ELEMENT_DEFINITIONS:
-        for candidate in unique_candidates:
+        for candidate_group in candidate_groups:
+            candidate = candidate_group.representative
             seen_values: set[str] = set()
             for pattern in _patterns_for(definition):
                 for match in _safe_finditer(pattern, candidate.content):
@@ -194,7 +184,6 @@ def extract_contract_element_facts_from_candidates(
                         "\x1f".join(
                             (
                                 candidate.document_id,
-                                candidate.candidate_id,
                                 definition.key,
                                 candidate.chunk_id,
                                 str(match.start()),
@@ -210,8 +199,8 @@ def extract_contract_element_facts_from_candidates(
                             normalized_value=value,
                             unit="text",
                             source_document_ids=[candidate.document_id],
-                            evidence_ids=list(candidate.evidence_ids),
-                            candidate_ids=[candidate.candidate_id],
+                            evidence_ids=list(candidate_group.evidence_ids),
+                            candidate_ids=list(candidate_group.candidate_ids),
                             confidence=1.0,
                             extractor_version=CONTRACT_ELEMENT_EXTRACTOR_VERSION,
                         )
