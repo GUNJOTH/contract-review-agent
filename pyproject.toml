@@ -29,7 +29,7 @@ dev = [
     "ruff>=0.8.0",
     "httpx2>=2.12.0",
     # Starlette 1.6 still references anyio.abc.BlockingPortal.
-    "anyio>=4.14,<4.15",
+    "anyio>=4.14,<4.16",
 ]
 otel = [
     "opentelemetry-api>=1.31.0",
