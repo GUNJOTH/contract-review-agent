@@ -65,7 +65,8 @@ uv run --no-sync python scripts/evaluate_expert_contract_cases.py
 跨文档冲突、版本覆盖切片展开明细。`gold_phrases` 与 `gold_document_ids` 是必须命中
 的金标准；`acceptable_phrases` 只用于候选相关性判断；`error_candidate_phrases`
 用于暴露把相邻业务事实误当成当前规则证据的召回错误。该指标先作为混合检索基线数据，
-在专家评测达到稳定指标前，不引入持久化 ANN 服务或重排模型。切片中的
+当前只启用有限候选池上的确定性证据相关性精排基线；在专家评测达到稳定指标前，
+不引入学习型重排模型或持久化 ANN 服务。切片中的
 `expected_recall=false` 不是注释：评测器会计算 `slice_detection_at_10` 和
 `negative_slice_false_positive_rate_at_10`，直接暴露把否定词、数字、例外、跨文档冲突或
 版本覆盖的错误候选误当成金标准的情况。

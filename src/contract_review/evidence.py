@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import unicodedata
 from collections.abc import Mapping, Sequence
 
 from .models import (
@@ -15,28 +14,16 @@ from .models import (
     RetrievalQuery,
     SemanticReviewResponse,
 )
+from .terminology import matched_terminology_terms
 
 
-EVIDENCE_ASSESSMENT_VERSION = "evidence-assessment-0.1.0"
+EVIDENCE_ASSESSMENT_VERSION = "evidence-assessment-0.2.0"
 DETERMINISTIC_EVIDENCE_ASSESSOR = "deterministic_gate"
 SEMANTIC_EVIDENCE_ASSESSOR = "semantic_model"
 
 
-def _normalise(value: object) -> str:
-    """统一全角字符、大小写和空白，避免版式差异改变锚点判断。"""
-
-    return "".join(
-        unicodedata.normalize("NFKC", str(value or "")).casefold().split()
-    )
-
-
 def _matched_anchors(anchors: Sequence[str], content: str) -> list[str]:
-    normalized_content = _normalise(content)
-    return [
-        anchor
-        for anchor in anchors
-        if _normalise(anchor) and _normalise(anchor) in normalized_content
-    ]
+    return matched_terminology_terms(anchors, content)
 
 
 def _assessment_id(candidate: CandidateEvidence) -> str:

@@ -29,8 +29,9 @@ from .models import (
     RuleBundle,
     SourceLocator,
 )
+from .terminology import expand_terminology_terms, matched_terminology_terms
 
-KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.7.0"
+KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.8.0"
 BM25_K1 = 1.2
 BM25_B = 0.75
 EXACT_PHRASE_BOOST = 1.0
@@ -404,25 +405,17 @@ class LexicalKnowledgeIndex:
         effective_filter = query.retrieval_filter
         # 结构化字段与可读查询文本共同进入词法候选生成器。这样数字、否定词、
         # 定义词和精确锚点不会只停留在审计元数据里，而是真正影响 BM25 召回。
-        query_parts = [
-            query.text,
-            *query.lexical_terms,
-            *query.exact_anchors,
-            *query.numeric_anchors,
-            *query.negation_anchors,
-        ]
+        query_parts = expand_terminology_terms(
+            [
+                query.text,
+                *query.lexical_terms,
+                *query.exact_anchors,
+                *query.numeric_anchors,
+                *query.negation_anchors,
+            ]
+        )
         query_terms = _terms("\x1f".join(query_parts))
         query_phrases = _query_phrases(query.text)
-        normalized_exact_anchors = [
-            _normalized_text(anchor).strip()
-            for anchor in query.exact_anchors
-            if _normalized_text(anchor).strip()
-        ]
-        normalized_required_fact_anchors = [
-            _normalized_text(anchor).strip()
-            for anchor in query.required_fact_anchors
-            if _normalized_text(anchor).strip()
-        ]
         normalized_numeric_anchors = [
             _normalized_text(anchor).strip()
             for anchor in query.numeric_anchors
@@ -458,20 +451,18 @@ class LexicalKnowledgeIndex:
             token_counts = self._token_counts[chunk.chunk_id]
             matched = sorted(query_terms.intersection(token_counts))
             normalized_content = _normalized_text(chunk.content)
-            exact_anchor_matches = [
-                anchor
-                for anchor in normalized_exact_anchors
-                if anchor in normalized_content
-            ]
+            exact_anchor_matches = matched_terminology_terms(
+                query.exact_anchors,
+                chunk.content,
+            )
             matched_query_phrases = _matched_query_phrases(
                 query_phrases,
                 normalized_content,
             )
-            required_fact_anchor_matches = [
-                anchor
-                for anchor in normalized_required_fact_anchors
-                if anchor in normalized_content
-            ]
+            required_fact_anchor_matches = matched_terminology_terms(
+                query.required_fact_anchors,
+                chunk.content,
+            )
             if not matched and not exact_anchor_matches:
                 continue
             document_length = self._document_lengths[chunk.chunk_id]

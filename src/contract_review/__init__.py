@@ -147,6 +147,19 @@ from .retrieval import (
     group_candidate_evidence,
     group_contract_candidate_evidence,
 )
+from .reranking import (
+    LEGAL_RELEVANCE_RERANKER_VERSION,
+    rerank_candidate_pool_size,
+    rerank_retrieval_trace,
+)
+from .terminology import (
+    CONTRACT_TERMINOLOGY_GROUPS,
+    TERMINOLOGY_NORMALIZATION_VERSION,
+    expand_terminology_text,
+    expand_terminology_terms,
+    matched_terminology_terms,
+    terminology_matches,
+)
 from .facts import (
     extract_contract_term_facts_from_candidates,
     extract_attachment_references_from_candidates,
@@ -294,6 +307,15 @@ __all__ = [
     "allowed_contract_evidence_ids_by_rule",
     "promote_semantic_evidence_assessments",
     "RETRIEVAL_QUERY_VERSION",
+    "LEGAL_RELEVANCE_RERANKER_VERSION",
+    "rerank_candidate_pool_size",
+    "rerank_retrieval_trace",
+    "CONTRACT_TERMINOLOGY_GROUPS",
+    "TERMINOLOGY_NORMALIZATION_VERSION",
+    "expand_terminology_text",
+    "expand_terminology_terms",
+    "matched_terminology_terms",
+    "terminology_matches",
     "build_retrieval_query",
     "build_rule_retrieval_filter",
     "build_candidate_evidence",

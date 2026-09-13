@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .terminology import TERMINOLOGY_NORMALIZATION_VERSION
+
 
 def utc_now() -> datetime:
     """Return an explicit UTC timestamp for reproducible audit records."""
@@ -539,6 +541,10 @@ class RetrievalQuery(ModelBase):
     query_id: str = Field(min_length=1)
     rule_id: str = Field(min_length=1)
     rule_version: str = Field(min_length=1)
+    terminology_version: str = Field(
+        default=TERMINOLOGY_NORMALIZATION_VERSION,
+        min_length=1,
+    )
     purpose: Literal["rule_review", "playbook_position", "cross_document_consistency"]
     text: str = Field(min_length=1, max_length=4000)
     clause_types: list[str] = Field(default_factory=list)
@@ -547,8 +553,8 @@ class RetrievalQuery(ModelBase):
     numeric_anchors: list[str] = Field(default_factory=list)
     negation_anchors: list[str] = Field(default_factory=list)
     required_fact_types: list[str] = Field(default_factory=list)
-    # 由规则声明的事实类型映射而来；它们只用于提升候选召回，不能直接
-    # 生成事实或审核结论。
+    # 由规则声明或已注册 checker 的事实依赖映射而来；它们只用于提升候选
+    # 召回，不能直接生成事实或审核结论。
     required_fact_anchors: list[str] = Field(default_factory=list)
     document_kinds: list[DocumentKind] = Field(default_factory=list)
     # 查询必须在创建时绑定完整过滤范围；不允许先生成一个全库查询，
@@ -601,6 +607,9 @@ class RetrievalHit(ModelBase):
     )
     lexical_rank: int | None = Field(default=None, ge=1)
     vector_rank: int | None = Field(default=None, ge=1)
+    # score 保留初排适配器分数；精排分数单独保存，避免破坏 BM25/RRF 审计语义。
+    rerank_score: float | None = Field(default=None, ge=0, le=1)
+    rerank_features: dict[str, float] = Field(default_factory=dict)
 
 
 class CandidateEvidence(ModelBase):
@@ -692,6 +701,7 @@ class RetrievalTrace(ModelBase):
     top_k: int = Field(gt=0)
     hits: list[RetrievalHit] = Field(default_factory=list)
     used_for_rule_ids: list[str] = Field(default_factory=list)
+    reranker_version: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")

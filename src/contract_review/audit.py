@@ -41,6 +41,7 @@ from .knowledge import (
     _retrieval_trace_id,
     chunk_matches_retrieval_filter,
 )
+from .reranking import LEGAL_RELEVANCE_RERANKER_VERSION
 from .retrieval import (
     build_candidate_evidence,
     build_retrieval_query,
@@ -632,6 +633,11 @@ def _knowledge_integrity_is_valid(
             top_k=trace.top_k,
         ):
             return False
+        if trace.reranker_version not in {
+            None,
+            LEGAL_RELEVANCE_RERANKER_VERSION,
+        }:
+            return False
         if (
             query.rule_id not in rule_ids
             or query.rule_id not in trace.used_for_rule_ids
@@ -692,6 +698,10 @@ def _knowledge_integrity_is_valid(
                 != (hit.lexical_rank is not None)
                 or (RetrievalSource.VECTOR in hit.retrieval_sources)
                 != (hit.vector_rank is not None)
+            ):
+                return False
+            if trace.reranker_version == LEGAL_RELEVANCE_RERANKER_VERSION and (
+                hit.rerank_score is None or not hit.rerank_features
             ):
                 return False
             if trace.fusion_method == RetrievalFusion.RRF:

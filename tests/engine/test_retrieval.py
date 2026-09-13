@@ -147,6 +147,69 @@ def test_required_fact_types_become_query_anchors_and_improve_recall() -> None:
     ]
 
 
+def test_registered_financial_checker_supplies_fact_anchors_for_legacy_rule() -> None:
+    document = _document("document-main", "主合同.docx")
+    rule = Rule(
+        rule_id="legacy-amount-case",
+        version="v1",
+        title="合同金额大小写一致",
+        category="金额",
+        applies_to=["software"],
+        check_method="deterministic",
+        checker="amount_case_consistency",
+        source_snapshot="rules-v1",
+    )
+    bundle = RuleBundle(
+        bundle_id="bundle-legacy-financial",
+        source_filename="rules.json",
+        source_sha256="r" * 64,
+        source_sheet="Sheet1",
+        source_range="A1:C2",
+        rules=[rule],
+    )
+    context = ReviewContext(contract_type="software")
+    retrieval_filter = build_rule_retrieval_filter(
+        rule,
+        rule_bundle=bundle,
+        documents=[document],
+        clauses=[],
+        review_context=context,
+    )
+    query = build_retrieval_query(
+        rule,
+        review_context=context,
+        retrieval_filter=retrieval_filter,
+    )
+
+    assert query.required_fact_types == [
+        "financial.contract_amount_numeric",
+        "financial.contract_amount_upper",
+    ]
+    assert "合同金额" in query.required_fact_anchors
+    assert "大写" in query.required_fact_anchors
+
+    chunk = KnowledgeChunk(
+        chunk_id="chunk-legacy-amount",
+        source_name="主合同.docx",
+        source_sha256="d" * 64,
+        source_version="docx-text-v1",
+        content="合同金额：小写1000000元，大写：壹佰万元整。",
+        evidence_ids=["e-legacy-amount"],
+        source_kind=KnowledgeSourceKind.CONTRACT,
+        metadata={
+            "document_id": document.document_id,
+            "document_kind": document.document_kind.value,
+        },
+    )
+    trace = LexicalKnowledgeIndex([chunk]).retrieve(
+        query,
+        top_k=1,
+        used_for_rule_ids=[rule.rule_id],
+    )
+
+    assert [hit.chunk_id for hit in trace.hits] == [chunk.chunk_id]
+
+
 def test_low_signal_contract_chunks_are_not_used_to_fill_top_k() -> None:
     retrieval_filter = RetrievalFilter(
         document_ids=["document-main"],

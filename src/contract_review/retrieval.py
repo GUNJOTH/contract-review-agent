@@ -27,9 +27,14 @@ from .models import (
     RuleBundle,
 )
 from .knowledge import chunk_matches_retrieval_filter
+from .terminology import (
+    TERMINOLOGY_NORMALIZATION_VERSION,
+    expand_terminology_text,
+    expand_terminology_terms,
+)
 
 
-RETRIEVAL_QUERY_VERSION = "retrieval-query-0.4.0"
+RETRIEVAL_QUERY_VERSION = "retrieval-query-0.5.0"
 _NUMERIC_ANCHOR_PATTERN = re.compile(
     r"(?:\d[\d,]*(?:\.\d+)?\s*(?:%|元|万元|日|天|工作日|月|年)?|"
     r"[一二三四五六七八九十百千万零〇]+\s*(?:%|元|万元|日|天|工作日|月|年))"
@@ -80,6 +85,27 @@ _REQUIRED_FACT_ANCHORS: dict[str, tuple[str, ...]] = {
     "financial.detail_amount": ("金额", "单价", "数量"),
     "financial.detail_total": ("小计", "合计", "总计"),
     "tax_rate": ("税率", "增值税"),
+}
+
+# 部分历史规则快照只绑定了 checker，没有填写 required_evidence。这里补齐
+# checker 的最小事实依赖，确保确定性规则仍能以合同正文事实锚点进入 BM25；
+# 这只影响候选召回和证据资格，不替代规则检查器的事实完整性判断。
+_CHECKER_REQUIRED_FACT_TYPES: dict[str, tuple[str, ...]] = {
+    "amount_case_consistency": (
+        "financial.contract_amount_numeric",
+        "financial.contract_amount_upper",
+    ),
+    "tax_rate": ("tax_rate",),
+    "tax_amount": (
+        "financial.tax_base_amount",
+        "financial.tax_amount",
+        "tax_rate",
+        "financial.contract_amount_numeric",
+    ),
+    "payment_total": (
+        "financial.payment_amount",
+        "financial.contract_amount_numeric",
+    ),
 }
 
 
@@ -149,10 +175,11 @@ def _query_parts(rule: Rule) -> list[str]:
     """
 
     parts = [rule.title, rule.condition or "", _stringify(rule.expected_value)]
-    parts.extend(rule.required_evidence)
+    required_fact_types = _required_fact_types(rule)
+    parts.extend(required_fact_types)
     parts.extend(
         anchor
-        for fact_type in rule.required_evidence
+        for fact_type in required_fact_types
         for anchor in _REQUIRED_FACT_ANCHORS.get(fact_type, ())
     )
     if rule.playbook is not None:
@@ -169,12 +196,23 @@ def _query_parts(rule: Rule) -> list[str]:
     return _unique(parts)
 
 
+def _required_fact_types(rule: Rule) -> list[str]:
+    """合并规则声明和 checker 注册的事实依赖，形成可审计查询契约。"""
+
+    return _unique(
+        [
+            *rule.required_evidence,
+            *_CHECKER_REQUIRED_FACT_TYPES.get(rule.checker, ()),
+        ]
+    )
+
+
 def _required_fact_anchors(rule: Rule) -> list[str]:
     """把规则声明的事实类型转换为可检索的法律表达。"""
 
     return _unique(
         anchor
-        for fact_type in rule.required_evidence
+        for fact_type in _required_fact_types(rule)
         for anchor in _REQUIRED_FACT_ANCHORS.get(fact_type, ())
     )
 
@@ -188,7 +226,8 @@ def build_retrieval_query(
     """从一条规则生成唯一、可审计、可回放的检索查询对象。"""
 
     parts = _query_parts(rule)
-    text = "；".join(parts)[:4000]
+    text = expand_terminology_text("；".join(parts))[:4000]
+    required_fact_types = _required_fact_types(rule)
     required_fact_anchors = _required_fact_anchors(rule)
     exact_anchors = _unique(
         [
@@ -209,11 +248,13 @@ def build_retrieval_query(
         [anchor for anchor in _NEGATION_ANCHORS if anchor in text]
     )
     lexical_terms = _unique(
-        [
-            *parts,
-            *numeric_anchors,
-            *negation_anchors,
-        ]
+        expand_terminology_terms(
+            [
+                *parts,
+                *numeric_anchors,
+                *negation_anchors,
+            ]
+        )
     )
     purpose = (
         "cross_document_consistency"
@@ -226,6 +267,7 @@ def build_retrieval_query(
         "version": RETRIEVAL_QUERY_VERSION,
         "rule_id": rule.rule_id,
         "rule_version": rule.version,
+        "terminology_version": TERMINOLOGY_NORMALIZATION_VERSION,
         "purpose": purpose,
         "text": text,
         "clause_types": (
@@ -237,7 +279,7 @@ def build_retrieval_query(
         "exact_anchors": exact_anchors,
         "numeric_anchors": numeric_anchors,
         "negation_anchors": negation_anchors,
-        "required_fact_types": list(rule.required_evidence),
+        "required_fact_types": required_fact_types,
         "required_fact_anchors": required_fact_anchors,
         "document_kinds": [
             item.value
@@ -260,6 +302,7 @@ def build_retrieval_query(
         query_id=query_id,
         rule_id=rule.rule_id,
         rule_version=rule.version,
+        terminology_version=TERMINOLOGY_NORMALIZATION_VERSION,
         purpose=purpose,
         text=text,
         clause_types=(
@@ -271,7 +314,7 @@ def build_retrieval_query(
         exact_anchors=exact_anchors,
         numeric_anchors=numeric_anchors,
         negation_anchors=negation_anchors,
-        required_fact_types=list(rule.required_evidence),
+        required_fact_types=required_fact_types,
         required_fact_anchors=required_fact_anchors,
         document_kinds=(
             retrieval_filter.document_kinds

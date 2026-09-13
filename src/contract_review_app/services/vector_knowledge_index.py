@@ -37,15 +37,16 @@ from contract_review.models import (
     RetrievalSource,
     RetrievalTrace,
 )
+from contract_review.terminology import expand_terminology_text
 
 from contract_review_app.config import settings
 from contract_review_app.services.pii_gate import gate_external_model_input
 from contract_review_app.telemetry.tracing import start_span
 
-VECTOR_INDEX_VERSION = "vector-knowledge-0.4.0"
+VECTOR_INDEX_VERSION = "vector-knowledge-0.5.0"
 # 混合索引包含词法分支；词法候选门控或分词策略变化时必须生成新的
 # 轨迹版本，避免旧的融合结果被误认为可直接回放。
-HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.4.0"
+HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.5.0"
 MIN_VECTOR_DOCUMENT_SCORE = 0.1
 HYBRID_CANDIDATE_MULTIPLIER = 3
 
@@ -155,7 +156,10 @@ class VectorKnowledgeIndex:
                 update={"index_version": f"{trace.index_version}-vector-fallback"}
             )
         try:
-            query_vector = embed_texts([query.text], use_cache=self._use_cache)[0]
+            query_vector = embed_texts(
+                [expand_terminology_text(query.text)],
+                use_cache=self._use_cache,
+            )[0]
         except Exception as exc:
             logger.warning(f"查询向量生成失败，降级到词法基线: {exc}")
             trace = self._lexical.retrieve(

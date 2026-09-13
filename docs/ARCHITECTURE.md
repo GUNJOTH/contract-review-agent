@@ -82,6 +82,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - `ClauseRelation` 是条款关系的唯一结果对象：确定性构建器只登记明确的父子层级、定义项和条款编号引用；引用目标不存在或编号重复时保留 `UNRESOLVED`，不得把未解析的关系当作审查通过。
 - `KnowledgeChunk.source_kind` 统一区分合同事实和规则依据；来源类型必须显式声明，不再从旧元数据推断。语义检索没有合同正文命中时不调用外部模型，规则发现保持 `UNKNOWN` 并进入人工复核。
 - 每条适用规则都必须走同一条 `RetrievalQuery → RetrievalTrace → CandidateEvidence → EvidenceAssessment` 链路；`CandidateEvidence` 只是召回候选，`EvidenceAssessment` 才裁决候选是否具备确定性事实/规则消费资格。关键词扫描仍可作为词法候选生成器，但不得成为条款识别或事实抽取的旁路入口。
+- 中文术语归一使用版本化的高置信词形变体，只扩展查询、词法候选和证据锚点匹配，不改写合同原文；法律效果可能不同的概念必须继续由规则显式声明，不能仅凭词面相近自动合并。
 - 配置 embedding 后由应用适配层执行 BM25 词法与向量候选召回，并使用固定 `RRF_K=60` 的 Reciprocal Rank Fusion 融合名次：词法命中保留精确术语、数字、否定和定义短语，向量命中补充语义相近表达。`RetrievalQuery` 携带规则版本、查询意图、精确/数字/否定锚点和结构化过滤；`RetrievalTrace` 持久化过滤条件、融合方式和各来源名次，轨迹命中再规范化为 `CandidateEvidence`。召回结果仍只是候选证据，不产生 `Finding` 或其它审核结论，最终判断只能来自规则检查器或通过证据门禁的语义审查。
 - 同步 `POST /api/v1/contract-review` 使用显式表单字段 `PackageId`、`ContractType`、`PartyPosition`、`Jurisdiction`、`TransactionContext`、`TransactionTags`、`TransactionAmount`、`DocumentKinds`、`DocumentPrecedence`、`ReviewScope`，返回 `ContractReviewResponse`；异步接口把同一上下文和合同包角色序列化进任务 manifest，由任务处理器还原为 `ReviewContext` 与 `ContractPackage`。
 - `POST /contract-review/decision` 和 `POST /contract-review/finalize` 的请求体分别是 `ReviewDecisionRequest`、`ReviewFinalizationRequest`，都必须携带完整 `ReviewResult`；应用服务先执行完整性、证据和指纹门禁，再追加 `ReviewDecision` 或推进 `FINALIZED`，不接受只传旧风险清单的部分更新。
@@ -156,7 +157,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - 为异步任务创建增加 `Idempotency-Key` 和 Redis Lua 原子 admission；同一键在 TTL 内只返回原任务，只有准入胜者落盘/绑定输入并入队，待处理上限检查与首条事件写入在同一脚本中完成。
 - 同步审查和异步任务共用 `StageEventStore` 契约，保留 Redis/JSON 的后端差异但统一追加/读取边界；删除重复的 `ReviewTransition`，缺少 v2 Schema 或独立事件文件的旧结果直接拒绝。
 - Playbook 管理、规则审批和发布操作不属于当前运行 API；本轮只保留正式快照读取和兼容门禁，不把未实现的管理能力计入验收。
-- 条款关系和混合召回已先落地确定性/适配器边界；`evals/expert_contract_review_cases.json` 另行固定每条标注规则的金标准、可接受候选、错误候选和法律表达切片，离线统计 Recall@5、Recall@10、证据引用准确率与 `unknown_false_pass`。在基线指标完成前不引入重排模型或持久化 ANN。
+- 条款关系和混合召回已先落地确定性/适配器边界；`evals/expert_contract_review_cases.json` 另行固定每条标注规则的金标准、可接受候选、错误候选和法律表达切片，离线统计 Recall@5、Recall@10、证据引用准确率与 `unknown_false_pass`。当前在有限候选池上启用版本化的确定性证据相关性精排基线；学习型重排模型和持久化 ANN 仍需独立标注评测后再引入。
 
 ### P2：生产可观测与隐私（已落地基础能力）
 

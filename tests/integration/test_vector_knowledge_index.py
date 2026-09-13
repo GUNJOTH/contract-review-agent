@@ -123,7 +123,7 @@ def test_vector_index_ranks_by_similarity(monkeypatch):
 
     trace = index.retrieve(_query("合同金额"), top_k=2, used_for_rule_ids=["R1"])
 
-    assert trace.index_version == "vector-knowledge-0.4.0-qwen3-embedding-8b"
+    assert trace.index_version == "vector-knowledge-0.5.0-qwen3-embedding-8b"
     assert trace.used_for_rule_ids == ["R1"]
     assert trace.hits[0].chunk_id == "chunk-amount"
     assert trace.hits[0].score == pytest.approx(1.0)
@@ -131,6 +131,25 @@ def test_vector_index_ranks_by_similarity(monkeypatch):
     # 余弦量化到 2 位小数：金额=1.0，付款≈0.45，其他=0
     assert trace.hits[1].chunk_id == "chunk-payment"
     assert trace.hits[1].score == pytest.approx(0.45)
+
+
+def test_vector_query_embedding_includes_registered_terminology_alias(monkeypatch):
+    captured_texts: list[str] = []
+
+    class CapturingEmbedding:
+        def __call__(self, texts: list[str]) -> list[list[float]]:
+            captured_texts.extend(texts)
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(
+        "contract_review_app.services.vector_knowledge_index._call_embedding_api",
+        CapturingEmbedding(),
+    )
+    index = VectorKnowledgeIndex(_chunks(), use_cache=False)
+
+    index.retrieve(_query("合同金额"), top_k=1, used_for_rule_ids=["R1"])
+
+    assert any("合同价款" in text for text in captured_texts)
 
 
 def test_vector_index_falls_back_to_lexical(monkeypatch):
@@ -165,7 +184,7 @@ def test_hybrid_index_fuses_lexical_and_vector_candidates(monkeypatch):
 
     assert trace.retrieval_mode == RetrievalMode.HYBRID
     assert trace.fusion_method == RetrievalFusion.RRF
-    assert trace.index_version.endswith("+hybrid-knowledge-rrf-0.4.0")
+    assert trace.index_version.endswith("+hybrid-knowledge-rrf-0.5.0")
     assert trace.hits[0].chunk_id == "chunk-payment"
     assert set(trace.hits[0].retrieval_sources) == {"lexical", "vector"}
     assert trace.hits[0].lexical_rank == 1

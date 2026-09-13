@@ -46,6 +46,7 @@ from .retrieval import (
     build_rule_retrieval_filter,
     build_retrieval_query,
 )
+from .reranking import rerank_candidate_pool_size, rerank_retrieval_trace
 from .models import (
     ContractFact,
     ContractPackage,
@@ -91,7 +92,7 @@ from .semantic import (
     SemanticReviewer,
 )
 
-PIPELINE_VERSION = "review-pipeline-0.9.0"
+PIPELINE_VERSION = "review-pipeline-0.10.0"
 REPORT_VERSION = "review-report-0.3.0"
 
 
@@ -355,8 +356,13 @@ def run_review(
         )
         trace = knowledge_index.retrieve(
             retrieval_query,
-            top_k=retrieval_top_k,
+            top_k=rerank_candidate_pool_size(retrieval_top_k),
             used_for_rule_ids=[rule.rule_id],
+        )
+        trace = rerank_retrieval_trace(
+            trace,
+            chunks_by_id,
+            top_k=retrieval_top_k,
         )
         retrieval_traces.append(trace)
         candidates = build_candidate_evidence(trace, chunks_by_id)
