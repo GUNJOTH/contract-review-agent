@@ -31,12 +31,12 @@ from .models import (
 )
 from .terminology import expand_terminology_terms, matched_terminology_terms
 
-KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.8.0"
+KNOWLEDGE_INDEX_VERSION = "lexical-knowledge-index-0.9.0"
 BM25_K1 = 1.2
 BM25_B = 0.75
 EXACT_PHRASE_BOOST = 1.0
-# 规则声明的事实锚点是候选层的高区分度信号。它只改变候选排序，事实仍
-# 必须由后续抽取器从 CandidateEvidence 中重新确认。
+# 规则声明的事实锚点是合同候选层的高区分度信号：合同正文先通过锚点资格
+# 门禁，再参与候选排序；事实仍必须由后续抽取器从 CandidateEvidence 中重新确认。
 REQUIRED_FACT_ANCHOR_BOOST = 10.0
 # 合同正文的中文单字重合度过高，容易把项目、合同等泛词扩散到无关片段。
 # 2-3 gram 保留法律短语的局部精确性；单字仍可通过 exact/required anchor
@@ -202,6 +202,31 @@ def chunk_matches_retrieval_filter(
     if retrieval_filter.rule_versions and rule_version not in retrieval_filter.rule_versions:
         return False
     return True
+
+
+def contract_chunk_has_required_fact_anchor(
+    chunk: KnowledgeChunk,
+    query: RetrievalQuery,
+    *,
+    matched_anchors: Sequence[str] | None = None,
+) -> bool:
+    """判断合同正文块是否命中查询声明的必要事实锚点。
+
+    查询已经声明必要事实时，只有语义相近但不含任何登记表达的正文块不能
+    占用确定性词法候选名额。未登记的同义表达应先进入术语目录并经过回归
+    标注，不能在这里用无条件兜底放宽事实边界；规则定义块不受此门禁影响。
+    """
+
+    if chunk.source_kind != KnowledgeSourceKind.CONTRACT:
+        return True
+    if not query.required_fact_anchors:
+        return True
+    if matched_anchors is None:
+        matched_anchors = matched_terminology_terms(
+            query.required_fact_anchors,
+            chunk.content,
+        )
+    return bool(matched_anchors)
 
 
 def _retrieval_trace_id(
@@ -463,6 +488,12 @@ class LexicalKnowledgeIndex:
                 query.required_fact_anchors,
                 chunk.content,
             )
+            if not contract_chunk_has_required_fact_anchor(
+                chunk,
+                query,
+                matched_anchors=required_fact_anchor_matches,
+            ):
+                continue
             if not matched and not exact_anchor_matches:
                 continue
             document_length = self._document_lengths[chunk.chunk_id]

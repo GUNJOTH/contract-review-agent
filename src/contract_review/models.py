@@ -553,8 +553,8 @@ class RetrievalQuery(ModelBase):
     numeric_anchors: list[str] = Field(default_factory=list)
     negation_anchors: list[str] = Field(default_factory=list)
     required_fact_types: list[str] = Field(default_factory=list)
-    # 由规则声明或已注册 checker 的事实依赖映射而来；它们只用于提升候选
-    # 召回，不能直接生成事实或审核结论。
+    # 由规则声明或已注册 checker 的事实依赖映射而来；合同正文候选须命中
+    # 其中至少一个锚点，锚点也参与排序，但不能直接生成事实或审核结论。
     required_fact_anchors: list[str] = Field(default_factory=list)
     document_kinds: list[DocumentKind] = Field(default_factory=list)
     # 查询必须在创建时绑定完整过滤范围；不允许先生成一个全库查询，

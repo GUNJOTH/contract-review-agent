@@ -26,6 +26,7 @@ from .models import (
     Rule,
     RuleBundle,
 )
+from .fact_catalog import CONTRACT_TERM_KEYWORDS
 from .knowledge import chunk_matches_retrieval_filter
 from .terminology import (
     TERMINOLOGY_NORMALIZATION_VERSION,
@@ -34,7 +35,7 @@ from .terminology import (
 )
 
 
-RETRIEVAL_QUERY_VERSION = "retrieval-query-0.5.0"
+RETRIEVAL_QUERY_VERSION = "retrieval-query-0.6.0"
 _NUMERIC_ANCHOR_PATTERN = re.compile(
     r"(?:\d[\d,]*(?:\.\d+)?\s*(?:%|元|万元|日|天|工作日|月|年)?|"
     r"[一二三四五六七八九十百千万零〇]+\s*(?:%|元|万元|日|天|工作日|月|年))"
@@ -56,15 +57,13 @@ _NEGATION_ANCHORS = (
 )
 
 # 规则只声明事实类型，不把事实抽取器的实现细节泄漏到索引适配器；这里是
-# “事实类型 → 可检索法律表达”的唯一映射。命中这些表达只会提升候选召回，
-# 不会直接生成事实或审核结论。
+# “事实类型 → 可检索法律表达”的唯一映射。合同正文命中这些表达才具备进入
+# 确定性词法候选池的资格，并会提升排序；它们不会直接生成事实或审核结论。
 _REQUIRED_FACT_ANCHORS: dict[str, tuple[str, ...]] = {
-    "contract_term:payment": ("付款", "支付", "价款", "结算"),
-    "contract_term:delivery": ("交付", "交货", "交付期限"),
-    "contract_term:acceptance": ("验收", "验收标准", "验收期限"),
-    "contract_term:renewal": ("续期", "续约", "自动续期"),
-    "contract_term:termination": ("终止", "解除", "提前终止"),
-    "contract_term:breach": ("违约", "违约责任", "赔偿", "责任"),
+    **{
+        f"contract_term:{term_kind}": keywords
+        for term_kind, keywords in CONTRACT_TERM_KEYWORDS.items()
+    },
     "contract_element:project_name": ("项目名称", "项目"),
     "contract_element:invoice_type": (
         "发票类型",

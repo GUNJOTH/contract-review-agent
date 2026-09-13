@@ -7,6 +7,7 @@ import re
 from collections.abc import Iterable, Sequence
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from .fact_catalog import CONTRACT_TERM_KEYWORDS
 from .models import (
     AttachmentReference,
     CandidateEvidence,
@@ -407,25 +408,6 @@ def extract_financial_facts_from_candidates(
     return facts
 
 
-_CONTRACT_TERM_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "payment": ("付款", "支付", "结算", "预付款", "尾款"),
-    "delivery": ("交付", "交货", "工期", "履行期限", "到货"),
-    "acceptance": ("验收", "验收标准", "验收方法"),
-    "renewal": ("续期", "续签", "自动续期", "自动续签"),
-    "termination": ("解除", "终止", "解约", "提前解除"),
-    # “违约事由”属于解除触发条件，不能仅凭该词把终止条款当成责任条款。
-    "breach": (
-        "违约责任",
-        "违约金",
-        "赔偿",
-        "责任承担",
-        "责任上限",
-        "损失",
-        "免责",
-    ),
-}
-
-
 def extract_contract_term_facts_from_candidates(
     candidates: Sequence[CandidateEvidence],
 ) -> list[ContractFact]:
@@ -442,7 +424,7 @@ def extract_contract_term_facts_from_candidates(
         compact = " ".join(candidate.content.split())
         if not compact:
             continue
-        for term_kind, keywords in _CONTRACT_TERM_KEYWORDS.items():
+        for term_kind, keywords in CONTRACT_TERM_KEYWORDS.items():
             matched_keyword = next(
                 (keyword for keyword in keywords if keyword in compact),
                 None,

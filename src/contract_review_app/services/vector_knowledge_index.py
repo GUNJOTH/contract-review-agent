@@ -26,6 +26,7 @@ from contract_review.knowledge import (
     RRF_K,
     _retrieval_trace_id,
     chunk_matches_retrieval_filter,
+    contract_chunk_has_required_fact_anchor,
 )
 from contract_review.models import (
     KnowledgeChunk,
@@ -46,7 +47,9 @@ from contract_review_app.telemetry.tracing import start_span
 VECTOR_INDEX_VERSION = "vector-knowledge-0.5.0"
 # 混合索引包含词法分支；词法候选门控或分词策略变化时必须生成新的
 # 轨迹版本，避免旧的融合结果被误认为可直接回放。
-HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.5.0"
+# 混合融合后的合同事实锚点门禁变化时必须生成新的轨迹版本，避免旧融合结果
+# 被误认为仍然满足当前的确定性正文候选资格。
+HYBRID_INDEX_VERSION = "hybrid-knowledge-rrf-0.5.1"
 MIN_VECTOR_DOCUMENT_SCORE = 0.1
 HYBRID_CANDIDATE_MULTIPLIER = 3
 
@@ -353,6 +356,18 @@ class HybridKnowledgeIndex:
                 vector_rank=vector_rank,
             )
 
+        # 词法分支在自身召回时已经执行过门禁，但向量分支可能带入只语义相近
+        # 的合同正文块。融合后必须再次执行同一门禁，否则无锚点向量块会占用
+        # 正文槽位，甚至在正文不足时通过 rule_fillers 进入最终命中。
+        eligible_fused = {
+            chunk_id: hit
+            for chunk_id, hit in fused.items()
+            if contract_chunk_has_required_fact_anchor(
+                self._chunks_by_id[chunk_id],
+                query,
+            )
+        }
+
         def ranked(items: Sequence[RetrievalHit]) -> list[RetrievalHit]:
             return sorted(items, key=lambda hit: (-hit.score, hit.chunk_id))
 
@@ -360,7 +375,7 @@ class HybridKnowledgeIndex:
         forced = ranked(
             [
                 hit
-                for hit in fused.values()
+                for hit in eligible_fused.values()
                 if (
                     self._chunks_by_id[hit.chunk_id].source_kind
                     == KnowledgeSourceKind.RULE
@@ -376,7 +391,7 @@ class HybridKnowledgeIndex:
         document_hits = ranked(
             [
                 hit
-                for hit in fused.values()
+                for hit in eligible_fused.values()
                 if hit.chunk_id not in taken
                 and self._chunks_by_id[hit.chunk_id].source_kind
                 == KnowledgeSourceKind.CONTRACT
@@ -385,7 +400,7 @@ class HybridKnowledgeIndex:
         taken.update(hit.chunk_id for hit in document_hits)
         remaining -= len(document_hits)
         rule_fillers = ranked(
-            [hit for hit in fused.values() if hit.chunk_id not in taken]
+            [hit for hit in eligible_fused.values() if hit.chunk_id not in taken]
         )[:remaining]
         hits = [*forced, *document_hits, *rule_fillers]
         return RetrievalTrace(
