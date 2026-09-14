@@ -33,8 +33,32 @@ from .models import (
 )
 
 
-RULE_CHECKER_VERSION = "rule-checkers-0.2.0"
+RULE_CHECKER_VERSION = "rule-checkers-0.3.0"
 MONEY_SCALE = Decimal("0.01")
+
+_FULL_PAYMENT_PATTERN = re.compile(
+    r"(?:"
+    r"(?:100\s*%|百分之百)\s*(?:预付|预付款|支付|付款)"
+    r"|(?:预付|预付款|支付|付款)\s*(?:100\s*%|百分之百)"
+    r"|一次性\s*全额\s*(?:预付|预付款|支付|付款)"
+    r")"
+)
+_PAYMENT_ACCEPTANCE_BINDING_PATTERN = re.compile(
+    r"(?:"
+    r"验收(?:合格|通过|完成|结果|节点)?[\s,，]*"
+    r"(?:之后|以后|后|时)?[\s,，]*(?:方可|才可|即可|才能|再)?"
+    r"(?:支付|付款|结算)"
+    r"|(?:支付|付款|结算)(?:应|须|需|必须)?[\s,，]*"
+    r"(?:以|按|依据|根据|在|于)[\s,，]*.{0,12}验收"
+    r"|以[\s,，]*.{0,8}验收.{0,8}为.{0,8}(?:支付|付款|结算)"
+    r"|验收.{0,12}(?:作为|为|决定).{0,8}(?:支付|付款|结算)"
+    r"|(?:支付|付款|结算).{0,8}(?:绑定|挂钩|关联).{0,12}验收"
+    r"|(?:支付|付款|结算).{0,8}(?:与|和).{0,8}验收"
+    r".{0,8}(?:绑定|挂钩|关联|相关)"
+    r"|验收.{0,8}(?:与|和).{0,8}(?:支付|付款|结算)"
+    r".{0,8}(?:绑定|挂钩|关联|相关)"
+    r")"
+)
 
 
 def _normalized_attachment_name(value: str) -> str:
@@ -714,6 +738,21 @@ def _term_text(facts: Sequence[ContractFact]) -> str:
     )
 
 
+def _term_segments(facts: Sequence[ContractFact]) -> tuple[str, ...]:
+    """把合同事实切成可判断关系的正文片段，避免跨条款拼接关键词。"""
+
+    segments: list[str] = []
+    for fact in facts:
+        value = str(
+            fact.normalized_value if fact.normalized_value is not None else fact.value
+        )
+        for segment in re.split(r"[\r\n。！？!?；;]+", value):
+            compact = re.sub(r"\s+", "", segment)
+            if compact:
+                segments.append(compact)
+    return tuple(dict.fromkeys(segments))
+
+
 def _missing_term_evidence(context: RuleCheckContext, label: str) -> Evidence:
     digest = hashlib.sha256(
         f"{context.package_evidence.package_id}\x1f{context.rule.rule_id}\x1f{label}".encode(
@@ -829,8 +868,8 @@ def check_payment_terms(context: RuleCheckContext) -> RuleCheckResult:
             fact_types=("contract_term:payment",),
             recommended_action="补充付款节点、付款条件和付款比例，并由财务审核。",
         )
-    text = _term_text(facts)
-    if re.search(r"(?:100\s*%|百分之百|一次性全额)\s*(?:预付|支付)", text):
+    segments = _term_segments(facts)
+    if any(_FULL_PAYMENT_PATTERN.search(segment) for segment in segments):
         return _base_result(
             context,
             status=FindingStatus.BLOCK,
@@ -843,7 +882,10 @@ def check_payment_terms(context: RuleCheckContext) -> RuleCheckResult:
                 "suggested_language": _playbook_language(context),
             },
         )
-    if "验收" in text and any(keyword in text for keyword in ("付款", "支付", "结算")):
+    if any(
+        _PAYMENT_ACCEPTANCE_BINDING_PATTERN.search(segment)
+        for segment in segments
+    ):
         return _base_result(
             context,
             status=FindingStatus.PASS,

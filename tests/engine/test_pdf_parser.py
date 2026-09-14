@@ -5,6 +5,7 @@ import fitz
 
 from contract_review.models import DocumentKind
 from contract_review.parser import ParseError, find_text_evidence, parse_pdf, sha256_file
+from tests.test_support.workspace import create_test_workspace
 
 
 def _write_text_pdf(path: Path) -> None:
@@ -19,17 +20,9 @@ def _write_text_pdf(path: Path) -> None:
 
 class PdfParserTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp_path = Path.cwd() / ".test-work"
-        self.tmp_path.mkdir(exist_ok=True)
-        self.addCleanup(self._cleanup)
-
-    def _cleanup(self) -> None:
-        for path in self.tmp_path.glob("*.pdf"):
-            path.unlink(missing_ok=True)
-        try:
-            self.tmp_path.rmdir()
-        except OSError:
-            pass
+        self._temp_dir = create_test_workspace("f-")
+        self.addCleanup(self._temp_dir.cleanup)
+        self.tmp_path = Path(self._temp_dir.name)
 
     def test_parse_pdf_retains_page_blocks_tokens_and_hash(self) -> None:
         pdf_path = self.tmp_path / "main-contract.pdf"

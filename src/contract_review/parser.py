@@ -59,6 +59,17 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _resolved_document_filename(file_path: Path, filename: str | None) -> str:
+    """保留合同包的逻辑文件名，同时阻止文件名携带目录穿透路径。"""
+
+    if filename is None:
+        return file_path.name
+    resolved = Path(filename).name
+    if not resolved:
+        raise ParseError("document filename cannot be empty")
+    return resolved
+
+
 def _normalize_text(text: str) -> str:
     normalized_lines = []
     for line in text.replace("\u00a0", " ").replace("\r\n", "\n").split("\n"):
@@ -129,15 +140,17 @@ def parse_pdf(
     package_id: str,
     document_kind: DocumentKind = DocumentKind.UNKNOWN,
     document_id: str | None = None,
+    filename: str | None = None,
     ocr_provider: OCRProvider | None = None,
 ) -> ParsedDocument:
-    """Parse a PDF while retaining source coordinates and OCR quality boundaries.
+    """解析 PDF 并保留页面坐标与 OCR 质量边界。
 
-    Digital text is extracted from the PDF text layer. A page with no text is
-    explicitly marked ``needs_ocr``; this function never invents OCR output.
+    数字文本直接来自 PDF 文本层；没有文本层的页面标记为 ``needs_ocr``，
+    不会凭空生成 OCR 内容。
     """
 
     file_path = Path(path)
+    resolved_filename = _resolved_document_filename(file_path, filename)
     source_sha256 = sha256_file(file_path)
     resolved_document_id = document_id or f"doc-{source_sha256[:16]}"
 
@@ -148,6 +161,7 @@ def parse_pdf(
 
     parsed_pages: list[ParsedPage] = []
     document_quality_flags: list[str] = []
+    ocr_attempted = False
 
     try:
         with fitz.open(str(file_path)) as pdf:
@@ -219,6 +233,7 @@ def parse_pdf(
                     )
 
                 if needs_ocr and ocr_provider is not None:
+                    ocr_attempted = True
                     try:
                         pixmap = pdf_page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                         ocr_result = OCRPageResult.model_validate(
@@ -300,12 +315,12 @@ def parse_pdf(
         else "parsed"
     )
     parser_version = PARSER_VERSION
-    if ocr_provider is not None:
+    if ocr_attempted and ocr_provider is not None:
         parser_version = f"{PARSER_VERSION}+ocr-{ocr_provider.provider_version}"
     document = Document(
         document_id=resolved_document_id,
         package_id=package_id,
-        filename=file_path.name,
+        filename=resolved_filename,
         mime_type="application/pdf",
         source_sha256=source_sha256,
         document_kind=document_kind,
@@ -340,10 +355,12 @@ def parse_docx(
     package_id: str,
     document_kind: DocumentKind = DocumentKind.UNKNOWN,
     document_id: str | None = None,
+    filename: str | None = None,
 ) -> ParsedDocument:
     """Parse DOCX XML without inventing page numbers unavailable in the source."""
 
     file_path = Path(path)
+    resolved_filename = _resolved_document_filename(file_path, filename)
     source_sha256 = sha256_file(file_path)
     resolved_document_id = document_id or f"doc-{source_sha256[:16]}"
     nodes: list[DocumentNode] = []
@@ -426,7 +443,7 @@ def parse_docx(
     document = Document(
         document_id=resolved_document_id,
         package_id=package_id,
-        filename=file_path.name,
+        filename=resolved_filename,
         mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         source_sha256=source_sha256,
         document_kind=document_kind,
@@ -521,10 +538,12 @@ def parse_xlsx(
     package_id: str,
     document_kind: DocumentKind = DocumentKind.UNKNOWN,
     document_id: str | None = None,
+    filename: str | None = None,
 ) -> ParsedDocument:
     """Parse XLSX cell values without evaluating formulas or inventing display values."""
 
     file_path = Path(path)
+    resolved_filename = _resolved_document_filename(file_path, filename)
     source_sha256 = sha256_file(file_path)
     resolved_document_id = document_id or f"doc-{source_sha256[:16]}"
     nodes: list[DocumentNode] = []
@@ -580,7 +599,7 @@ def parse_xlsx(
     document = Document(
         document_id=resolved_document_id,
         package_id=package_id,
-        filename=file_path.name,
+        filename=resolved_filename,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         source_sha256=source_sha256,
         document_kind=document_kind,
@@ -599,6 +618,7 @@ def parse_document(
     package_id: str,
     document_kind: DocumentKind = DocumentKind.UNKNOWN,
     document_id: str | None = None,
+    filename: str | None = None,
     ocr_provider: OCRProvider | None = None,
 ) -> ParsedDocument:
     """Dispatch to a format adapter while keeping one parsed-document contract."""
@@ -610,6 +630,7 @@ def parse_document(
             package_id=package_id,
             document_kind=document_kind,
             document_id=document_id,
+            filename=filename,
             ocr_provider=ocr_provider,
         )
     if suffix == ".docx":
@@ -618,6 +639,7 @@ def parse_document(
             package_id=package_id,
             document_kind=document_kind,
             document_id=document_id,
+            filename=filename,
         )
     if suffix == ".xlsx":
         return parse_xlsx(
@@ -625,6 +647,7 @@ def parse_document(
             package_id=package_id,
             document_kind=document_kind,
             document_id=document_id,
+            filename=filename,
         )
     raise ParseError(f"unsupported document format: {Path(path).suffix or '<none>'}")
 

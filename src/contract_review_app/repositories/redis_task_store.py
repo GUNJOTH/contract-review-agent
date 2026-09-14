@@ -31,6 +31,8 @@ TASK_PURGE_KEY = "contract:task:purge"
 TASK_DLQ_KEY = "contract:task:dlq"
 TASK_DLQ_INDEX_KEY = "contract:task:dlq:index"
 TASK_LOCK_KEY = "contract:task:lock:{task_id}"
+TASK_LEASE_FENCE_KEY = "contract:task:lease-fence:{task_id}"
+TASK_LEASE_EPOCH_KEY = "contract:task:lease-epoch:{task_id}"
 TASK_IDEMPOTENCY_KEY = "contract:task:idempotency:{key_hash}"
 TASK_EVENTS_KEY = "contract:task:events:{task_id}"
 
@@ -73,6 +75,88 @@ redis.call('LTRIM', KEYS[5], -tonumber(ARGV[7]), -1)
 return {2, ARGV[2]}
 """
 
+# 锁只负责租约存活，fence key 负责记录当前世代；锁过期后旧 worker
+# 仍然可能继续运行，因此所有 worker 写入都必须同时匹配两者。
+_ACQUIRE_LEASE_SCRIPT = """
+if redis.call('EXISTS', KEYS[4]) == 0 then
+  return 0
+end
+if redis.call('SISMEMBER', KEYS[5], ARGV[2]) == 0 then
+  return 0
+end
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+local token = redis.call('INCR', KEYS[2])
+redis.call('SET', KEYS[3], token)
+redis.call('SET', KEYS[1], token, 'EX', ARGV[1])
+return token
+"""
+
+# 状态、事件、心跳和 running 索引必须在同一次脚本中更新；否则旧 worker
+# 可能在租约切换的间隙写入部分状态，或清掉新 worker 的运行元数据。
+_LEASE_WRITE_SCRIPT = """
+if redis.call('GET', KEYS[2]) ~= ARGV[1] then
+  return 0
+end
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+local current_lock = redis.call('GET', KEYS[3])
+if ARGV[12] == '1' then
+  -- reconcile 只允许在锁已过期后推进 fencing 世代，避免误抢仍存活的 worker。
+  if current_lock then
+    return 0
+  end
+  if redis.call('SISMEMBER', KEYS[7], ARGV[3]) == 0 then
+    return 0
+  end
+  local next_token = redis.call('INCR', KEYS[4])
+  redis.call('SET', KEYS[2], next_token)
+  redis.call('DEL', KEYS[5])
+else
+  if current_lock ~= ARGV[1] then
+    return 0
+  end
+end
+
+local ttl = redis.call('PTTL', KEYS[1])
+if ARGV[8] == '1' and ttl > 0 then
+  redis.call('PSETEX', KEYS[1], ttl, ARGV[2])
+else
+  redis.call('SET', KEYS[1], ARGV[2])
+end
+if ARGV[4] == '1' then
+  redis.call('SREM', KEYS[8], ARGV[3])
+end
+redis.call('SADD', KEYS[9], ARGV[3])
+if ARGV[5] == '1' then
+  redis.call('SADD', KEYS[7], ARGV[3])
+else
+  redis.call('SREM', KEYS[7], ARGV[3])
+end
+if ARGV[6] ~= '' then
+  redis.call('RPUSH', KEYS[6], ARGV[6])
+  redis.call('LTRIM', KEYS[6], -tonumber(ARGV[7]), -1)
+end
+if ARGV[9] == '1' and ARGV[12] == '0' then
+  redis.call('SET', KEYS[5], ARGV[10], 'EX', ARGV[11])
+end
+return 1
+"""
+
+_RELEASE_LEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if redis.call('GET', KEYS[2]) ~= ARGV[1] then
+  return 0
+end
+redis.call('DEL', KEYS[2], KEYS[3])
+redis.call('SREM', KEYS[4], ARGV[2])
+return 1
+"""
+
 
 class RedisTaskStore:
     def __init__(self, client: "redis.Redis | None" = None):
@@ -93,6 +177,14 @@ class RedisTaskStore:
     @staticmethod
     def _lock_key(task_id: str) -> str:
         return TASK_LOCK_KEY.format(task_id=task_id)
+
+    @staticmethod
+    def _lease_fence_key(task_id: str) -> str:
+        return TASK_LEASE_FENCE_KEY.format(task_id=task_id)
+
+    @staticmethod
+    def _lease_epoch_key(task_id: str) -> str:
+        return TASK_LEASE_EPOCH_KEY.format(task_id=task_id)
 
     @staticmethod
     def _events_key(task_id: str) -> str:
@@ -265,7 +357,7 @@ class RedisTaskStore:
         task.input_size = input_size
         task.input_filename = input_filename
         task.input_content_type = input_content_type
-        self._write_task(task, keep_ttl=True)
+        self._write_task_without_lease(task, keep_ttl=True)
         return task
 
     def create(self, task: AsyncTaskRecord) -> None:
@@ -328,6 +420,24 @@ class RedisTaskStore:
         client = self._get_client()
         return client.scard(self._task_status_key(AsyncTaskStatus.PENDING.value))
 
+    def acquire_lease(self, task_id: str) -> int | None:
+        """为待处理任务原子领取带 fencing token 的短租约。"""
+
+        client = self._get_client()
+        result = client.eval(
+            _ACQUIRE_LEASE_SCRIPT,
+            5,
+            self._lock_key(task_id),
+            self._lease_epoch_key(task_id),
+            self._lease_fence_key(task_id),
+            self._task_key(task_id),
+            self._task_status_key(AsyncTaskStatus.PENDING.value),
+            max(int(settings.TASK_HEARTBEAT_TIMEOUT_SECONDS), 1),
+            task_id,
+        )
+        token = int(result or 0)
+        return token if token > 0 else None
+
     def count_pending_by_queue(self, queue_name: str) -> int:
         client = self._get_client()
         count = 0
@@ -340,11 +450,19 @@ class RedisTaskStore:
         return count
 
     def mark_running(
-        self, task_id: str, *, worker_id: str, started_at: str
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        started_at: str,
+        lease_token: int,
     ) -> AsyncTaskRecord | None:
-        client = self._get_client()
+        if lease_token <= 0:
+            return None
         task = self.get(task_id)
-        if task is None:
+        if task is None or task.status != AsyncTaskStatus.PENDING:
+            return None
+        if task.stage != AsyncTaskStage.QUEUED:
             return None
         previous_stage = task.stage.value
         task.status = AsyncTaskStatus.RUNNING
@@ -352,7 +470,8 @@ class RedisTaskStore:
         task.worker_id = worker_id
         task.started_at = started_at
         task.heartbeat_at = started_at
-        self._write_task(
+        task.lease_token = lease_token
+        written = self._write_task(
             task,
             previous_status=AsyncTaskStatus.PENDING.value,
             event=self._event(
@@ -363,30 +482,49 @@ class RedisTaskStore:
                 reason="任务已由 worker 领取并开始校验输入。",
                 actor=worker_id,
             ),
+            lease_token=lease_token,
+            heartbeat_at=started_at,
         )
-        client.sadd(TASK_RUNNING_KEY, task_id)
-        self._set_heartbeat(task_id, started_at)
-        return task
+        return task if written else None
 
-    def heartbeat(self, task_id: str, *, heartbeat_at: str) -> AsyncTaskRecord | None:
+    def heartbeat(
+        self, task_id: str, *, lease_token: int, heartbeat_at: str
+    ) -> AsyncTaskRecord | None:
+        if lease_token <= 0:
+            return None
         task = self.get(task_id)
-        if task is None:
+        if (
+            task is None
+            or task.status != AsyncTaskStatus.RUNNING
+            or task.lease_token != lease_token
+        ):
             return None
         task.heartbeat_at = heartbeat_at
-        self._write_task(task, keep_ttl=True)
-        self._set_heartbeat(task_id, heartbeat_at)
-        return task
+        written = self._write_task(
+            task,
+            keep_ttl=True,
+            lease_token=lease_token,
+            heartbeat_at=heartbeat_at,
+        )
+        return task if written else None
 
     def update_progress(
         self,
         task_id: str,
         *,
+        lease_token: int,
         stage: str | None = None,
         progress: int | None = None,
         heartbeat_at: str | None = None,
     ) -> AsyncTaskRecord | None:
+        if lease_token <= 0:
+            return None
         task = self.get(task_id)
-        if task is None:
+        if (
+            task is None
+            or task.status != AsyncTaskStatus.RUNNING
+            or task.lease_token != lease_token
+        ):
             return None
         previous_stage = task.stage.value
         if stage is not None:
@@ -395,7 +533,6 @@ class RedisTaskStore:
             task.progress = progress
         if heartbeat_at is not None:
             task.heartbeat_at = heartbeat_at
-            self._set_heartbeat(task_id, heartbeat_at)
         event = None
         if task.stage.value != previous_stage:
             event = self._event(
@@ -405,19 +542,32 @@ class RedisTaskStore:
                 action="update_stage",
                 reason="任务处理阶段已更新。",
             )
-        self._write_task(task, keep_ttl=True, event=event)
-        return task
+        written = self._write_task(
+            task,
+            keep_ttl=True,
+            event=event,
+            lease_token=lease_token,
+            heartbeat_at=heartbeat_at,
+        )
+        return task if written else None
 
     def mark_succeeded(
         self,
         task_id: str,
         *,
+        lease_token: int,
         result: dict,
         finished_at: str,
         expires_at: str,
     ) -> AsyncTaskRecord | None:
+        if lease_token <= 0:
+            return None
         task = self.get(task_id)
-        if task is None:
+        if (
+            task is None
+            or task.status != AsyncTaskStatus.RUNNING
+            or task.lease_token != lease_token
+        ):
             return None
         previous = task.status.value
         previous_stage = task.stage.value
@@ -427,7 +577,7 @@ class RedisTaskStore:
         task.progress = 100
         task.finished_at = finished_at
         task.expires_at = expires_at
-        self._write_task(
+        written = self._write_task(
             task,
             previous_status=previous,
             event=self._event(
@@ -437,8 +587,11 @@ class RedisTaskStore:
                 action="mark_succeeded",
                 reason="任务结果已持久化，处理完成。",
             ),
+            lease_token=lease_token,
         )
-        self._cleanup_runtime_state(task_id)
+        if not written:
+            return None
+        self.release_lease(task_id, lease_token=lease_token)
         # 统一走过期清理
         self._schedule_expiry(task_id, expires_at=expires_at)
         return task
@@ -447,14 +600,22 @@ class RedisTaskStore:
         self,
         task_id: str,
         *,
+        lease_token: int,
         error_code: str,
         error_message: str,
         stage: str,
         finished_at: str,
         expires_at: str,
+        recovery: bool = False,
     ) -> AsyncTaskRecord | None:
+        if lease_token <= 0:
+            return None
         task = self.get(task_id)
-        if task is None:
+        if (
+            task is None
+            or task.status != AsyncTaskStatus.RUNNING
+            or task.lease_token != lease_token
+        ):
             return None
         previous = task.status.value
         previous_stage = task.stage.value
@@ -464,7 +625,7 @@ class RedisTaskStore:
         task.error_message = error_message
         task.finished_at = finished_at
         task.expires_at = expires_at
-        self._write_task(
+        written = self._write_task(
             task,
             previous_status=previous,
             event=self._event(
@@ -474,17 +635,74 @@ class RedisTaskStore:
                 action="mark_failed",
                 reason="任务处理失败，错误信息已登记。",
             ),
+            lease_token=lease_token,
+            recovery=recovery,
         )
-        self._cleanup_runtime_state(task_id)
+        if not written:
+            return None
+        self.release_lease(task_id, lease_token=lease_token)
         # 统一走过期清理
         self._schedule_expiry(task_id, expires_at=expires_at)
         return task
 
-    def requeue(
-        self, task_id: str, *, heartbeat_at: str | None = None
+    def mark_pending_failed(
+        self,
+        task_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        stage: str,
+        finished_at: str,
+        expires_at: str,
     ) -> AsyncTaskRecord | None:
+        """关闭尚未领取租约的准入任务，供入队/输入失败路径使用。"""
+
         task = self.get(task_id)
-        if task is None:
+        if task is None or task.status != AsyncTaskStatus.PENDING:
+            return None
+        if task.stage != AsyncTaskStage.QUEUED:
+            return None
+        if self._get_client().exists(self._lock_key(task_id)):
+            return None
+        previous = task.status.value
+        previous_stage = task.stage.value
+        task.status = AsyncTaskStatus.FAILED
+        task.stage = AsyncTaskStage(stage)
+        task.error_code = error_code
+        task.error_message = error_message
+        task.finished_at = finished_at
+        task.expires_at = expires_at
+        written = self._write_task_without_lease(
+            task,
+            previous_status=previous,
+            event=self._event(
+                task,
+                from_stage=previous_stage,
+                to_stage=task.stage.value,
+                action="mark_failed",
+                reason="任务尚未领取租约，准入后的基础设施操作失败。",
+            ),
+        )
+        if not written:
+            return None
+        self._schedule_expiry(task_id, expires_at=expires_at)
+        return task
+
+    def requeue(
+        self,
+        task_id: str,
+        *,
+        lease_token: int,
+        heartbeat_at: str | None = None,
+    ) -> AsyncTaskRecord | None:
+        if lease_token <= 0:
+            return None
+        task = self.get(task_id)
+        if (
+            task is None
+            or task.status != AsyncTaskStatus.RUNNING
+            or task.lease_token != lease_token
+        ):
             return None
         previous = task.status.value
         previous_stage = task.stage.value
@@ -493,8 +711,9 @@ class RedisTaskStore:
         task.progress = 0
         task.worker_id = None
         task.heartbeat_at = heartbeat_at
+        task.lease_token = 0
         task.retry_count += 1
-        self._write_task(
+        written = self._write_task(
             task,
             previous_status=previous,
             event=self._event(
@@ -504,8 +723,11 @@ class RedisTaskStore:
                 action="requeue",
                 reason="任务将按重试策略重新排队。",
             ),
+            lease_token=lease_token,
+            recovery=True,
         )
-        self._cleanup_runtime_state(task_id)
+        if not written:
+            return None
         self._clear_lifecycle(task_id)
         return task
 
@@ -529,7 +751,11 @@ class RedisTaskStore:
             task = self.get(task_id)
             if task is None:
                 continue
-            if not task.heartbeat_at or task.heartbeat_at < heartbeat_before:
+            if (
+                task.status == AsyncTaskStatus.RUNNING
+                and task.lease_token > 0
+                and (not task.heartbeat_at or task.heartbeat_at < heartbeat_before)
+            ):
                 tasks.append(task)
         return tasks
 
@@ -542,7 +768,7 @@ class RedisTaskStore:
         task.status = AsyncTaskStatus.EXPIRED
         task.finished_at = task.finished_at or expired_at
         task.expires_at = expired_at
-        self._write_task(
+        self._write_task_without_lease(
             task,
             previous_status=previous,
             event=self._event(
@@ -624,6 +850,8 @@ class RedisTaskStore:
                 pipe.srem(self._task_status_key(status.value), task_id)
             pipe.delete(self._heartbeat_key(task_id))
             pipe.delete(self._lock_key(task_id))
+            pipe.delete(self._lease_fence_key(task_id))
+            pipe.delete(self._lease_epoch_key(task_id))
             pipe.delete(self._events_key(task_id))
         pipe.execute()
         return len(stale_ids)
@@ -635,6 +863,8 @@ class RedisTaskStore:
         pipe.delete(self._task_key(task_id))
         pipe.delete(self._heartbeat_key(task_id))
         pipe.delete(self._lock_key(task_id))
+        pipe.delete(self._lease_fence_key(task_id))
+        pipe.delete(self._lease_epoch_key(task_id))
         pipe.delete(self._events_key(task_id))
         if task is not None and task.idempotency_key:
             pipe.delete(self._idempotency_key(task.idempotency_key))
@@ -646,32 +876,26 @@ class RedisTaskStore:
             pipe.srem(self._task_status_key(status.value), task_id)
         pipe.execute()
 
-    def acquire_lock(self, task_id: str) -> bool:
-        client = self._get_client()
-        return bool(
-            client.set(
-                self._lock_key(task_id),
-                "1",
-                nx=True,
-                ex=settings.TASK_HEARTBEAT_TIMEOUT_SECONDS,
-            )
-        )
+    def release_lease(self, task_id: str, *, lease_token: int) -> bool:
+        """只释放仍由同一 fencing token 持有的租约。"""
 
-    def release_lock(self, task_id: str) -> None:
-        client = self._get_client()
-        client.delete(self._lock_key(task_id))
+        if lease_token <= 0:
+            return False
+        result = self._get_client().eval(
+            _RELEASE_LEASE_SCRIPT,
+            4,
+            self._lease_fence_key(task_id),
+            self._lock_key(task_id),
+            self._heartbeat_key(task_id),
+            TASK_RUNNING_KEY,
+            lease_token,
+            task_id,
+        )
+        return bool(int(result or 0))
 
     def close(self) -> None:
         client = self._get_client()
         client.close()
-
-    def _cleanup_runtime_state(self, task_id: str) -> None:
-        client = self._get_client()
-        pipe = client.pipeline()
-        pipe.srem(TASK_RUNNING_KEY, task_id)
-        pipe.delete(self._heartbeat_key(task_id))
-        pipe.delete(self._lock_key(task_id))
-        pipe.execute()
 
     def _clear_lifecycle(self, task_id: str) -> None:
         client = self._get_client()
@@ -697,10 +921,57 @@ class RedisTaskStore:
         self,
         task: AsyncTaskRecord,
         *,
+        lease_token: int,
         previous_status: str | None = None,
         keep_ttl: bool = False,
         event: StageEvent | None = None,
-    ) -> None:
+        heartbeat_at: str | None = None,
+        recovery: bool = False,
+    ) -> bool:
+        """使用 fencing token 原子提交 worker 或恢复器的状态变更。"""
+
+        if lease_token <= 0:
+            return False
+        client = self._get_client()
+        if event is not None:
+            task.stage_events = [*task.stage_events, event]
+        result = client.eval(
+            _LEASE_WRITE_SCRIPT,
+            9,
+            self._task_key(task.task_id),
+            self._lease_fence_key(task.task_id),
+            self._lock_key(task.task_id),
+            self._lease_epoch_key(task.task_id),
+            self._heartbeat_key(task.task_id),
+            self._events_key(task.task_id),
+            TASK_RUNNING_KEY,
+            self._task_status_key(previous_status or task.status.value),
+            self._task_status_key(task.status.value),
+            lease_token,
+            self._dump(task),
+            task.task_id,
+            "1" if previous_status is not None else "0",
+            "1" if task.status == AsyncTaskStatus.RUNNING else "0",
+            event.model_dump_json() if event is not None else "",
+            max(int(settings.TASK_STAGE_EVENT_LIMIT), 1),
+            "1" if keep_ttl else "0",
+            "1" if heartbeat_at is not None else "0",
+            heartbeat_at or "",
+            max(int(settings.TASK_HEARTBEAT_TIMEOUT_SECONDS), 1),
+            "1" if recovery else "0",
+        )
+        return bool(int(result or 0))
+
+    def _write_task_without_lease(
+        self,
+        task: AsyncTaskRecord,
+        *,
+        previous_status: str | None = None,
+        keep_ttl: bool = False,
+        event: StageEvent | None = None,
+    ) -> bool:
+        """提交尚未领取租约的准入/清理状态，避免伪造 worker 写入。"""
+
         client = self._get_client()
         if event is not None:
             task.stage_events = [*task.stage_events, event]
@@ -712,14 +983,7 @@ class RedisTaskStore:
         if event is not None:
             self._event_store().append_to_pipeline(pipe, event)
         pipe.execute()
-
-    def _set_heartbeat(self, task_id: str, heartbeat_at: str) -> None:
-        client = self._get_client()
-        client.set(
-            self._heartbeat_key(task_id),
-            heartbeat_at,
-            ex=settings.TASK_HEARTBEAT_TIMEOUT_SECONDS,
-        )
+        return True
 
     def _get_client(self) -> "redis.Redis":
         if self._client is not None:

@@ -5,6 +5,7 @@ import pytest
 
 from contract_review import parse_contract_package
 from contract_review.models import EvidenceType, ReviewContext
+from contract_review.pipeline import replay_review
 
 from contract_review_app.config import settings
 from contract_review_app.services.review_service import run_contract_review
@@ -104,6 +105,40 @@ def test_contract_review_includes_seal_evidence_and_visual_finding(monkeypatch):
     assert seal_evidence[0].evidence_id in visual_findings[0].evidence_ids
     assert "印章" in visual_findings[0].reason
     assert visual_findings[0].status.value == "UNKNOWN"
+
+
+def test_api_review_with_text_pdf_replays_from_original_file_and_evidence_snapshot(
+    monkeypatch, tmp_path
+):
+    """API 结果应保留逻辑文件名、跳过未使用的 OCR 版本并可离线回放。"""
+
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
+    monkeypatch.setattr(
+        "contract_review_app.services.seal_evidence.ocr_gateway_client",
+        FakeOCRClient(),
+    )
+    content = _make_contract_pdf()
+    original_path = tmp_path / "api-upload-copy.pdf"
+    original_path.write_bytes(content)
+
+    result = run_contract_review(
+        [("合同主文.pdf", content)],
+        package_id="pkg-seal-replay-001",
+        review_context=ReviewContext(contract_type="软件开发/转让服务"),
+    )
+
+    assert result.documents[0].filename == "合同主文.pdf"
+    assert result.documents[0].parser_version == "pdf-text-0.1.0"
+    assert result.run.configuration["extra_evidence_ids"]
+
+    replayed = replay_review(
+        result,
+        [original_path],
+        rule_bundle=result.rule_bundle,
+    )
+
+    assert replayed.run.result_fingerprint == result.run.result_fingerprint
+    assert replayed.documents[0].filename == result.documents[0].filename
 
 
 def test_seal_detection_skipped_when_clients_unavailable(monkeypatch, tmp_path):

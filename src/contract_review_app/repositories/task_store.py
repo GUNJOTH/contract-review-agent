@@ -58,17 +58,23 @@ class TaskStore(Protocol):
     def count_pending(self) -> int: ...
 
     def mark_running(
-        self, task_id: str, *, worker_id: str, started_at: str
+        self,
+        task_id: str,
+        *,
+        worker_id: str,
+        started_at: str,
+        lease_token: int,
     ) -> AsyncTaskRecord | None: ...
 
     def heartbeat(
-        self, task_id: str, *, heartbeat_at: str
+        self, task_id: str, *, lease_token: int, heartbeat_at: str
     ) -> AsyncTaskRecord | None: ...
 
     def update_progress(
         self,
         task_id: str,
         *,
+        lease_token: int,
         stage: str | None = None,
         progress: int | None = None,
         heartbeat_at: str | None = None,
@@ -78,6 +84,7 @@ class TaskStore(Protocol):
         self,
         task_id: str,
         *,
+        lease_token: int,
         result: dict,
         finished_at: str,
         expires_at: str,
@@ -87,15 +94,32 @@ class TaskStore(Protocol):
         self,
         task_id: str,
         *,
+        lease_token: int,
         error_code: str,
         error_message: str,
         stage: str,
         finished_at: str,
         expires_at: str,
+        recovery: bool = False,
     ) -> AsyncTaskRecord | None: ...
 
     def requeue(
-        self, task_id: str, *, heartbeat_at: str | None = None
+        self,
+        task_id: str,
+        *,
+        lease_token: int,
+        heartbeat_at: str | None = None,
+    ) -> AsyncTaskRecord | None: ...
+
+    def mark_pending_failed(
+        self,
+        task_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        stage: str,
+        finished_at: str,
+        expires_at: str,
     ) -> AsyncTaskRecord | None: ...
 
     def push_dead_letter(self, payload: dict) -> None: ...

@@ -42,17 +42,28 @@ class SealEvidenceDetector:
         self,
         paths: Sequence[str | Path],
         documents: Sequence[Document],
+        document_filenames: Sequence[str] | None = None,
     ) -> list[Evidence]:
         """对 PDF 逐页检测印章并生成证据；识别服务不可用时返回空列表。"""
+
+        if document_filenames is not None and len(document_filenames) != len(paths):
+            raise ValueError(
+                "document_filenames must contain one logical filename per input path"
+            )
         if not settings.CONTRACT_SEAL_DETECTION_ENABLED:
             return []
         by_name = {document.filename: document for document in documents}
         evidence: list[Evidence] = []
-        for raw_path in paths:
+        for index, raw_path in enumerate(paths):
             path = Path(raw_path)
             if path.suffix.lower() != ".pdf":
                 continue
-            document = by_name.get(path.name)
+            logical_filename = (
+                document_filenames[index]
+                if document_filenames is not None
+                else path.name
+            )
+            document = by_name.get(logical_filename) or by_name.get(path.name)
             if document is None:
                 continue
             evidence.extend(self._detect_pdf(path, document))

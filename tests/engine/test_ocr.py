@@ -8,18 +8,19 @@ from contract_review.ocr import OCRPageResult, OCRTextBlock, StaticOCRProvider
 from contract_review.parser import find_text_evidence, parse_pdf
 from contract_review.playbook import publish_playbook_bundle
 from contract_review.pipeline import replay_review, run_review
+from tests.test_support.workspace import create_test_workspace
 
 
 class OcrParserTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.work_path = Path.cwd() / ".test-work"
-        self.work_path.mkdir(exist_ok=True)
+        self._temp_dir = create_test_workspace("o-")
+        self.addCleanup(self._temp_dir.cleanup)
+        self.work_path = Path(self._temp_dir.name)
         self.pdf_path = self.work_path / "scan-like.pdf"
         pdf = fitz.open()
         pdf.new_page(width=600, height=800)
         pdf.save(str(self.pdf_path))
         pdf.close()
-        self.addCleanup(lambda: self.pdf_path.unlink(missing_ok=True))
 
     def test_ocr_provider_turns_scanned_page_into_coordinate_evidence(self) -> None:
         provider = StaticOCRProvider(

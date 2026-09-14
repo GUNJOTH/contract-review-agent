@@ -4,6 +4,7 @@ from zipfile import ZipFile
 
 from contract_review.models import BlockType
 from contract_review.parser import find_text_evidence, parse_docx
+from tests.test_support.workspace import create_test_workspace
 
 
 _DOCX_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
@@ -22,12 +23,12 @@ _DOCX_XML = """<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
 
 class DocxParserTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.work_path = Path.cwd() / ".test-work"
-        self.work_path.mkdir(exist_ok=True)
+        self._temp_dir = create_test_workspace("d-")
+        self.addCleanup(self._temp_dir.cleanup)
+        self.work_path = Path(self._temp_dir.name)
         self.docx_path = self.work_path / "contract.docx"
         with ZipFile(self.docx_path, "w") as archive:
             archive.writestr("word/document.xml", _DOCX_XML)
-        self.addCleanup(lambda: self.docx_path.unlink(missing_ok=True))
 
     def test_docx_preserves_paragraph_and_table_cell_locators(self) -> None:
         parsed = parse_docx(self.docx_path, package_id="package-docx")

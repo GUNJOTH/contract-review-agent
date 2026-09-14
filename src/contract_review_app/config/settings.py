@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     CONTRACT_PII_SCANNER_VERSION: str = "pii-scanner-0.1.0"
     CONTRACT_REVIEW_CACHE_ENABLED: bool = True
     CONTRACT_REVIEW_CACHE_DIR: str = "runtime/review_cache"
+    CONTRACT_REVIEW_RESULT_STORE_DIR: str = "runtime/review_results"
 
     # OpenTelemetry 为可选增强，不安装 SDK 或未开启时保持零侵入 no-op。
     OTEL_ENABLED: bool = False

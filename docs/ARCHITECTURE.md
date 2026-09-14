@@ -93,12 +93,13 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 
 ### 应用服务：`src/contract_review_app/services`
 
-- `review_service.py`：组合文件指纹、规则快照、解析、印章证据、语义客户端和缓存。
+- `review_service.py`：组合文件指纹、规则快照、解析、印章证据、语义客户端、缓存和服务端权威结果登记。
 - `services/review_context.py`：只负责 API/任务输入的上下文解析与别名归一化，不参与规则判断。
 - `models/review_schemas.py`：定义同步审查和修订提案的 HTTP 响应 DTO，不把领域模型直接作为不受约束的字典返回。
 - `elements.py`：从解析快照生成带证据的标准合同要素 `ContractFact`，要素结果与审查结果共用同一个事实集合；不创建独立的抽取结果。
 - `task_service.py`：负责上传落盘、任务状态和 Celery 入队；同步 Redis/文件适配器在异步 API 中通过线程池调用。
-- `result_cache.py`：以输入/规则/模型/提示词指纹为键的可选缓存，使用同目录临时文件加原子替换。
+- `result_cache.py`：以输入/规则/模型/提示词指纹为键的可选缓存，使用同目录临时文件加原子替换；缓存不是后置状态的权威来源。
+- `review_result_store.py`：按 `run_id` 保存并回读服务器当前 `ReviewResult`，后置接口只能基于该快照追加结果。
 - `/contract-review/rule-bundle` 直接返回正式 `RuleBundle`；标准合同要素只作为 `ReviewResult.facts` 的事实类型提供，不再暴露独立目录或抽取接口。
 
 ### 适配层与运行时
@@ -114,16 +115,16 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 3. 解析质量门、证据索引、条款关系构建、知识检索和规则执行产生 `ReviewResult`。
 4. 对每条适用规则先构造 `RetrievalQuery`，索引返回 `RetrievalTrace`，再生成 `CandidateEvidence` 并执行 `EvidenceAssessment`；确定性事实抽取、Playbook/规则检查器只消费 `ACCEPT` 候选，语义请求可以查看未决候选但必须引用合同候选证据。
 5. 如配置了模型，再调用语义客户端；模型请求/响应指纹、规则 ID 和证据 ID 在引擎边界复核。
-6. HTTP 层直接返回 `ReviewResult`；缓存命中不跳过证据校验，也不生成第二套风险清单。
-7. 返回报告并停在 `HUMAN_REVIEW`；人工决定、版本比对和最终确认继续以 `ReviewResult` 为输入，形成可回放的后置附件、`ReviewDecision` 和 `FINALIZED` 状态。
+6. 结果通过完整审计后登记到服务端权威结果存储，再由 HTTP 层返回；缓存命中仍需回读该存储，缓存不承担后置状态所有权。
+7. 返回报告并停在 `HUMAN_REVIEW`；人工决定、版本比对和最终确认先按 `run_id` 校验客户端版本指纹，再基于服务器快照追加可回放的后置附件、`ReviewDecision` 和 `FINALIZED` 状态。
 
 ### 异步任务
 
 1. 先校验任务类型和输入元数据，再由 Redis Lua 原子完成幂等准入、待处理上限检查和首条事件登记；此时不写合同正文。
 2. 只有原子准入胜者才把上传文件写入任务目录和 `input.json` manifest，再绑定真实输入元数据并投递到 `contract.heavy` 队列；重复请求直接回放原任务。
-3. worker 取得任务锁，按阶段更新心跳/进度，调用同一应用服务和领域引擎。
+3. worker 原子领取带单调 fencing token 的短租约；心跳、阶段进度和终态写入必须同时匹配当前 token 与未过期锁，调用同一应用服务和领域引擎。
 4. 成功结果写入 Redis 并进入 TTL；异常按错误码、重试次数和死信策略处理。
-5. reconcile/cleanup 负责僵尸任务、过期结果和残留输入。
+5. reconcile 只在旧租约已过期且 token 未发生变化时原子推进 fencing 世代并重排队/失败收口；cleanup 负责过期结果和残留输入。
 
 ## 4. 本轮已落地的架构改进
 

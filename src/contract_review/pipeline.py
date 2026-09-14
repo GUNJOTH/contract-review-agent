@@ -56,6 +56,7 @@ from .models import (
     DocumentKind,
     Evidence,
     EvidenceAssessment,
+    EvidenceType,
     Finding,
     FindingStatus,
     KnowledgeChunk,
@@ -71,7 +72,7 @@ from .models import (
     utc_now,
 )
 from .ocr import OCRProvider
-from .parser import parse_document
+from .parser import parse_document, sha256_file
 from .playbook import PLAYBOOK_ENGINE_VERSION
 from .replay import build_result_fingerprint
 from .replay import verify_replay_inputs
@@ -144,26 +145,38 @@ def parse_contract_package(
     package_id: str,
     document_kinds: Mapping[str, DocumentKind] | None = None,
     document_precedence: Sequence[str] = (),
+    document_filenames: Sequence[str] | None = None,
     ocr_provider: OCRProvider | None = None,
 ) -> tuple[ContractPackage, list[ParsedDocument]]:
     """Parse all package files and create a deterministic manifest."""
 
     if not paths:
         raise ReviewPipelineError("a contract package must contain at least one file")
+    if document_filenames is not None and len(document_filenames) != len(paths):
+        raise ReviewPipelineError(
+            "document_filenames must contain one logical filename per input path"
+        )
     parsed_documents: list[ParsedDocument] = []
     seen_documents: set[str] = set()
-    for raw_path in paths:
+    for index, raw_path in enumerate(paths):
         path = Path(raw_path)
-        kind = (document_kinds or {}).get(path.name)
+        logical_filename = (
+            Path(document_filenames[index]).name
+            if document_filenames is not None
+            else path.name
+        )
+        if not logical_filename:
+            raise ReviewPipelineError("document filename cannot be empty")
+        kind = (document_kinds or {}).get(logical_filename)
         if kind is None and document_kinds:
             suffix_matches = [
                 candidate_kind
                 for filename, candidate_kind in document_kinds.items()
-                if path.name.endswith(str(filename))
+                if logical_filename.endswith(str(filename))
             ]
             if len(suffix_matches) > 1:
                 raise ReviewPipelineError(
-                    f"文件 {path.name} 匹配多个 DocumentKinds 映射，必须使用完整文件名"
+                    f"文件 {logical_filename} 匹配多个 DocumentKinds 映射，必须使用完整文件名"
                 )
             kind = suffix_matches[0] if suffix_matches else None
         kind = kind or DocumentKind.UNKNOWN
@@ -171,6 +184,7 @@ def parse_contract_package(
             path,
             package_id=package_id,
             document_kind=kind,
+            filename=logical_filename,
             ocr_provider=ocr_provider,
         )
         if parsed.document.document_id in seen_documents:
@@ -251,6 +265,7 @@ def run_review(
     contract_type_fact: ContractFact | None = None,
     contract_type_evidence: Sequence[Evidence] = (),
     document_kinds: Mapping[str, DocumentKind] | None = None,
+    document_filenames: Sequence[str] | None = None,
     document_precedence: Sequence[str] = (),
     ocr_provider: OCRProvider | None = None,
     model_version: str | None = None,
@@ -285,6 +300,7 @@ def run_review(
         paths,
         package_id=package_id,
         document_kinds=document_kinds,
+        document_filenames=document_filenames,
         document_precedence=document_precedence,
         ocr_provider=ocr_provider,
     )
@@ -432,6 +448,10 @@ def run_review(
         if semantic_request is not None
         else None,
     }
+    if extra_evidence:
+        run_configuration["extra_evidence_ids"] = [
+            item.evidence_id for item in extra_evidence
+        ]
     run = create_review_run(
         package,
         documents,
@@ -762,6 +782,7 @@ def run_review_with_semantic_client(
     contract_type_fact: ContractFact | None = None,
     contract_type_evidence: Sequence[Evidence] = (),
     document_kinds: Mapping[str, DocumentKind] | None = None,
+    document_filenames: Sequence[str] | None = None,
     document_precedence: Sequence[str] = (),
     ocr_provider: OCRProvider | None = None,
     configuration: Mapping[str, object] | None = None,
@@ -781,6 +802,7 @@ def run_review_with_semantic_client(
         contract_type_fact=contract_type_fact,
         contract_type_evidence=contract_type_evidence,
         document_kinds=document_kinds,
+        document_filenames=document_filenames,
         document_precedence=document_precedence,
         ocr_provider=ocr_provider,
         model_version=model_version,
@@ -809,6 +831,7 @@ def run_review_with_semantic_client(
         contract_type_fact=contract_type_fact,
         contract_type_evidence=contract_type_evidence,
         document_kinds=document_kinds,
+        document_filenames=document_filenames,
         document_precedence=document_precedence,
         ocr_provider=ocr_provider,
         model_version=model_version,
@@ -821,6 +844,50 @@ def run_review_with_semantic_client(
         retrieval_top_k=retrieval_top_k,
         review_context=review_context,
     )
+
+
+def _replay_document_filenames(
+    result: ReviewResult,
+    paths: Sequence[str | Path],
+) -> list[str]:
+    """按源文件哈希恢复原运行的逻辑文件名，不信任回放路径的临时名称。"""
+
+    documents_by_sha256 = {
+        document.source_sha256: document for document in result.documents
+    }
+    filenames: list[str] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        source_sha256 = sha256_file(path)
+        original = documents_by_sha256.get(source_sha256)
+        filenames.append(original.filename if original is not None else path.name)
+    return filenames
+
+
+def _replay_extra_evidence(result: ReviewResult) -> list[Evidence]:
+    """从原结果恢复外部证据快照，避免回放重新依赖易变的检测服务。"""
+
+    evidence_by_id = {item.evidence_id: item for item in result.evidence}
+    configured_ids = result.run.configuration.get("extra_evidence_ids")
+    if configured_ids is None:
+        # 兼容未记录 extra_evidence_ids 的旧结果；当前应用层的外部证据
+        # 只有印章/视觉证据，按类型恢复不会把合同文字候选重复注入流水线。
+        return [
+            item
+            for item in result.evidence
+            if item.evidence_type == EvidenceType.VISUAL_REGION
+        ]
+    if isinstance(configured_ids, (str, bytes)) or not isinstance(
+        configured_ids, Sequence
+    ):
+        raise ReplayMismatch("原运行的 extra_evidence_ids 不是有效列表")
+    evidence_ids = [str(item) for item in configured_ids]
+    missing_ids = [item for item in evidence_ids if item not in evidence_by_id]
+    if missing_ids:
+        raise ReplayMismatch(
+            "原运行的外部证据快照缺失：" + ",".join(missing_ids[:5])
+        )
+    return [evidence_by_id[item] for item in evidence_ids]
 
 
 def replay_review(
@@ -839,10 +906,12 @@ def replay_review(
         document.filename: document.document_kind
         for document in result.documents
     }
+    replay_document_filenames = _replay_document_filenames(result, paths)
     package, parsed_documents = parse_contract_package(
         paths,
         package_id=result.package.package_id,
         document_kinds=effective_document_kinds,
+        document_filenames=replay_document_filenames,
         document_precedence=result.package.document_precedence,
         ocr_provider=ocr_provider,
     )
@@ -905,12 +974,14 @@ def replay_review(
             ]
         ),
         document_kinds=effective_document_kinds,
+        document_filenames=replay_document_filenames,
         document_precedence=result.package.document_precedence,
         model_version=result.run.model_version,
         configuration=result.run.configuration,
         semantic_response=result.semantic_response,
         semantic_request=result.semantic_request,
         ocr_provider=ocr_provider,
+        extra_evidence=_replay_extra_evidence(result),
         knowledge_index_factory=knowledge_index_factory,
         retrieval_top_k=stored_retrieval_top_k,
         # 复用原运行 ID，确保挂载在 ReviewResult 上的版本比较证据仍能

@@ -1,8 +1,12 @@
 """合同审查 API 端到端测试（文字版 PDF，无需 GPU/Triton）。"""
 
+from collections import Counter
+
 import fitz
 from fastapi.testclient import TestClient
 
+from contract_review.models import AssessmentOutcome, FindingStatus, ReviewResult
+from contract_review.replay import build_result_fingerprint
 from contract_review_app.config import settings
 from contract_review_app.main import app
 
@@ -156,6 +160,94 @@ def test_review_decision_and_finalize_api_update_the_core_result(monkeypatch):
     assert finalized["run"]["status"] == "FINALIZED"
     assert finalized["report"]["review_required"] is False
     assert len(finalized["decisions"]) == len(actionable)
+
+
+def test_client_recomputed_result_fingerprint_is_rejected(monkeypatch):
+    """客户端重算公开哈希后，仍不能提交被篡改的发现结论。"""
+
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
+
+    class _EmptyOCR:
+        def recognize_seal(self, image_bytes, *, page_number=1):
+            del image_bytes, page_number
+            return None
+
+    monkeypatch.setattr(
+        "contract_review_app.services.seal_evidence.ocr_gateway_client",
+        _EmptyOCR(),
+    )
+    review_response = client.post(
+        "/api/v1/contract-review",
+        headers=_auth_headers(),
+        files=[("files", ("合同主文.pdf", _make_contract_pdf(), "application/pdf"))],
+        data={"PackageId": "pkg-client-tamper-api", "ContractType": "software"},
+    )
+    assert review_response.status_code == 200, review_response.text
+    result = ReviewResult.model_validate(review_response.json()["review_result"])
+    target = next(
+        finding for finding in result.findings if finding.status != FindingStatus.BLOCK
+    )
+    tampered_findings = [
+        finding.model_copy(
+            update={
+                "status": FindingStatus.BLOCK,
+                "automatic": False,
+                "reason": "客户端伪造的高风险结论",
+            }
+        )
+        if finding.finding_id == target.finding_id
+        else finding
+        for finding in result.findings
+    ]
+    tampered_assessments = [
+        assessment.model_copy(
+            update={
+                "outcome": AssessmentOutcome.CONTRADICTED,
+                "reason": "客户端伪造的高风险结论",
+            }
+        )
+        if assessment.finding_id == target.finding_id
+        else assessment
+        for assessment in result.question_assessments
+    ]
+    counts = Counter(finding.status.value for finding in tampered_findings)
+    tampered = result.model_copy(
+        update={
+            "findings": tampered_findings,
+            "question_assessments": tampered_assessments,
+            "report": result.report.model_copy(
+                update={
+                    "overall_status": FindingStatus.BLOCK,
+                    "finding_counts": dict(counts),
+                }
+            ),
+        }
+    )
+    tampered = tampered.model_copy(
+        update={
+            "run": tampered.run.model_copy(
+                update={"result_fingerprint": build_result_fingerprint(tampered)}
+            )
+        }
+    )
+
+    response = client.post(
+        "/api/v1/contract-review/decision",
+        headers=_auth_headers(),
+        json={
+            "review_result": tampered.model_dump(mode="json"),
+            "finding_id": target.finding_id,
+            "decision": "ACCEPT",
+            "actor_id": "attacker-probe",
+            "actor_role": "legal",
+            "comment": "不应接受重算指纹后的伪造结果。",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["Response"]["Error"]["Code"] == (
+        "Conflict.ReviewResultChanged"
+    )
 
 
 def test_contract_review_internal_failure_does_not_leak_exception(monkeypatch):

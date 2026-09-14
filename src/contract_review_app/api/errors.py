@@ -35,6 +35,7 @@ ERROR_CODE_MESSAGES = {
     "FailedOperation.TaskFailed": "任务执行失败。",
     "FailedOperation.TaskExpired": "任务结果已过期。",
     "LimitExceeded.QueueFull": "任务队列已满，请稍后重试。",
+    "Conflict.ReviewResultChanged": "审查结果已变化或不是服务器当前版本，请重新获取后重试。",
     "InvalidParameterValue.InvalidTaskType": "不支持的任务类型。",
 }
 

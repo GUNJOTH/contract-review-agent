@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-
 import httpx
 from loguru import logger
 
@@ -46,11 +44,12 @@ class OCRGatewayClient:
 
     def recognize_text(self, image_bytes: bytes) -> dict:
         """调用通用印刷体识别，返回 rec_texts / rec_scores / dt_polys。"""
-        payload = {
-            "ImageBase64": base64.b64encode(image_bytes).decode("ascii"),
-            "IsPdf": False,
-        }
-        data = self._post_json("/general-basic-ocr", payload)
+        data = self._post_multipart(
+            "/general-basic-ocr",
+            form_data={"IsPdf": "false"},
+            file_name="page.png",
+            file_content=image_bytes,
+        )
         detections = (data.get("Response") or {}).get("TextDetections") or []
         rec_texts: list[str] = []
         rec_scores: list[float] = []
@@ -77,14 +76,17 @@ class OCRGatewayClient:
         return {"rec_texts": rec_texts, "rec_scores": rec_scores, "dt_polys": dt_polys}
 
     def recognize_seal(self, image_bytes: bytes, *, page_number: int = 1) -> dict | None:
-        payload = {
-            "ImageBase64": base64.b64encode(image_bytes).decode("ascii"),
-            "EnablePdf": False,
-            "PdfPageNumber": page_number,
-            "UseVL": True,
-        }
         try:
-            data = self._post_json("/seal", payload)
+            data = self._post_multipart(
+                "/seal",
+                form_data={
+                    "EnablePdf": "false",
+                    "PdfPageNumber": str(page_number),
+                    "UseVL": "true",
+                },
+                file_name="page.png",
+                file_content=image_bytes,
+            )
         except OCRGatewayError as exc:
             logger.warning(f"OCR 网关印章识别失败: {exc}")
             return None
@@ -107,11 +109,25 @@ class OCRGatewayClient:
             "source": result.get("Source") or "ocr-gateway",
         }
 
-    def _post_json(self, path: str, payload: dict) -> dict:
+    def _post_multipart(
+        self,
+        path: str,
+        *,
+        form_data: dict[str, str],
+        file_name: str,
+        file_content: bytes,
+    ) -> dict:
+        """按 OCR 网关契约提交文件和表单字段。
+
+        OCR 网关的识别接口声明为 ``multipart/form-data``。页面和印章识别
+        调用方已经提供 PNG 字节，因此直接使用 ``file`` 字段，避免 JSON
+        请求体无法被网关的表单参数解析器绑定。
+        """
         try:
             response = httpx.post(
                 self._url(path),
-                json=payload,
+                data=form_data,
+                files={"file": (file_name, file_content, "image/png")},
                 headers=self._headers(),
                 timeout=self.timeout,
             )

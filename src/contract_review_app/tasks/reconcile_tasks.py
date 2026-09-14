@@ -25,7 +25,11 @@ def reconcile_stale_tasks() -> int:
     for task in stale_tasks:
         processed += 1
         if task.retry_count < settings.TASK_MAX_RETRIES:
-            updated = task_store.requeue(task.task_id, heartbeat_at=None)
+            updated = task_store.requeue(
+                task.task_id,
+                lease_token=task.lease_token,
+                heartbeat_at=None,
+            )
             if updated is None:
                 continue
             execute_contract_review_task.apply_async(
@@ -48,11 +52,13 @@ def reconcile_stale_tasks() -> int:
         finished_at = datetime.now(timezone.utc).astimezone().isoformat()
         updated = task_store.mark_failed(
             task.task_id,
+            lease_token=task.lease_token,
             error_code="FailedOperation.TaskFailed",
             error_message="任务执行失败，worker 异常中断后未能自动恢复",
             stage=AsyncTaskStage.FAILED.value,
             finished_at=finished_at,
             expires_at=(datetime.now(timezone.utc).astimezone() + timedelta(seconds=settings.TASK_RESULT_TTL_FAILED)).isoformat(),
+            recovery=True,
         )
         if updated is None:
             continue

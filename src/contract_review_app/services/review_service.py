@@ -34,6 +34,9 @@ from contract_review_app.services.result_cache import (
     cache_set,
     fingerprint,
 )
+from contract_review_app.services.review_result_store import (
+    register_authoritative_review_result,
+)
 from contract_review_app.services.seal_evidence import SealEvidenceDetector
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 from contract_review_app.services.pii_gate import gate_paths
@@ -105,6 +108,7 @@ def _collect_seal_evidence(
     *,
     package_id: str,
     document_kinds: Mapping[str, DocumentKind] | None = None,
+    document_filenames: Sequence[str] | None = None,
 ) -> list[Evidence]:
     """预解析（无 OCR，快）拿到文档身份后逐页检测印章，登记视觉证据。
 
@@ -119,10 +123,15 @@ def _collect_seal_evidence(
             paths,
             package_id=package_id,
             document_kinds=document_kinds,
+            document_filenames=document_filenames,
             ocr_provider=None,
         )
         documents = [item.document for item in parsed]
-        return SealEvidenceDetector().detect(paths, documents)
+        return SealEvidenceDetector().detect(
+            paths,
+            documents,
+            document_filenames=document_filenames,
+        )
     except Exception as exc:
         logger.warning(f"印章视觉证据检测失败，本次审查不带印章证据: {exc}")
         return []
@@ -214,7 +223,8 @@ def run_contract_review(
     cached = cache_get(cache_key)
     if cached is not None:
         try:
-            return _load_verified_cached_result(cached, cache_key=cache_key)
+            cached_result = _load_verified_cached_result(cached, cache_key=cache_key)
+            return register_authoritative_review_result(cached_result)
         except Exception as exc:
             logger.warning(f"审查缓存读取失败，重新审查: {exc}")
 
@@ -228,20 +238,23 @@ def run_contract_review(
         tempfile.TemporaryDirectory(prefix="contract-review-") as tmp,
     ):
         paths: list[Path] = []
+        temporary_document_filenames: list[str] = []
         temporary_document_kinds: dict[str, DocumentKind] = {}
         for index, (filename, content) in enumerate(files):
             safe_name = Path(filename).name or f"file-{index}"
             path = Path(tmp) / f"{index:03d}-{safe_name}"
             path.write_bytes(content)
             paths.append(path)
+            temporary_document_filenames.append(safe_name)
             document_kind = (document_kinds or {}).get(safe_name)
             if document_kind is not None:
-                temporary_document_kinds[path.name] = document_kind
+                temporary_document_kinds[safe_name] = document_kind
 
         seal_evidence = _collect_seal_evidence(
             paths,
             package_id=package_id,
             document_kinds=temporary_document_kinds,
+            document_filenames=temporary_document_filenames,
         )
         client = _semantic_client() if allow_semantic else None
         # Scan the exact parsed text (including OCR output) before any
@@ -280,6 +293,7 @@ def run_contract_review(
                 review_context=effective_context,
                 document_precedence=document_precedence,
                 document_kinds=temporary_document_kinds,
+                document_filenames=temporary_document_filenames,
                 ocr_provider=provider,
                 extra_evidence=seal_evidence,
                 knowledge_index_factory=knowledge_index_factory,
@@ -299,6 +313,7 @@ def run_contract_review(
                 review_context=effective_context,
                 document_precedence=document_precedence,
                 document_kinds=temporary_document_kinds,
+                document_filenames=temporary_document_filenames,
                 ocr_provider=provider,
                 extra_evidence=seal_evidence,
                 knowledge_index_factory=knowledge_index_factory,
@@ -313,6 +328,7 @@ def run_contract_review(
                 "run_id": result.run.run_id,
             },
         )
+    result = register_authoritative_review_result(result)
     cache_set(
         cache_key,
         {

@@ -4,6 +4,7 @@ from zipfile import ZipFile
 
 from contract_review.models import EvidenceType
 from contract_review.parser import find_text_evidence, parse_xlsx
+from tests.test_support.workspace import create_test_workspace
 
 
 _WORKBOOK_XML = """<?xml version='1.0' encoding='UTF-8'?>
@@ -30,15 +31,15 @@ _SHEET_XML = """<?xml version='1.0' encoding='UTF-8'?>
 
 class XlsxParserTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.work_path = Path.cwd() / ".test-work"
-        self.work_path.mkdir(exist_ok=True)
+        self._temp_dir = create_test_workspace("x-")
+        self.addCleanup(self._temp_dir.cleanup)
+        self.work_path = Path(self._temp_dir.name)
         self.xlsx_path = self.work_path / "quotation.xlsx"
         with ZipFile(self.xlsx_path, "w") as archive:
             archive.writestr("xl/workbook.xml", _WORKBOOK_XML)
             archive.writestr("xl/_rels/workbook.xml.rels", _RELATIONSHIPS_XML)
             archive.writestr("xl/sharedStrings.xml", _SHARED_STRINGS_XML)
             archive.writestr("xl/worksheets/sheet1.xml", _SHEET_XML)
-        self.addCleanup(lambda: self.xlsx_path.unlink(missing_ok=True))
 
     def test_xlsx_preserves_sheet_cell_and_formula_quality(self) -> None:
         parsed = parse_xlsx(self.xlsx_path, package_id="package-xlsx")

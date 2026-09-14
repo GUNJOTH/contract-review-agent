@@ -50,6 +50,8 @@ class AsyncTaskRecord(BaseModel):
     error_message: Optional[str] = None
     retry_count: int = 0
     worker_id: Optional[str] = None
+    # 每次租约领取都会递增；旧 worker 只能携带旧 token，不能再提交状态。
+    lease_token: int = Field(default=0, ge=0)
     created_at: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None

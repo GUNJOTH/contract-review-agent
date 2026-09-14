@@ -39,13 +39,19 @@ def execute_contract_review_task(self, task_id: str) -> dict[str, Any] | None:
     task = task_store.get(task_id)
     if task is None:
         return None
-    if not task_store.acquire_lock(task_id):
+    lease_token = task_store.acquire_lease(task_id)
+    if lease_token is None:
         return None
 
     started_at = _now_iso()
-    running = task_store.mark_running(task_id, worker_id=self.request.hostname or self.request.id, started_at=started_at)
+    running = task_store.mark_running(
+        task_id,
+        worker_id=self.request.hostname or self.request.id,
+        started_at=started_at,
+        lease_token=lease_token,
+    )
     if running is None:
-        task_store.release_lock(task_id)
+        task_store.release_lease(task_id, lease_token=lease_token)
         return None
 
     metrics.record_async_task_started(running.task_type, running.queue_name)
@@ -63,41 +69,71 @@ def execute_contract_review_task(self, task_id: str) -> dict[str, Any] | None:
     )
 
     stop_event = threading.Event()
-    heartbeat_thread = threading.Thread(target=_heartbeat_loop, args=(task_id, stop_event), daemon=True)
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop,
+        args=(task_id, lease_token, stop_event),
+        daemon=True,
+    )
     heartbeat_thread.start()
     start_ts = time.time()
 
     try:
         manifest = task_file_store.load_manifest(running.input_path)
-        task_store.update_progress(task_id, stage=AsyncTaskStage.PREPROCESSING.value, progress=15)
-        task_store.update_progress(task_id, stage=AsyncTaskStage.OCR_INFERENCE.value, progress=50)
+        task_store.update_progress(
+            task_id,
+            lease_token=lease_token,
+            stage=AsyncTaskStage.PREPROCESSING.value,
+            progress=15,
+        )
+        task_store.update_progress(
+            task_id,
+            lease_token=lease_token,
+            stage=AsyncTaskStage.OCR_INFERENCE.value,
+            progress=50,
+        )
         result = asyncio.run(run_task_handler(running.task_type, manifest))
-        task_store.update_progress(task_id, stage=AsyncTaskStage.SAVING_RESULT.value, progress=90)
+        task_store.update_progress(
+            task_id,
+            lease_token=lease_token,
+            stage=AsyncTaskStage.SAVING_RESULT.value,
+            progress=90,
+        )
         finished_at = _now_iso()
         updated = task_store.mark_succeeded(
             task_id,
+            lease_token=lease_token,
             result=result,
             finished_at=finished_at,
             expires_at=_future_iso(settings.TASK_RESULT_TTL_SUCCESS),
         )
-        if updated is not None:
-            metrics.record_async_task_finished(updated.task_type, updated.queue_name, updated.status.value, time.time() - start_ts)
-            _sync_queue_depth(updated.queue_name)
-            log_async_task_event(
-                task_id=updated.task_id,
-                task_type=updated.task_type,
-                queue_name=updated.queue_name,
-                status=updated.status.value,
-                stage=updated.stage.value,
-                request_id=updated.request_id,
-                worker_id=updated.worker_id,
-                retry_count=updated.retry_count,
-                progress=updated.progress,
-            )
+        if updated is None:
+            return None
+        metrics.record_async_task_finished(updated.task_type, updated.queue_name, updated.status.value, time.time() - start_ts)
+        _sync_queue_depth(updated.queue_name)
+        log_async_task_event(
+            task_id=updated.task_id,
+            task_type=updated.task_type,
+            queue_name=updated.queue_name,
+            status=updated.status.value,
+            stage=updated.stage.value,
+            request_id=updated.request_id,
+            worker_id=updated.worker_id,
+            retry_count=updated.retry_count,
+            progress=updated.progress,
+        )
         return result
     except TaskExecutionFailure as exc:
-        _finalize_failure(task_id=task_id, started_ts=start_ts, failure=exc)
-        return {"task_id": task_id, "status": "FAILED", "error_code": exc.error_code}
+        finalized = _finalize_failure(
+            task_id=task_id,
+            lease_token=lease_token,
+            started_ts=start_ts,
+            failure=exc,
+        )
+        return (
+            {"task_id": task_id, "status": "FAILED", "error_code": exc.error_code}
+            if finalized
+            else None
+        )
     except Exception as exc:
         failure = TaskExecutionFailure(
             error_code="FailedOperation.ContractReviewTaskFailed",
@@ -106,18 +142,38 @@ def execute_contract_review_task(self, task_id: str) -> dict[str, Any] | None:
             dead_letter=True,
             dead_letter_reason="worker_exception",
         )
-        _finalize_failure(task_id=task_id, started_ts=start_ts, failure=failure)
-        return {"task_id": task_id, "status": "FAILED", "error_code": failure.error_code}
+        finalized = _finalize_failure(
+            task_id=task_id,
+            lease_token=lease_token,
+            started_ts=start_ts,
+            failure=failure,
+        )
+        return (
+            {
+                "task_id": task_id,
+                "status": "FAILED",
+                "error_code": failure.error_code,
+            }
+            if finalized
+            else None
+        )
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=1)
-        task_store.release_lock(task_id)
+        task_store.release_lease(task_id, lease_token=lease_token)
 
 
-def _finalize_failure(*, task_id: str, started_ts: float, failure: TaskExecutionFailure) -> None:
+def _finalize_failure(
+    *,
+    task_id: str,
+    lease_token: int,
+    started_ts: float,
+    failure: TaskExecutionFailure,
+) -> bool:
     finished_at = _now_iso()
     updated = task_store.mark_failed(
         task_id,
+        lease_token=lease_token,
         error_code=failure.error_code,
         error_message=failure.error_message,
         stage=failure.stage,
@@ -125,7 +181,7 @@ def _finalize_failure(*, task_id: str, started_ts: float, failure: TaskExecution
         expires_at=_future_iso(settings.TASK_RESULT_TTL_FAILED),
     )
     if updated is None:
-        return
+        return False
     metrics.record_async_task_finished(updated.task_type, updated.queue_name, updated.status.value, time.time() - started_ts)
     _sync_queue_depth(updated.queue_name)
     log_async_task_event(
@@ -160,11 +216,24 @@ def _finalize_failure(*, task_id: str, started_ts: float, failure: TaskExecution
             updated.queue_name,
             failure.dead_letter_reason or "worker_exception",
         )
+    return True
 
 
-def _heartbeat_loop(task_id: str, stop_event: threading.Event) -> None:
+def _heartbeat_loop(
+    task_id: str,
+    lease_token: int,
+    stop_event: threading.Event,
+) -> None:
     while not stop_event.wait(settings.TASK_HEARTBEAT_INTERVAL_SECONDS):
-        task_store.heartbeat(task_id, heartbeat_at=_now_iso())
+        updated = task_store.heartbeat(
+            task_id,
+            lease_token=lease_token,
+            heartbeat_at=_now_iso(),
+        )
+        if updated is None:
+            # 租约已经被回收或换代，旧 worker 不再继续制造无效心跳。
+            stop_event.set()
+            return
 
 
 def _now_iso() -> str:

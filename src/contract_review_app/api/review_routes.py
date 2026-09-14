@@ -39,6 +39,12 @@ from contract_review_app.services.document_compare import (
     compare_contract_documents,
 )
 from contract_review_app.services.document_preview import preview_contract_document
+from contract_review_app.services.review_result_store import (
+    ReviewResultConflictError,
+    ReviewResultStoreError,
+    append_authoritative_review_result,
+    load_authoritative_review_result,
+)
 from contract_review_app.services.review_service import (
     _review_fingerprint,
     core_rules_path,
@@ -57,6 +63,51 @@ from contract_review_app.telemetry.logging import log_error, log_request_end, lo
 from contract_review.models import ReviewResult, RuleBundle
 
 router = APIRouter()
+
+
+def _load_authoritative_result(payload: ReviewResult) -> ReviewResult:
+    """将客户端结果转换为服务器当前快照，并屏蔽存储内部细节。"""
+
+    try:
+        return load_authoritative_review_result(payload)
+    except ReviewResultConflictError as exc:
+        raise AppError(
+            409,
+            "Conflict.ReviewResultChanged",
+            "审查结果已变化或不是服务器当前版本，请重新获取后重试。",
+        ) from exc
+    except ReviewResultStoreError as exc:
+        raise AppError(
+            503,
+            "FailedOperation.UnOpenError",
+            "审查结果权威存储不可用，请稍后重试。",
+        ) from exc
+
+
+def _append_authoritative_result(
+    result: ReviewResult,
+    *,
+    expected_result_fingerprint: str | None,
+) -> ReviewResult:
+    """以客户端动作前的版本指纹提交新的服务器结果快照。"""
+
+    try:
+        return append_authoritative_review_result(
+            result,
+            expected_result_fingerprint=expected_result_fingerprint,
+        )
+    except ReviewResultConflictError as exc:
+        raise AppError(
+            409,
+            "Conflict.ReviewResultChanged",
+            "审查结果已变化或不是服务器当前版本，请重新获取后重试。",
+        ) from exc
+    except ReviewResultStoreError as exc:
+        raise AppError(
+            503,
+            "FailedOperation.UnOpenError",
+            "审查结果权威存储不可用，请稍后重试。",
+        ) from exc
 
 
 @router.post(
@@ -260,8 +311,19 @@ async def create_contract_revision_set(
     """
 
     try:
-        revision = await asyncio.to_thread(build_revision_set, payload)
-        result = await asyncio.to_thread(attach_revision_set, payload, revision)
+        authoritative = await asyncio.to_thread(_load_authoritative_result, payload)
+        expected_result_fingerprint = authoritative.run.result_fingerprint
+        revision = await asyncio.to_thread(build_revision_set, authoritative)
+        result = await asyncio.to_thread(
+            attach_revision_set,
+            authoritative,
+            revision,
+        )
+        result = await asyncio.to_thread(
+            _append_authoritative_result,
+            result,
+            expected_result_fingerprint=expected_result_fingerprint,
+        )
     except ValueError as exc:
         raise AppError(
             400,
@@ -286,15 +348,25 @@ async def append_contract_review_decision(
     """为一条发现追加人工决定，并返回更新后的核心 ``ReviewResult``。"""
 
     try:
+        authoritative = await asyncio.to_thread(
+            _load_authoritative_result,
+            payload.review_result,
+        )
+        expected_result_fingerprint = authoritative.run.result_fingerprint
         result = await asyncio.to_thread(
             record_review_decision,
-            payload.review_result,
+            authoritative,
             payload.finding_id,
             decision=payload.decision,
             actor_id=payload.actor_id,
             actor_role=payload.actor_role,
             comment=payload.comment,
             evidence_ids=payload.evidence_ids,
+        )
+        result = await asyncio.to_thread(
+            _append_authoritative_result,
+            result,
+            expected_result_fingerprint=expected_result_fingerprint,
         )
     except (ReviewPipelineError, ValueError) as exc:
         raise AppError(
@@ -319,11 +391,21 @@ async def finalize_contract_review(
     """所有可行动发现完成决定后，关闭人工复核阶段。"""
 
     try:
+        authoritative = await asyncio.to_thread(
+            _load_authoritative_result,
+            payload.review_result,
+        )
+        expected_result_fingerprint = authoritative.run.result_fingerprint
         result = await asyncio.to_thread(
             finalize_review,
-            payload.review_result,
+            authoritative,
             actor_id=payload.actor_id,
             comment=payload.comment,
+        )
+        result = await asyncio.to_thread(
+            _append_authoritative_result,
+            result,
+            expected_result_fingerprint=expected_result_fingerprint,
         )
     except (ReviewPipelineError, ValueError) as exc:
         raise AppError(
@@ -417,6 +499,11 @@ async def compare_contract(
                 "InvalidParameterValue.InvalidParameterValueLimit",
                 f"ReviewResultPayload 不是有效的 ReviewResult：{exc}",
             ) from exc
+        review_result = await asyncio.to_thread(
+            _load_authoritative_result,
+            review_result,
+        )
+        expected_result_fingerprint = review_result.run.result_fingerprint
         result = await asyncio.to_thread(
             compare_contract_documents,
             payloads[0],
@@ -461,6 +548,11 @@ async def compare_contract(
             attach_version_comparison,
             review_result,
             comparison,
+        )
+        review_result = await asyncio.to_thread(
+            _append_authoritative_result,
+            review_result,
+            expected_result_fingerprint=expected_result_fingerprint,
         )
         result = result.model_copy(update={"review_result": review_result})
         return result.model_dump(mode="json")

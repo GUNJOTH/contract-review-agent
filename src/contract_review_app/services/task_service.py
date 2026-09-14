@@ -388,7 +388,7 @@ class TaskService:
         except Exception as exc:
             logger.exception("任务入队失败", task_id=task_id, task_type=task_type)
             failed_at = _now_iso()
-            self._store.mark_failed(
+            self._store.mark_pending_failed(
                 task_id,
                 error_code="FailedOperation.UnOpenError",
                 error_message="任务入队失败，请稍后重试。",
@@ -456,7 +456,7 @@ class TaskService:
     async def _mark_reserved_task_failed(self, task_id: str) -> None:
         """输入落盘失败时关闭已准入任务，避免留下可执行的空预约。"""
 
-        marker = getattr(self._store, "mark_failed", None)
+        marker = getattr(self._store, "mark_pending_failed", None)
         if not callable(marker):
             return
         try:

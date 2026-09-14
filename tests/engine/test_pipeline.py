@@ -1,5 +1,6 @@
 import json
-import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 from zipfile import ZipFile
@@ -36,12 +37,18 @@ from contract_review.semantic import (
 from contract_review.parser import find_text_evidence, parse_pdf
 from contract_review.playbook import publish_playbook_bundle
 from contract_review.store import AuditStoreError, JsonAuditStore
+from contract_review_app.services.review_result_store import (
+    AuthoritativeReviewResultStore,
+    ReviewResultConflictError,
+)
+from tests.test_support.workspace import create_test_workspace
 
 
 class PipelineTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.work_path = Path.cwd() / ".test-work"
-        self.work_path.mkdir(exist_ok=True)
+        self._temp_dir = create_test_workspace("p-")
+        self.addCleanup(self._temp_dir.cleanup)
+        self.work_path = Path(self._temp_dir.name)
         self.pdf_path = self.work_path / "pipeline-contract.pdf"
         pdf = fitz.open()
         page = pdf.new_page(width=600, height=800)
@@ -92,22 +99,6 @@ class PipelineTests(unittest.TestCase):
                 ),
             ],
         ))
-        self.addCleanup(self._cleanup)
-
-    def _cleanup(self) -> None:
-        if self.work_path.is_dir():
-            for path in self.work_path.glob("pipeline-contract.pdf"):
-                path.unlink(missing_ok=True)
-            store_path = self.work_path / "audit-store"
-            if store_path.exists():
-                shutil.rmtree(store_path)
-            revision_store_path = self.work_path / "audit-store-revision"
-            if revision_store_path.exists():
-                shutil.rmtree(revision_store_path)
-            version_store_path = self.work_path / "audit-store-version"
-            if version_store_path.exists():
-                shutil.rmtree(version_store_path)
-
     def test_run_review_produces_auditable_findings_and_replayable_result(self) -> None:
         first = run_review(
             [self.pdf_path],
@@ -761,6 +752,91 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(revision.is_dir())
         self.assertEqual(len(loaded.decisions), 1)
         self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
+
+    def test_json_store_appended_revision_survives_a_deep_windows_path(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-deep-store",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-deep-store",
+        )
+        store_root = (
+            self.work_path / ("deep-" + "x" * 80) / "audit-store-deep"
+        )
+        store = JsonAuditStore(store_root)
+        store.save(result)
+        finding = next(
+            finding for finding in result.findings if finding.status == "UNKNOWN"
+        )
+        reviewed = record_review_decision(
+            result,
+            finding.finding_id,
+            decision="ACCEPT",
+            actor_id="reviewer-deep",
+            actor_role="legal",
+            comment="deep path",
+        )
+
+        store.append_revision(reviewed)
+
+        loaded = store.load(result.run.run_id)
+        self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
+
+    def test_authoritative_append_rejects_a_stale_concurrent_action(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-authoritative-cas",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-authoritative-cas",
+        )
+        store_root = self.work_path / "authoritative-result-store"
+        store = AuthoritativeReviewResultStore(store_root)
+        store.register_or_load(result)
+        finding = next(
+            finding
+            for finding in result.findings
+            if finding.status in {"WARN", "BLOCK", "UNKNOWN"}
+        )
+        left = record_review_decision(
+            result,
+            finding.finding_id,
+            decision="ACCEPT",
+            actor_id="reviewer-left",
+            actor_role="legal",
+            comment="left",
+        )
+        right = record_review_decision(
+            result,
+            finding.finding_id,
+            decision="REJECT",
+            actor_id="reviewer-right",
+            actor_role="legal",
+            comment="right",
+        )
+        barrier = threading.Barrier(2)
+
+        def append(candidate):
+            barrier.wait()
+            try:
+                store.append(
+                    candidate,
+                    expected_result_fingerprint=result.run.result_fingerprint,
+                )
+            except ReviewResultConflictError:
+                return "conflict"
+            return "accepted"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(append, (left, right)))
+
+        self.assertEqual(sorted(outcomes), ["accepted", "conflict"])
+        final = JsonAuditStore(
+            self.work_path / "authoritative-result-store"
+        ).load(result.run.run_id)
+        self.assertEqual(len(final.decisions), 1)
+        self.assertIn(final.decisions[0].comment, {"left", "right"})
 
     def test_json_store_rejects_previous_store_version(self) -> None:
         result = run_review(

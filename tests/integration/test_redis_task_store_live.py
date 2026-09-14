@@ -98,20 +98,25 @@ def test_live_redis_atomic_idempotency_and_stage_events() -> None:
         assert client.zscore(TASK_INDEX_KEY, accepted_task_id) is not None
 
         store = stores[0]
+        lease_token = store.acquire_lease(accepted_task_id)
+        assert lease_token is not None
         running = store.mark_running(
             accepted_task_id,
             worker_id=f"worker-{prefix}",
             started_at=datetime.now(timezone.utc).isoformat(),
+            lease_token=lease_token,
         )
         assert running is not None
         store.update_progress(
             accepted_task_id,
+            lease_token=lease_token,
             stage=AsyncTaskStage.PARSING_RESULT.value,
             progress=60,
             heartbeat_at=datetime.now(timezone.utc).isoformat(),
         )
         finished = store.mark_succeeded(
             accepted_task_id,
+            lease_token=lease_token,
             result={"live_redis_test": True},
             finished_at=datetime.now(timezone.utc).isoformat(),
             expires_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
