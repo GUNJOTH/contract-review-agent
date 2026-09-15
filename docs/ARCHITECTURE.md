@@ -89,7 +89,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - `ContractVersionComparison` 和 `ContractRevisionSet` 是 `ReviewResult` 的后置领域附件；挂载时生成 `EvidenceType.COMPARISON` 证据，更新 `ReviewRun`/`ReviewReport` 指针、结果指纹和 `post_review_sequence`，因此版本差异和红线建议不会形成第二套结果对象。
 - 版本比对只有在两侧文档都属于当前合同包且都出现在完整 `document_precedence` 中时才解析 `base/compare` 覆盖关系；外部比较文件、部分优先序列或未配置优先序列均输出 `unresolved`。每个影响项同时保留受影响业务义务、付款风险、责任风险、责任上限是否扩大、交付/验收绑定变化和需要重触发的规则；责任上限的数值、例外或适用主体无法从差异片段确定时输出 `requires_review`，不自动放行。
 - 语义模型的 `PASS` 需达到更高置信度门槛并引用带原文片段的合同证据；明确要求人工复核、置信度不足或缺少合同原文时强制转为 `UNKNOWN`，并标记 `evidence_quality=INSUFFICIENT`、`automatic=false`。
-- 语义模型请求携带同一 `ReviewContext`、与 `rule_ids` 逐条对应的规则定义快照，以及同一条检索链路产生的查询和候选；请求指纹覆盖这些内容，模型只能输出每条请求规则一次的枚举状态和已存在的 `evidence_id`，不能改变规则快照或企业 Playbook。缺少任一规则输出直接拒绝整批响应，不把缺失项静默降为通过。
+- 语义模型请求携带同一 `ReviewContext`、与 `rule_ids` 逐条对应的规则定义快照，以及同一条检索链路产生的查询和候选；实际外部模型调用按规则拆分，每次只发送一个规则及其候选证据，批次快照仅用于合并响应、审计和回放。请求指纹覆盖这些内容，模型只能输出当前规则的一次枚举状态和其检索集合内已存在的 `evidence_id`，不能改变规则快照或企业 Playbook。缺少任一规则输出或出现越界证据直接拒绝整批响应，不把缺失项静默降为通过。
 
 ### 应用服务：`src/contract_review_app/services`
 
@@ -134,6 +134,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - 结果缓存改为同目录临时文件 + `os.replace`，读者不会看到半个 JSON；写入失败会清理临时文件并降级为未命中。
 - 异步任务在写入输入前验证 dispatch 配置；Redis 原子准入先登记任务，只有唯一胜者落盘输入并绑定 manifest，持久化失败会把预约任务关闭，避免重复写入和空预约。
 - 阶段事件统一遵循 `StageEventStore` 契约：同步编排使用内存适配器，JSON 审计工件使用独立 `stage-events/*.jsonl`，Redis 使用独立有界列表；任务状态快照不再承担事件账本的持久化边界。
+- JSON 审计存储将外部 `run_id` 与文件系统路径解耦：新工件使用受控短内部键和固定短阶段账本名，修订路径按 Windows `MAX_PATH` 预算校验；历史 `run_id` 目录布局仅通过兼容读取分支访问。
 - `ReviewResult` 新增条款、履约义务、审查问题和问题结论；规则发现被明确映射为 `SUPPORTED`、`CONTRADICTED`、`NOT_MENTIONED`、`UNKNOWN` 或 `NOT_APPLICABLE`，且必须引用持久化证据。
 - 删除“关闭引擎规则、截断规则快照、只解析合同”的旧分支；每次合同审查都执行完整 `RuleBundle`，模型只是有合同证据时的补充判断。
 - 知识块增加显式来源类型，语义模型的证据白名单只包含合同正文命中；规则定义证据被引用时由流水线和审计同时拒绝。

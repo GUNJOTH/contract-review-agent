@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fitz
+import pymupdf
 
 from contract_review.elements import extract_contract_element_facts_from_candidates
 from contract_review.knowledge import build_knowledge_corpus
@@ -51,7 +51,7 @@ class ContractElementFactTests(unittest.TestCase):
     def test_standard_elements_are_facts_with_source_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="contract-elements-test-") as temp_dir:
             pdf_path = Path(temp_dir) / "contract.pdf"
-            document = fitz.open()
+            document = pymupdf.open()
             page = document.new_page()
             page.insert_text(
                 (72, 72),
@@ -99,7 +99,7 @@ class ContractElementFactTests(unittest.TestCase):
     def test_same_chunk_across_rules_is_extracted_once_with_all_bindings(self) -> None:
         with tempfile.TemporaryDirectory(prefix="contract-elements-group-") as temp_dir:
             pdf_path = Path(temp_dir) / "contract.pdf"
-            document = fitz.open()
+            document = pymupdf.open()
             page = document.new_page()
             page.insert_text((72, 72), "合同编号：HT-2026-001\n合同金额：1000000元", fontname="china-s")
             document.save(str(pdf_path))

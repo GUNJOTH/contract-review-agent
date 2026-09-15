@@ -155,7 +155,7 @@ def parse_pdf(
     resolved_document_id = document_id or f"doc-{source_sha256[:16]}"
 
     try:
-        import fitz
+        import pymupdf
     except ImportError as exc:  # pragma: no cover - depends on environment
         raise ParseError("PyMuPDF is required for PDF parsing") from exc
 
@@ -164,7 +164,7 @@ def parse_pdf(
     ocr_attempted = False
 
     try:
-        with fitz.open(str(file_path)) as pdf:
+        with pymupdf.open(str(file_path)) as pdf:
             for page_index, pdf_page in enumerate(pdf):
                 page_number = page_index + 1
                 page_id = f"{resolved_document_id}-page-{page_number}"
@@ -235,7 +235,7 @@ def parse_pdf(
                 if needs_ocr and ocr_provider is not None:
                     ocr_attempted = True
                     try:
-                        pixmap = pdf_page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        pixmap = pdf_page.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False)
                         ocr_result = OCRPageResult.model_validate(
                             ocr_provider.recognize(
                                 pixmap.tobytes("png"),

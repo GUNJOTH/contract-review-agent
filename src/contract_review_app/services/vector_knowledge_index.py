@@ -4,10 +4,11 @@
 
 确定性设计：embedding 服务在跨批次调用时存在约 1e-3 的元素级噪声，会导致
 排序在微小分数边界上翻转，破坏引擎"同一输入可重放"的指纹契约。因此向量
-按 ``(模型, 内容哈希)`` 缓存到内存和磁盘（``runtime/embedding_cache``），
-同一审查的两次检索运行和跨进程回放都使用完全相同的向量；相似度分数量化
-到 2 位小数，排序并列时按 chunk_id 确定性打破。embedding 服务不可用时
-自动降级到词法基线，保证审查不中断。
+按 ``(模型, 缓存身份, 内容哈希)`` 缓存到内存和磁盘（``runtime/embedding_cache``）。
+合同知识块使用稳定的 ``chunk_id``，检索查询使用稳定的 ``query_id``，避免
+不同知识块因正文相同而互相覆盖；相似度分数量化到 2 位小数，排序并列时
+按 chunk_id 确定性打破。embedding 服务不可用时自动降级到词法基线，保证
+审查不中断。
 """
 
 from __future__ import annotations
@@ -15,10 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-import httpx
 from loguru import logger
 
 from contract_review.knowledge import (
@@ -41,10 +42,16 @@ from contract_review.models import (
 from contract_review.terminology import expand_terminology_text
 
 from contract_review_app.config import settings
+from contract_review_app.services.model_transport import (
+    HttpxModelTransport,
+    shared_model_circuit_breaker,
+    shared_model_concurrency_gate,
+)
 from contract_review_app.services.pii_gate import gate_external_model_input
 from contract_review_app.telemetry.tracing import start_span
 
 VECTOR_INDEX_VERSION = "vector-knowledge-0.5.0"
+EMBEDDING_CACHE_VERSION = "embedding-cache-0.3.0"
 # 混合索引包含词法分支；词法候选门控或分词策略变化时必须生成新的
 # 轨迹版本，避免旧的融合结果被误认为可直接回放。
 # 混合融合后的合同事实锚点门禁变化时必须生成新的轨迹版本，避免旧融合结果
@@ -63,8 +70,71 @@ RULE_DEFINITION_SLOTS = 1
 # 文本的相似度虚高，会挤掉真正的条款块。
 MIN_DOCUMENT_CHUNK_CHARS = 8
 
-# 进程内缓存：{(模型, 内容哈希): 向量}，保证一次审查内多次检索完全一致
+# 进程内缓存：{(模型, 身份与文本摘要): 向量}，保证不同知识块不互相覆盖。
 _EMBEDDING_MEMORY_CACHE: dict[tuple[str, str], list[float]] = {}
+_EMBEDDING_TRANSPORT: HttpxModelTransport | None = None
+_EMBEDDING_TRANSPORT_POLICY: (
+    tuple[int, float, int, float, float, float, bool, int, float, str, str]
+    | tuple[int, float]
+    | None
+) = None
+_EMBEDDING_TRANSPORT_LOCK = threading.Lock()
+
+
+def _embedding_transport() -> HttpxModelTransport:
+    """按当前配置复用 embedding 连接池；配置变化时替换旧策略。"""
+
+    global _EMBEDDING_TRANSPORT, _EMBEDDING_TRANSPORT_POLICY
+    policy = (
+        settings.CONTRACT_REVIEW_MODEL_MAX_ATTEMPTS,
+        settings.CONTRACT_REVIEW_MODEL_RETRY_BACKOFF_SECONDS,
+        settings.CONTRACT_REVIEW_EMBEDDING_MAX_CONCURRENCY,
+        settings.CONTRACT_REVIEW_EMBEDDING_QUEUE_TIMEOUT_SECONDS,
+        settings.CONTRACT_REVIEW_MODEL_RETRY_JITTER_RATIO,
+        settings.CONTRACT_REVIEW_MODEL_MAX_BACKOFF_SECONDS,
+        settings.CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED,
+        settings.CONTRACT_REVIEW_MODEL_CIRCUIT_FAILURE_THRESHOLD,
+        settings.CONTRACT_REVIEW_MODEL_CIRCUIT_OPEN_TIMEOUT_SECONDS,
+        settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT.rstrip("/"),
+        settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
+    )
+    # 保留旧测试/注入适配器使用的二元策略格式；真实创建的传输始终记录
+    # 十一元策略，确保端点、模型、重试、并发和熔断配置变化会替换连接池
+    # 及对应的共享控制器。
+    with _EMBEDDING_TRANSPORT_LOCK:
+        policy_matches = _EMBEDDING_TRANSPORT_POLICY in {
+            policy,
+            policy[:2],
+        }
+        if _EMBEDDING_TRANSPORT is None or not policy_matches:
+            if _EMBEDDING_TRANSPORT is not None:
+                _EMBEDDING_TRANSPORT.close()
+            _EMBEDDING_TRANSPORT = HttpxModelTransport(
+                max_attempts=policy[0],
+                backoff_seconds=policy[1],
+                concurrency_gate=shared_model_concurrency_gate(
+                    operation="embedding",
+                    endpoint=settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
+                    model=settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
+                    limit=policy[2],
+                    queue_timeout_seconds=policy[3],
+                ),
+                jitter_ratio=policy[4],
+                max_backoff_seconds=policy[5],
+                circuit_breaker=(
+                    shared_model_circuit_breaker(
+                        operation="embedding",
+                        endpoint=settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
+                        model=settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
+                        failure_threshold=policy[7],
+                        open_timeout_seconds=policy[8],
+                    )
+                    if policy[6]
+                    else None
+                ),
+            )
+            _EMBEDDING_TRANSPORT_POLICY = policy
+    return _EMBEDDING_TRANSPORT
 
 
 def _retrievable_chunks(chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk]:
@@ -78,18 +148,74 @@ def _retrievable_chunks(chunks: Sequence[KnowledgeChunk]) -> list[KnowledgeChunk
     ]
 
 
-def embed_texts(texts: list[str], *, use_cache: bool = True) -> list[list[float]]:
-    """批量 embedding（内存+磁盘缓存）；失败抛异常由调用方处理。"""
+def _embedding_cache_key(
+    model: str,
+    endpoint: str,
+    text: str,
+    cache_identity: str,
+) -> tuple[str, str]:
+    """构造绑定端点、模型、稳定身份和正文内容的 embedding 缓存键。"""
+
+    payload = {
+        "cache_version": EMBEDDING_CACHE_VERSION,
+        "endpoint": endpoint.rstrip("/"),
+        "model": model,
+        "cache_identity": cache_identity,
+        "text_sha256": _text_digest(text),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return model, digest
+
+
+def embed_texts(
+    texts: list[str],
+    *,
+    use_cache: bool = True,
+    cache_identities: Sequence[str] | None = None,
+) -> list[list[float]]:
+    """批量生成 embedding，并按稳定身份隔离内存与磁盘缓存。
+
+    ``cache_identities`` 必须与 ``texts`` 一一对应。调用方应为同一知识块
+    或同一检索查询在不同运行中传入不变的身份；缓存开启时不允许省略身份，
+    避免用批次位置伪造稳定键。
+    """
+
     if not texts:
         return []
     if not use_cache:
         return _call_embedding_api(texts)
+    if cache_identities is None:
+        raise ValueError(
+            "embedding cache identities are required when cache is enabled"
+        )
+    resolved_identities = list(cache_identities)
+    if len(resolved_identities) != len(texts):
+        raise ValueError("embedding cache identities must match text count")
+    if any(
+        not isinstance(identity, str) or not identity.strip()
+        for identity in resolved_identities
+    ):
+        raise ValueError("embedding cache identities must be non-empty")
+    if len(set(resolved_identities)) != len(resolved_identities):
+        raise ValueError("embedding cache identities must be unique within a batch")
+
     model = settings.CONTRACT_REVIEW_EMBEDDING_MODEL
+    endpoint = settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT
     cache_dir = settings.resolve_path(settings.CONTRACT_REVIEW_EMBEDDING_CACHE_DIR)
     vectors: list[list[float] | None] = [None] * len(texts)
+    cache_keys = [
+        _embedding_cache_key(model, endpoint, text, identity)
+        for text, identity in zip(texts, resolved_identities)
+    ]
     missing: list[tuple[int, str]] = []
-    for index, text in enumerate(texts):
-        key = (model, _text_digest(text))
+    for index, (text, key) in enumerate(zip(texts, cache_keys)):
         cached = _EMBEDDING_MEMORY_CACHE.get(key)
         if cached is None:
             cached = _load_disk_cache(cache_dir, key)
@@ -102,7 +228,7 @@ def embed_texts(texts: list[str], *, use_cache: bool = True) -> list[list[float]
         if len(results) != len(missing):
             raise ValueError("embedding API returned a mismatched batch size")
         for (index, text), vector in zip(missing, results):
-            key = (model, _text_digest(text))
+            key = cache_keys[index]
             _EMBEDDING_MEMORY_CACHE[key] = vector
             _save_disk_cache(cache_dir, key, vector)
             vectors[index] = vector
@@ -132,6 +258,9 @@ class VectorKnowledgeIndex:
             self._vectors = embed_texts(
                 [chunk.content for chunk in self._retrievable],
                 use_cache=self._use_cache,
+                cache_identities=[
+                    f"chunk:{chunk.chunk_id}" for chunk in self._retrievable
+                ],
             )
         except Exception as exc:
             self._fallback = True
@@ -162,6 +291,7 @@ class VectorKnowledgeIndex:
             query_vector = embed_texts(
                 [expand_terminology_text(query.text)],
                 use_cache=self._use_cache,
+                cache_identities=[f"query:{query.query_id}"],
             )[0]
         except Exception as exc:
             logger.warning(f"查询向量生成失败，降级到词法基线: {exc}")
@@ -437,16 +567,16 @@ def _call_embedding_api(texts: list[str]) -> list[list[float]]:
             "context_count": len(texts),
         },
     ):
-        response = httpx.post(
+        response = _embedding_transport().post_json(
             settings.CONTRACT_REVIEW_EMBEDDING_ENDPOINT,
-            json={
+            payload={
                 "model": settings.CONTRACT_REVIEW_EMBEDDING_MODEL,
                 "input": texts,
             },
             headers=headers,
-            timeout=120.0,
+            timeout=settings.CONTRACT_REVIEW_EMBEDDING_TIMEOUT_SECONDS,
+            operation="embedding",
         )
-    response.raise_for_status()
     payload = response.json()
     data = sorted(payload["data"], key=lambda item: item["index"])
     return [item["embedding"] for item in data]

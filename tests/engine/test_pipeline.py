@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
-import fitz
+import pymupdf
 from pydantic import ValidationError
 
 from contract_review.models import (
@@ -31,6 +31,8 @@ from contract_review.pipeline import (
     run_review_with_semantic_client,
 )
 from contract_review.semantic import (
+    SemanticClientError,
+    SemanticProviderUnavailableError,
     StaticSemanticReviewer,
     build_semantic_model_request,
 )
@@ -50,7 +52,7 @@ class PipelineTests(unittest.TestCase):
         self.addCleanup(self._temp_dir.cleanup)
         self.work_path = Path(self._temp_dir.name)
         self.pdf_path = self.work_path / "pipeline-contract.pdf"
-        pdf = fitz.open()
+        pdf = pymupdf.open()
         page = pdf.new_page(width=600, height=800)
         page.insert_text((60, 80), "This contract includes source code delivery.")
         page.insert_text((60, 130), "The parties should define breach responsibility.")
@@ -319,7 +321,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(replayed.run.result_fingerprint, result.run.result_fingerprint)
 
         changed_path = self.work_path / "pipeline-contract-changed.pdf"
-        pdf = fitz.open()
+        pdf = pymupdf.open()
         page = pdf.new_page(width=600, height=800)
         page.insert_text((60, 80), "This contract has changed source code terms.")
         pdf.save(str(changed_path))
@@ -520,6 +522,220 @@ class PipelineTests(unittest.TestCase):
             result.run.result_fingerprint,
         )
 
+    def test_semantic_client_uses_one_rule_scoped_context_per_call(self) -> None:
+        source_rule = self.bundle.rules[0].model_copy(
+            update={"check_method": "semantic"}
+        )
+        bundle = self.bundle.model_copy(
+            update={
+                "rules": [source_rule, self.bundle.rules[1], self.bundle.rules[2]],
+                "release_status": "draft",
+                "release_fingerprint": None,
+                "published_at": None,
+            }
+        )
+        bundle = publish_playbook_bundle(bundle)
+
+        class _RuleScopedSemanticReviewer:
+            def __init__(self) -> None:
+                self.requests = []
+
+            def review(self, request):
+                self.requests.append(request)
+                assert len(request.rule_ids) == 1
+                rule_id = request.rule_ids[0]
+                assert set(request.candidate_evidence_by_rule) == {rule_id}
+                assert set(request.retrieval_queries_by_rule) == {rule_id}
+                contract_candidate = next(
+                    candidate
+                    for candidate in request.candidate_evidence_by_rule[rule_id]
+                    if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+                )
+                return SemanticReviewResponse(
+                    response_id=f"isolated-response-{rule_id}",
+                    provider=request.provider,
+                    model_version=request.model_version,
+                    prompt_version=request.prompt_version,
+                    request_fingerprint=request.request_fingerprint,
+                    items=[
+                        SemanticReviewItem(
+                            rule_id=rule_id,
+                            status="UNKNOWN",
+                            reason="按当前规则上下文返回测试响应。",
+                            evidence_ids=[contract_candidate.evidence_ids[0]],
+                            confidence=0.0,
+                        )
+                    ],
+                )
+
+        client = _RuleScopedSemanticReviewer()
+        result = run_review_with_semantic_client(
+            [self.pdf_path],
+            package_id="pkg-semantic-isolated-context",
+            rule_bundle=bundle,
+            client=client,
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-semantic-isolated-context",
+        )
+
+        self.assertEqual(len(client.requests), 2)
+        self.assertTrue(
+            all(
+                len(request.rule_ids) == 1
+                and set(request.candidate_evidence_by_rule) == set(request.rule_ids)
+                for request in client.requests
+            )
+        )
+        self.assertIsNotNone(result.semantic_request)
+        self.assertIsNotNone(result.semantic_response)
+        context_by_rule = {
+            rule_id: {
+                evidence_id
+                for candidate in result.semantic_request.candidate_evidence_by_rule[rule_id]
+                if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+                for evidence_id in candidate.evidence_ids
+            }
+            for rule_id in result.semantic_request.rule_ids
+        }
+        self.assertTrue(
+            all(
+                set(item.evidence_ids).issubset(context_by_rule[item.rule_id])
+                for item in result.semantic_response.items
+            )
+        )
+        self.assertNotIn("semantic_review_fallback", result.run.configuration)
+
+    def test_semantic_out_of_context_evidence_degrades_to_unknown_baseline(self) -> None:
+        baseline = run_review(
+            [self.pdf_path],
+            package_id="pkg-semantic-fallback-baseline",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-semantic-fallback-baseline",
+        )
+        source_evidence = next(
+            evidence
+            for evidence in baseline.evidence
+            if evidence.evidence_type == EvidenceType.TEXT
+        )
+        out_of_context_evidence = source_evidence.model_copy(
+            update={"evidence_id": "known-but-outside-semantic-context"}
+        )
+        baseline_with_extra_evidence = run_review(
+            [self.pdf_path],
+            package_id="pkg-semantic-fallback",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            extra_evidence=[out_of_context_evidence],
+            run_id="run-semantic-fallback-baseline-2",
+        )
+        request = build_semantic_model_request(
+            baseline_with_extra_evidence,
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+        )
+        response = SemanticReviewResponse(
+            response_id="response-outside-context",
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+            request_fingerprint=request.request_fingerprint,
+            items=[
+                SemanticReviewItem(
+                    rule_id="semantic-breach",
+                    status="WARN",
+                    reason="模型引用了当前规则候选之外的合同证据。",
+                    evidence_ids=[out_of_context_evidence.evidence_id],
+                    confidence=0.95,
+                )
+            ],
+        )
+
+        result = run_review_with_semantic_client(
+            [self.pdf_path],
+            package_id="pkg-semantic-fallback",
+            rule_bundle=self.bundle,
+            client=StaticSemanticReviewer(response),
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+            review_context=ReviewContext(contract_type="software"),
+            extra_evidence=[out_of_context_evidence],
+            run_id="run-semantic-fallback",
+        )
+
+        from contract_review.audit import audit_result
+
+        self.assertIsNone(result.semantic_request)
+        self.assertIsNone(result.semantic_response)
+        self.assertEqual(result.run.status, ReviewStatus.HUMAN_REVIEW)
+        self.assertEqual(
+            result.run.configuration["semantic_review_fallback"],
+            {"status": "DEGRADED", "reason": "evidence_outside_context"},
+        )
+        self.assertTrue(audit_result(result).passed)
+        self.assertEqual(
+            replay_review(
+                result, [self.pdf_path], rule_bundle=self.bundle
+            ).run.result_fingerprint,
+            result.run.result_fingerprint,
+        )
+
+    def test_semantic_provider_transport_exhaustion_degrades_to_baseline(self) -> None:
+        class _UnavailableSemanticReviewer:
+            def review(self, _request):
+                raise SemanticProviderUnavailableError(attempts=3)
+
+        result = run_review_with_semantic_client(
+            [self.pdf_path],
+            package_id="pkg-semantic-provider-fallback",
+            rule_bundle=self.bundle,
+            client=_UnavailableSemanticReviewer(),
+            provider="test-provider",
+            model_version="test-model-v1",
+            prompt_version="contract-review-prompt-v1",
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-semantic-provider-fallback",
+        )
+
+        from contract_review.audit import audit_result
+
+        self.assertIsNone(result.semantic_request)
+        self.assertIsNone(result.semantic_response)
+        self.assertEqual(
+            result.run.configuration["semantic_review_fallback"],
+            {"status": "DEGRADED", "reason": "provider_unavailable"},
+        )
+        self.assertTrue(audit_result(result).passed)
+        self.assertEqual(
+            replay_review(
+                result, [self.pdf_path], rule_bundle=self.bundle
+            ).run.result_fingerprint,
+            result.run.result_fingerprint,
+        )
+
+    def test_generic_semantic_client_error_is_not_treated_as_transport_fallback(self) -> None:
+        class _BrokenSemanticReviewer:
+            def review(self, _request):
+                raise SemanticClientError("provider returned invalid JSON")
+
+        with self.assertRaisesRegex(SemanticClientError, "invalid JSON"):
+            run_review_with_semantic_client(
+                [self.pdf_path],
+                package_id="pkg-semantic-provider-invalid-response",
+                rule_bundle=self.bundle,
+                client=_BrokenSemanticReviewer(),
+                provider="test-provider",
+                model_version="test-model-v1",
+                prompt_version="contract-review-prompt-v1",
+                review_context=ReviewContext(contract_type="software"),
+                run_id="run-semantic-provider-invalid-response",
+            )
+
     def test_semantic_client_skips_rule_without_contract_evidence(self) -> None:
         unmatched_rule = self.bundle.rules[1].model_copy(
             update={"title": "unmatched semantic requirement"}
@@ -708,9 +924,10 @@ class PipelineTests(unittest.TestCase):
         loaded = store.load(result.run.run_id)
         self.assertEqual(loaded.run.result_fingerprint, result.run.result_fingerprint)
 
-        event_ledger = (
-            artifact / "stage-events" / f"review_run-{result.run.run_id}.jsonl"
-        )
+        event_ledgers = list((artifact / "stage-events").glob("*.jsonl"))
+        self.assertEqual(len(event_ledgers), 1)
+        event_ledger = event_ledgers[0]
+        self.assertNotIn(result.run.run_id, event_ledger.name)
         event_ledger.write_text(
             event_ledger.read_text(encoding="utf-8") + "{}\n", encoding="utf-8"
         )
@@ -754,18 +971,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
 
     def test_json_store_appended_revision_survives_a_deep_windows_path(self) -> None:
+        run_id = "run-" + "r" * 156
         result = run_review(
             [self.pdf_path],
             package_id="pkg-deep-store",
             rule_bundle=self.bundle,
             review_context=ReviewContext(contract_type="software"),
-            run_id="run-deep-store",
+            run_id=run_id,
         )
         store_root = (
             self.work_path / ("deep-" + "x" * 80) / "audit-store-deep"
         )
         store = JsonAuditStore(store_root)
-        store.save(result)
+        artifact = store.save(result)
+        self.assertNotEqual(artifact.name, run_id)
         finding = next(
             finding for finding in result.findings if finding.status == "UNKNOWN"
         )
@@ -778,8 +997,77 @@ class PipelineTests(unittest.TestCase):
             comment="deep path",
         )
 
+        revision = store.append_revision(reviewed)
+        self.assertNotIn(run_id, revision.name)
+
+        loaded = store.load(result.run.run_id)
+        self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
+
+    def test_json_store_saves_base_artifact_under_a_deep_windows_path(self) -> None:
+        run_id = "run-" + "d" * 156
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-deep-base-store",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id=run_id,
+        )
+        store_root = (
+            self.work_path / ("deep-base-" + "x" * 50) / "audit-store-base"
+        )
+        store = JsonAuditStore(store_root)
+
+        artifact = store.save(result)
+        self.assertTrue(artifact.name.startswith("r-"))
+        stage_ledgers = list((artifact / "stage-events").glob("*.jsonl"))
+        self.assertEqual([item.name for item in stage_ledgers], ["review_run-events.jsonl"])
+
+        self.assertEqual(store.list_run_ids(), [run_id])
+        loaded = store.load(run_id)
+        self.assertEqual(loaded.run.result_fingerprint, result.run.result_fingerprint)
+
+    def test_json_store_reads_and_appends_a_legacy_run_id_layout(self) -> None:
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-legacy-store",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-legacy-layout",
+        )
+        store_root = self.work_path / "audit-store-legacy-layout"
+        store = JsonAuditStore(store_root)
+        current_artifact = store.save(result)
+
+        legacy_artifact = store_root / result.run.run_id
+        current_artifact.rename(legacy_artifact)
+        current_stage_ledger = next((legacy_artifact / "stage-events").glob("*.jsonl"))
+        current_stage_ledger.rename(
+            legacy_artifact
+            / "stage-events"
+            / f"review_run-{result.run.run_id}.jsonl"
+        )
+        manifest_path = legacy_artifact / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("storage_key")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        finding = next(
+            finding for finding in result.findings if finding.status == "UNKNOWN"
+        )
+        reviewed = record_review_decision(
+            result,
+            finding.finding_id,
+            decision="ACCEPT",
+            actor_id="reviewer-legacy",
+            actor_role="legal",
+            comment="legacy layout",
+        )
         store.append_revision(reviewed)
 
+        self.assertEqual(store.list_run_ids(), [result.run.run_id])
         loaded = store.load(result.run.run_id)
         self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
 

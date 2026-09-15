@@ -1,6 +1,6 @@
 """OCR 网关适配器单元测试（mock HTTP 客户端，无需真实服务）。"""
 
-import fitz
+import pymupdf
 import pytest
 
 from contract_review.models import PageGeometry
@@ -12,10 +12,10 @@ from contract_review_app.services.triton_ocr_provider import TritonOCRProvider
 
 def _render_page_png(width: float = 612, height: float = 792) -> bytes:
     """按 parser 的方式渲染 2x PNG（图像像素 = 2 * PDF 点）。"""
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page(width=width, height=height)
     page.insert_text((72, 72), "测试文本")
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False)
     png = pix.tobytes("png")
     doc.close()
     return png

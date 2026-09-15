@@ -1,6 +1,6 @@
 """合同审查业务上下文 API 契约测试。"""
 
-import fitz
+import pymupdf
 from fastapi.testclient import TestClient
 
 from contract_review_app.config import settings
@@ -16,7 +16,7 @@ def _auth_headers() -> dict[str, str]:
 
 
 def _make_pdf() -> bytes:
-    document = fitz.open()
+    document = pymupdf.open()
     page = document.new_page()
     page.insert_text((72, 72), "合同金额为人民币一百万元，双方应在十个工作日内完成交付。")
     payload = document.tobytes()

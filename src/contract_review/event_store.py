@@ -73,8 +73,9 @@ class JsonStageEventStore:
     原子提交时事件文件随审计工件一起提交；加载时可把它与结果快照校验。
     """
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, path_token: str | None = None) -> None:
         self.root = Path(root)
+        self._path_token = path_token
 
     @staticmethod
     def _validate_subject(subject_type: str, subject_id: str) -> None:
@@ -85,7 +86,10 @@ class JsonStageEventStore:
 
     def _path(self, subject_type: str, subject_id: str) -> Path:
         self._validate_subject(subject_type, subject_id)
-        return self.root / "stage-events" / f"{subject_type}-{subject_id}.jsonl"
+        # 事件内容保留外部主体 ID；文件名可以使用存储层提供的受控短 token。
+        file_token = self._path_token if self._path_token is not None else subject_id
+        self._validate_subject(subject_type, file_token)
+        return self.root / "stage-events" / f"{subject_type}-{file_token}.jsonl"
 
     def append_stage_event(self, event: StageEvent) -> None:
         path = self._path(event.subject_type, event.subject_id)

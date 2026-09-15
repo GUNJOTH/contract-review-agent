@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-import fitz
+import pymupdf
 from loguru import logger
 
 from contract_review.models import (
@@ -72,7 +72,7 @@ class SealEvidenceDetector:
     def _detect_pdf(self, path: Path, document: Document) -> list[Evidence]:
         evidence: list[Evidence] = []
         try:
-            with fitz.open(str(path)) as pdf:
+            with pymupdf.open(str(path)) as pdf:
                 page_count = min(pdf.page_count, self.max_pages)
                 for page_number in range(1, page_count + 1):
                     evidence.extend(
@@ -88,7 +88,7 @@ class SealEvidenceDetector:
         self,
         path: Path,
         document: Document,
-        pdf: fitz.Document,
+        pdf: pymupdf.Document,
         page_number: int,
     ) -> list[Evidence]:
         del path
@@ -96,7 +96,7 @@ class SealEvidenceDetector:
         page = pdf[page_number - 1]
         page_rect = page.rect
         pixmap = page.get_pixmap(
-            dpi=settings.SEAL_PDF_RENDER_DPI, colorspace=fitz.csRGB
+            dpi=settings.SEAL_PDF_RENDER_DPI, colorspace=pymupdf.csRGB
         )
         scale_x = page_rect.width / pixmap.width
         scale_y = page_rect.height / pixmap.height

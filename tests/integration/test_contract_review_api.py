@@ -2,7 +2,7 @@
 
 from collections import Counter
 
-import fitz
+import pymupdf
 from fastapi.testclient import TestClient
 
 from contract_review.models import AssessmentOutcome, FindingStatus, ReviewResult
@@ -21,7 +21,7 @@ def _auth_headers() -> dict:
 
 
 def _make_contract_pdf() -> bytes:
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text(
         (72, 72),
@@ -55,6 +55,7 @@ def test_contract_review_returns_evidence_first_result(monkeypatch):
     assert response.status_code == 200, response.text
     payload = response.json()
     assert set(payload) == {"review_result", "cached"}
+    assert payload["cached"] is False
     review = payload["review_result"]
     assert review["package"]["package_id"] == "pkg-test-001"
     assert review["documents"], "应返回文档信息"

@@ -2,7 +2,7 @@
 
 import asyncio
 
-import fitz
+import pymupdf
 
 from contract_review_app.config import settings
 from contract_review_app.services.task_handlers import run_task_handler
@@ -10,7 +10,7 @@ from contract_review_app.storage.task_file_store import task_file_store
 
 
 def _make_contract_pdf() -> bytes:
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text(
         (72, 72),

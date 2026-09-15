@@ -33,7 +33,6 @@ from contract_review_app.models import (
     ReviewResultResponse,
     TaskCreateAcceptedResponse,
 )
-from contract_review_app.services.result_cache import cache_get
 from contract_review_app.services.document_compare import (
     ContractCompareResponse,
     compare_contract_documents,
@@ -46,9 +45,9 @@ from contract_review_app.services.review_result_store import (
     load_authoritative_review_result,
 )
 from contract_review_app.services.review_service import (
-    _review_fingerprint,
     core_rules_path,
     rules_path,
+    ReviewExecution,
     run_contract_review,
 )
 from contract_review_app.services.review_context import (
@@ -216,22 +215,17 @@ async def review_contract(
                 "合同包至少需要一个文件",
             )
 
-        result = await asyncio.to_thread(
+        execution: ReviewExecution = await asyncio.to_thread(
             run_contract_review,
             file_payloads,
             package_id=PackageId,
             review_context=review_context,
             document_precedence=document_precedence,
             document_kinds=document_kinds,
+            return_cache_status=True,
         )
-        review_cache_key = _review_fingerprint(
-            file_payloads,
-            package_id=PackageId,
-            review_context=review_context,
-            document_precedence=document_precedence,
-            document_kinds=document_kinds,
-        )
-        review_cached = cache_get(review_cache_key) is not None
+        result = execution.result
+        review_cached = execution.cached
 
         duration_ms = (time.time() - start_time) * 1000
         log_request_end(

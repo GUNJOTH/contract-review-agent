@@ -1,14 +1,18 @@
 """印章视觉证据测试（mock OCR 网关印章接口，无需 Triton/GPU）。"""
 
-import fitz
+import pymupdf
 import pytest
 
 from contract_review import parse_contract_package
 from contract_review.models import EvidenceType, ReviewContext
-from contract_review.pipeline import replay_review
 
 from contract_review_app.config import settings
-from contract_review_app.services.review_service import run_contract_review
+from contract_review_app.services.ocr_client import OCRGatewayClient, OCRGatewayError
+from contract_review_app.services import vector_knowledge_index as vector_module
+from contract_review_app.services.review_service import (
+    replay_contract_review,
+    run_contract_review,
+)
 from contract_review_app.services.seal_evidence import SealEvidenceDetector
 
 SEAL_RULE_ID = "CONTRACT-CHECK-1B59A23E6377"
@@ -35,8 +39,32 @@ class EmptyOCRClient:
         return None
 
 
+def test_ocr_seal_gateway_error_is_not_treated_as_no_seal(monkeypatch):
+    client = OCRGatewayClient()
+
+    def fail(*args, **kwargs):
+        del args, kwargs
+        raise OCRGatewayError("synthetic gateway failure")
+
+    monkeypatch.setattr(client, "_post_multipart", fail)
+
+    with pytest.raises(OCRGatewayError, match="synthetic gateway failure"):
+        client.recognize_seal(b"synthetic-image")
+
+
+def test_ocr_seal_success_without_seals_remains_empty(monkeypatch):
+    client = OCRGatewayClient()
+    monkeypatch.setattr(
+        client,
+        "_post_multipart",
+        lambda *args, **kwargs: {"Response": {"SealInfos": []}},
+    )
+
+    assert client.recognize_seal(b"synthetic-image") is None
+
+
 def _make_contract_pdf() -> bytes:
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page(width=612, height=792)
     page.insert_text(
         (72, 72),
@@ -114,6 +142,22 @@ def test_api_review_with_text_pdf_replays_from_original_file_and_evidence_snapsh
 
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_ENDPOINT", "")
     monkeypatch.setattr(
+        settings, "CONTRACT_REVIEW_EMBEDDING_ENDPOINT", "mock://embedding"
+    )
+    monkeypatch.setattr(
+        settings, "CONTRACT_REVIEW_EMBEDDING_MODEL", "test-replay-embedding"
+    )
+    monkeypatch.setattr(
+        settings,
+        "CONTRACT_REVIEW_EMBEDDING_CACHE_DIR",
+        str(tmp_path / "embedding-cache"),
+    )
+    monkeypatch.setattr(
+        "contract_review_app.services.vector_knowledge_index._call_embedding_api",
+        lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+    vector_module._EMBEDDING_MEMORY_CACHE.clear()
+    monkeypatch.setattr(
         "contract_review_app.services.seal_evidence.ocr_gateway_client",
         FakeOCRClient(),
     )
@@ -131,7 +175,7 @@ def test_api_review_with_text_pdf_replays_from_original_file_and_evidence_snapsh
     assert result.documents[0].parser_version == "pdf-text-0.1.0"
     assert result.run.configuration["extra_evidence_ids"]
 
-    replayed = replay_review(
+    replayed = replay_contract_review(
         result,
         [original_path],
         rule_bundle=result.rule_bundle,

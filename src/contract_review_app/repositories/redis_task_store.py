@@ -25,6 +25,7 @@ TASK_KEY = "contract:task:{task_id}"
 TASK_INDEX_KEY = "contract:task:index"
 TASK_STATUS_KEY = "contract:task:status:{status}"
 TASK_RUNNING_KEY = "contract:task:running"
+TASK_REQUEUE_DISPATCH_KEY = "contract:task:requeue-dispatch"
 TASK_HEARTBEAT_KEY = "contract:task:heartbeat:{task_id}"
 TASK_EXPIRY_KEY = "contract:task:expiry"
 TASK_PURGE_KEY = "contract:task:purge"
@@ -134,6 +135,12 @@ if ARGV[5] == '1' then
   redis.call('SADD', KEYS[7], ARGV[3])
 else
   redis.call('SREM', KEYS[7], ARGV[3])
+end
+-- 进入 RUNNING 说明消息已被 worker 消费；恢复重排队则登记待投递意图。
+if ARGV[5] == '1' then
+  redis.call('SREM', KEYS[10], ARGV[3])
+elseif ARGV[13] == '1' then
+  redis.call('SADD', KEYS[10], ARGV[3])
 end
 if ARGV[6] ~= '' then
   redis.call('RPUSH', KEYS[6], ARGV[6])
@@ -725,11 +732,29 @@ class RedisTaskStore:
             ),
             lease_token=lease_token,
             recovery=True,
+            dispatch_pending=True,
         )
         if not written:
             return None
         self._clear_lifecycle(task_id)
         return task
+
+    def list_requeue_dispatches(self, *, limit: int) -> list[str]:
+        """读取需要重新投递的恢复任务，记录由重排队事务原子产生。"""
+
+        if limit <= 0:
+            return []
+        client = self._get_client()
+        task_ids = client.sscan_iter(
+            TASK_REQUEUE_DISPATCH_KEY,
+            count=max(int(limit), 1),
+        )
+        return [self._text(task_id) for task_id in list(task_ids)[:limit]]
+
+    def ack_requeue_dispatch(self, task_id: str) -> None:
+        """确认恢复任务已经成功提交到队列。"""
+
+        self._get_client().srem(TASK_REQUEUE_DISPATCH_KEY, task_id)
 
     def push_dead_letter(self, payload: dict[str, Any]) -> None:
         client = self._get_client()
@@ -827,6 +852,9 @@ class RedisTaskStore:
         candidates.update(client.zrange(TASK_EXPIRY_KEY, 0, max(limit - 1, 0)))
         candidates.update(client.zrange(TASK_PURGE_KEY, 0, max(limit - 1, 0)))
         candidates.update(client.sscan_iter(TASK_RUNNING_KEY, count=limit))
+        candidates.update(
+            client.sscan_iter(TASK_REQUEUE_DISPATCH_KEY, count=limit)
+        )
         for status in AsyncTaskStatus:
             candidates.update(
                 client.sscan_iter(self._task_status_key(status.value), count=limit)
@@ -846,6 +874,7 @@ class RedisTaskStore:
             pipe.zrem(TASK_EXPIRY_KEY, task_id)
             pipe.zrem(TASK_PURGE_KEY, task_id)
             pipe.srem(TASK_RUNNING_KEY, task_id)
+            pipe.srem(TASK_REQUEUE_DISPATCH_KEY, task_id)
             for status in AsyncTaskStatus:
                 pipe.srem(self._task_status_key(status.value), task_id)
             pipe.delete(self._heartbeat_key(task_id))
@@ -866,6 +895,7 @@ class RedisTaskStore:
         pipe.delete(self._lease_fence_key(task_id))
         pipe.delete(self._lease_epoch_key(task_id))
         pipe.delete(self._events_key(task_id))
+        pipe.srem(TASK_REQUEUE_DISPATCH_KEY, task_id)
         if task is not None and task.idempotency_key:
             pipe.delete(self._idempotency_key(task.idempotency_key))
         pipe.srem(TASK_RUNNING_KEY, task_id)
@@ -927,6 +957,7 @@ class RedisTaskStore:
         event: StageEvent | None = None,
         heartbeat_at: str | None = None,
         recovery: bool = False,
+        dispatch_pending: bool = False,
     ) -> bool:
         """使用 fencing token 原子提交 worker 或恢复器的状态变更。"""
 
@@ -937,7 +968,7 @@ class RedisTaskStore:
             task.stage_events = [*task.stage_events, event]
         result = client.eval(
             _LEASE_WRITE_SCRIPT,
-            9,
+            10,
             self._task_key(task.task_id),
             self._lease_fence_key(task.task_id),
             self._lock_key(task.task_id),
@@ -947,6 +978,7 @@ class RedisTaskStore:
             TASK_RUNNING_KEY,
             self._task_status_key(previous_status or task.status.value),
             self._task_status_key(task.status.value),
+            TASK_REQUEUE_DISPATCH_KEY,
             lease_token,
             self._dump(task),
             task.task_id,
@@ -959,6 +991,7 @@ class RedisTaskStore:
             heartbeat_at or "",
             max(int(settings.TASK_HEARTBEAT_TIMEOUT_SECONDS), 1),
             "1" if recovery else "0",
+            "1" if dispatch_pending else "0",
         )
         return bool(int(result or 0))
 

@@ -111,6 +111,10 @@ class TaskStore(Protocol):
         heartbeat_at: str | None = None,
     ) -> AsyncTaskRecord | None: ...
 
+    def list_requeue_dispatches(self, *, limit: int) -> list[str]: ...
+
+    def ack_requeue_dispatch(self, task_id: str) -> None: ...
+
     def mark_pending_failed(
         self,
         task_id: str,

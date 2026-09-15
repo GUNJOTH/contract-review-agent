@@ -1,4 +1,4 @@
-import fitz
+import pymupdf
 
 from contract_review.models import (
     PlaybookAction,
@@ -52,7 +52,7 @@ def _bundle() -> RuleBundle:
 
 def test_revision_set_turns_playbook_revise_into_evidence_bound_replace(tmp_path):
     pdf_path = tmp_path / "contract.pdf"
-    document = fitz.open()
+    document = pymupdf.open()
     page = document.new_page(width=600, height=800)
     page.insert_text((60, 80), "Payment clause: pay in installments after delivery.")
     document.save(str(pdf_path))
@@ -85,7 +85,7 @@ def test_revision_set_turns_playbook_revise_into_evidence_bound_replace(tmp_path
 
 def test_revision_set_keeps_escalation_as_comment_when_clause_is_missing(tmp_path):
     pdf_path = tmp_path / "contract-without-payment.pdf"
-    document = fitz.open()
+    document = pymupdf.open()
     page = document.new_page(width=600, height=800)
     page.insert_text((60, 80), "Delivery clause: delivery is due in ten days.")
     document.save(str(pdf_path))

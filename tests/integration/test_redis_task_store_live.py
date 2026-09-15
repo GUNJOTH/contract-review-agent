@@ -20,9 +20,11 @@ from fastapi import UploadFile
 from contract_review_app.models import AsyncTaskRecord, AsyncTaskStage, AsyncTaskStatus
 from contract_review_app.repositories.redis_task_store import (
     TASK_INDEX_KEY,
+    TASK_REQUEUE_DISPATCH_KEY,
     RedisTaskStore,
 )
 from contract_review_app.services.task_service import TaskService
+import contract_review_app.tasks.reconcile_tasks as reconcile_tasks
 
 
 LIVE_REDIS_URL = os.getenv("CONTRACT_REVIEW_LIVE_REDIS_URL")
@@ -203,3 +205,82 @@ def test_live_service_strict_idempotency_writes_input_once(monkeypatch) -> None:
         for task_id in accepted_ids:
             store.delete(task_id)
         client.delete(store._idempotency_key(idempotency_key))
+
+
+def test_live_redis_recovery_dispatch_survives_publish_failure(monkeypatch) -> None:
+    """真实 Redis 中恢复投递意图必须跨 broker 失败保留到下一轮。"""
+
+    assert LIVE_REDIS_URL is not None
+    client = redis.Redis.from_url(
+        LIVE_REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=3,
+        socket_timeout=3,
+    )
+    assert client.ping() is True
+
+    prefix = f"live-requeue-{uuid4().hex[:16]}"
+    task_id = f"cr_{prefix}"
+    store = RedisTaskStore(client)
+    publisher_calls: list[tuple[list[str], str]] = []
+
+    class _Publisher:
+        def apply_async(self, *, args: list[str], queue: str) -> None:
+            publisher_calls.append((args, queue))
+            if len(publisher_calls) == 1:
+                raise RuntimeError("simulated broker unavailable")
+
+    class _NoopMetrics:
+        def record_async_task_requeued(self, *_args) -> None:
+            return None
+
+    task_store = _task(task_id=task_id, idempotency_key=f"{prefix}-key")
+    try:
+        store.create(task_store)
+        lease_token = store.acquire_lease(task_id)
+        assert lease_token is not None
+        assert (
+            store.mark_running(
+                task_id,
+                worker_id=f"worker-{prefix}",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                lease_token=lease_token,
+            )
+            is not None
+        )
+        # 恢复器只接管已失去租约的任务；这里显式模拟 Redis 租约自然过期。
+        client.delete(store._lock_key(task_id))
+        updated = store.requeue(
+            task_id,
+            lease_token=lease_token,
+            heartbeat_at=None,
+        )
+        assert updated is not None
+        assert updated.status == AsyncTaskStatus.PENDING
+        assert client.sismember(TASK_REQUEUE_DISPATCH_KEY, task_id)
+
+        # 只让巡检本次生成的标记进入 helper，避免触碰共享 Redis 中其他测试或业务记录。
+        monkeypatch.setattr(
+            store,
+            "list_requeue_dispatches",
+            lambda *, limit: [task_id]
+            if client.sismember(TASK_REQUEUE_DISPATCH_KEY, task_id)
+            else [],
+        )
+        monkeypatch.setattr(reconcile_tasks, "task_store", store)
+        monkeypatch.setattr(reconcile_tasks, "execute_contract_review_task", _Publisher())
+        monkeypatch.setattr(reconcile_tasks, "metrics", _NoopMetrics())
+        monkeypatch.setattr(reconcile_tasks, "_sync_queue_depth", lambda _queue: None)
+        monkeypatch.setattr(reconcile_tasks, "log_async_task_event", lambda **_kwargs: None)
+
+        reconcile_tasks._dispatch_requeued_tasks()
+        assert len(publisher_calls) == 1
+        assert client.sismember(TASK_REQUEUE_DISPATCH_KEY, task_id)
+        assert store.get(task_id) is not None
+
+        reconcile_tasks._dispatch_requeued_tasks()
+        assert publisher_calls == [([task_id], "contract.heavy"), ([task_id], "contract.heavy")]
+        assert not client.sismember(TASK_REQUEUE_DISPATCH_KEY, task_id)
+    finally:
+        store.delete(task_id)
+        client.srem(TASK_REQUEUE_DISPATCH_KEY, task_id)

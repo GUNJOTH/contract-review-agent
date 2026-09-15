@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import fitz
+import pymupdf
 
 from contract_review.models import BoundingBox, PageGeometry
 from contract_review.ocr import OCRPageResult, OCRProviderError, OCRTextBlock
@@ -70,7 +70,7 @@ class TritonOCRProvider:
     @staticmethod
     def _image_size(image_bytes: bytes) -> tuple[int, int]:
         try:
-            pixmap = fitz.Pixmap(image_bytes)
+            pixmap = pymupdf.Pixmap(image_bytes)
             return pixmap.width, pixmap.height
         except Exception as exc:
             raise OCRProviderError(f"无法解码 OCR 页面图像: {exc}") from exc

@@ -125,7 +125,7 @@ def _worker_command() -> list[str]:
         "-l",
         settings.CELERY_LOG_LEVEL.lower(),
         "-Q",
-        "contract.heavy",
+        settings.CELERY_DEFAULT_QUEUE,
         "--without-mingle",
         *pool_args,
     ]
@@ -228,6 +228,7 @@ def _child_env() -> dict[str, str]:
         parts.append(current)
     env["PYTHONPATH"] = os.pathsep.join(parts)
     return env
+
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import httpx
-from loguru import logger
 
 from contract_review_app.config import settings
 
@@ -76,20 +75,17 @@ class OCRGatewayClient:
         return {"rec_texts": rec_texts, "rec_scores": rec_scores, "dt_polys": dt_polys}
 
     def recognize_seal(self, image_bytes: bytes, *, page_number: int = 1) -> dict | None:
-        try:
-            data = self._post_multipart(
-                "/seal",
-                form_data={
-                    "EnablePdf": "false",
-                    "PdfPageNumber": str(page_number),
-                    "UseVL": "true",
-                },
-                file_name="page.png",
-                file_content=image_bytes,
-            )
-        except OCRGatewayError as exc:
-            logger.warning(f"OCR 网关印章识别失败: {exc}")
-            return None
+        """调用印章识别；无印章返回 ``None``，网关失败抛出 ``OCRGatewayError``。"""
+        data = self._post_multipart(
+            "/seal",
+            form_data={
+                "EnablePdf": "false",
+                "PdfPageNumber": str(page_number),
+                "UseVL": "true",
+            },
+            file_name="page.png",
+            file_content=image_bytes,
+        )
         result = data.get("Response") or {}
         seal_infos = result.get("SealInfos") or []
         if not seal_infos and result.get("SealBody"):

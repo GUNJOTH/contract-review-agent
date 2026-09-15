@@ -16,6 +16,7 @@ from contract_review.semantic import SemanticClientError
 from contract_review_app.config import settings
 from contract_review_app.services.pii_gate import gate_external_model_input, scan_text
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
+from contract_review_app.services import vector_knowledge_index as vector_module
 from contract_review_app.services.vector_knowledge_index import embed_texts
 
 
@@ -129,8 +130,9 @@ def test_embedding_input_is_also_blocked(monkeypatch):
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_EMBEDDING_ENDPOINT", "http://fake/embeddings")
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_EMBEDDING_MODEL", "test-embedding")
     monkeypatch.setattr(
-        "contract_review_app.services.vector_knowledge_index.httpx.post",
-        lambda *_args, **_kwargs: pytest.fail("PII gate must run before embedding HTTP"),
+        vector_module,
+        "_embedding_transport",
+        lambda: pytest.fail("PII gate must run before embedding HTTP"),
     )
     with pytest.raises(ValueError, match="PII"):
         embed_texts(["联系人电话：13800138000"], use_cache=False)

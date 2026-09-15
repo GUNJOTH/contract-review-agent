@@ -29,18 +29,20 @@ from .models import (
 from .rule_checkers import is_rule_checker_configured
 from .rules import is_rule_in_scope, resolve_rule_applicability
 
-SEMANTIC_GATE_VERSION = "semantic-evidence-gate-0.4.0"
+SEMANTIC_GATE_VERSION = "semantic-evidence-gate-0.5.0"
 MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS = 0.5
 MIN_CONFIDENCE_FOR_AUTOMATIC_PASS = 0.8
 DEFAULT_SYSTEM_INSTRUCTION = (
     "你是合同条款审查模型。只能依据给定上下文判断；每条结论必须引用上下文中的 evidence_id。"
     "检索候选只是待核对证据，不是审核结论；不得把规则来源或语义相似候选当作合同事实。"
+    "如果上下文提供按规则划分的合同 evidence_id 白名单，只能从对应白名单中选择。"
     "无法确定时返回 UNKNOWN，不得补造事实或法律依据。请仅返回 JSON。"
 )
 CONTRACT_REVIEW_SYSTEM_INSTRUCTION = (
     "你是合同条款审查模型。用户消息中给出 rule_ids、review_context、"
     "rule_definitions、"
-    "retrieval_queries_by_rule 和按规则拆分的 candidate_evidence_by_rule；"
+    "retrieval_queries_by_rule、按规则拆分的 candidate_evidence_by_rule 和"
+    "allowed_contract_evidence_ids_by_rule；"
     "候选证据来自统一 RetrievalQuery→RetrievalTrace→CandidateEvidence 链路，"
     "source_kind=rule 的是规则定义候选块，source_kind=contract 的是合同正文候选块。"
     "CandidateEvidence 只是检索候选，不是审核结论；必须先核对其合同来源、"
@@ -60,8 +62,9 @@ CONTRACT_REVIEW_SYSTEM_INSTRUCTION = (
     '"confidence": <0到1的小数>, "recommended_action": "<建议>"}]}。'
     "约束：rule_id 只能来自用户消息中的 rule_ids 列表；"
     "status 只能是 PASS、WARN、BLOCK、UNKNOWN、NOT_APPLICABLE 之一；"
-    "每条结论的 evidence_ids 必须从对应候选上下文中合同正文块的 evidence_ids 中"
-    "引用至少一个，不得引用规则定义块的 evidence_id，不得引用其他规则的上下文，"
+    "每条结论的 evidence_ids 必须严格从对应的"
+    "allowed_contract_evidence_ids_by_rule 列表中选择至少一个，"
+    "不得引用规则定义块的 evidence_id，不得引用其他规则的上下文，"
     "不得为空，不得编造。"
 )
 
@@ -87,9 +90,58 @@ class SemanticClientError(RuntimeError):
     """Raised when a semantic provider cannot return a valid JSON response."""
 
 
+class SemanticProviderUnavailableError(SemanticClientError):
+    """语义模型传输重试耗尽，允许流水线回到确定性基线。"""
+
+    def __init__(self, *, attempts: int) -> None:
+        self.attempts = attempts
+        super().__init__(
+            f"semantic provider transport unavailable after {attempts} attempts"
+        )
+
+
+class SemanticEvidenceContextError(ValueError):
+    """语义模型引用当前规则允许证据集合之外的证据时抛出。"""
+
+    def __init__(
+        self,
+        *,
+        rule_id: str,
+        evidence_ids: Sequence[str],
+        message: str | None = None,
+    ) -> None:
+        self.rule_id = rule_id
+        self.evidence_ids = tuple(sorted(set(evidence_ids)))
+        super().__init__(
+            message
+            or (
+                "semantic response cites evidence outside its context for "
+                f"{rule_id}: {list(self.evidence_ids)}"
+            )
+        )
+
+
+def contract_evidence_ids_by_rule(
+    candidates_by_rule: Mapping[str, Sequence[CandidateEvidence]],
+) -> dict[str, list[str]]:
+    """为外部模型生成稳定的逐规则合同证据白名单。"""
+
+    return {
+        rule_id: sorted(
+            {
+                evidence_id
+                for candidate in candidates
+                if candidate.source_kind == KnowledgeSourceKind.CONTRACT
+                for evidence_id in candidate.evidence_ids
+            }
+        )
+        for rule_id, candidates in sorted(candidates_by_rule.items())
+    }
+
+
 class SemanticReviewer(Protocol):
     def review(self, request: SemanticModelRequest) -> SemanticReviewResponse:
-        """Return a structured response for the supplied request snapshot."""
+        """为一个规则上下文返回结构化响应。"""
 
 
 def build_semantic_batch_request_fingerprint(
@@ -180,7 +232,11 @@ def build_semantic_model_request(
     system_instruction: str = DEFAULT_SYSTEM_INSTRUCTION,
     configuration: Mapping[str, Any] | None = None,
 ) -> SemanticModelRequest | None:
-    """从核心候选证据重建模型请求；没有正文候选时返回 ``None``。"""
+    """从核心候选证据构建批次快照；没有正文候选时返回 ``None``。
+
+    外部模型调用由编排器进一步拆成单规则请求；本对象保留完整批次，
+    用于合并响应、审计和回放指纹绑定。
+    """
 
     candidate_rules = [
         rule
@@ -259,15 +315,126 @@ def build_semantic_model_request(
     )
 
 
+def isolate_semantic_model_request(
+    request: SemanticModelRequest,
+    *,
+    rule_id: str,
+) -> SemanticModelRequest:
+    """从批次快照拆出单规则请求，阻断规则之间的证据上下文串线。"""
+
+    if rule_id not in request.rule_ids:
+        raise ValueError(f"语义请求不包含目标规则：{rule_id}")
+    rule_by_id = {rule.rule_id: rule for rule in request.rule_definitions}
+    rule = rule_by_id[rule_id]
+    candidates_by_rule = {
+        rule_id: list(request.candidate_evidence_by_rule[rule_id])
+    }
+    retrieval_queries_by_rule = {
+        rule_id: request.retrieval_queries_by_rule[rule_id]
+    }
+    request_fingerprint = build_semantic_batch_request_fingerprint(
+        rules=[rule],
+        candidates_by_rule=candidates_by_rule,
+        prompt_version=request.prompt_version,
+        model_version=request.model_version,
+        system_instruction=request.system_instruction,
+        configuration=request.configuration,
+        review_context=request.review_context,
+        retrieval_queries_by_rule=retrieval_queries_by_rule,
+    )
+    return SemanticModelRequest(
+        request_id=f"semantic-rule-request-{request_fingerprint[:16]}",
+        provider=request.provider,
+        model_version=request.model_version,
+        prompt_version=request.prompt_version,
+        request_fingerprint=request_fingerprint,
+        rule_ids=[rule_id],
+        rule_definitions=[rule],
+        candidate_evidence_by_rule=candidates_by_rule,
+        system_instruction=request.system_instruction,
+        configuration=dict(request.configuration),
+        review_context=request.review_context,
+        retrieval_queries_by_rule=retrieval_queries_by_rule,
+    )
+
+
+def combine_isolated_semantic_responses(
+    request: SemanticModelRequest,
+    responses: Sequence[SemanticReviewResponse],
+) -> SemanticReviewResponse:
+    """合并已分别校验的规则响应，并绑定回原始批次指纹。"""
+
+    if len(responses) != len(request.rule_ids):
+        raise SemanticClientError(
+            "isolated semantic responses must cover exactly the requested rules"
+        )
+    response_by_rule: dict[str, SemanticReviewResponse] = {}
+    for rule_id, response in zip(request.rule_ids, responses, strict=True):
+        if rule_id in response_by_rule:
+            raise SemanticClientError(
+                f"isolated semantic responses contain duplicate rule: {rule_id}"
+            )
+        if len(response.items) != 1 or response.items[0].rule_id != rule_id:
+            raise SemanticClientError(
+                f"isolated semantic response must contain exactly one item: {rule_id}"
+            )
+        response_by_rule[rule_id] = response
+
+    if len(request.rule_ids) == 1:
+        return responses[0].model_copy(
+            update={"request_fingerprint": request.request_fingerprint}
+        )
+
+    response_digest = hashlib.sha256(
+        "\x1f".join(
+            [
+                request.request_fingerprint,
+                *(response.response_id for response in responses),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    return SemanticReviewResponse(
+        response_id=f"semantic-batch-response-{response_digest}",
+        provider=request.provider,
+        model_version=request.model_version,
+        prompt_version=request.prompt_version,
+        request_fingerprint=request.request_fingerprint,
+        items=[response_by_rule[rule_id].items[0] for rule_id in request.rule_ids],
+    )
+
+
+def require_rule_scoped_semantic_request(request: SemanticModelRequest) -> None:
+    """阻止外部模型客户端接收包含多条规则的共享上下文。"""
+
+    if len(request.rule_ids) != 1:
+        raise SemanticClientError(
+            "semantic provider requires exactly one rule-scoped request"
+        )
+
+
 class StaticSemanticReviewer:
-    """Replay adapter that returns a previously captured provider response."""
+    """回放适配器，返回之前捕获的语义模型响应。"""
 
     def __init__(self, response: SemanticReviewResponse) -> None:
         self.response = response
 
     def review(self, request: SemanticModelRequest) -> SemanticReviewResponse:
         if request.request_fingerprint != self.response.request_fingerprint:
-            raise SemanticClientError("captured response does not match request fingerprint")
+            if len(request.rule_ids) == 1:
+                rule_id = request.rule_ids[0]
+                items = [
+                    item for item in self.response.items if item.rule_id == rule_id
+                ]
+                if len(items) == 1:
+                    return self.response.model_copy(
+                        update={
+                            "request_fingerprint": request.request_fingerprint,
+                            "items": items,
+                        }
+                    )
+            raise SemanticClientError(
+                "captured response does not match request fingerprint"
+            )
         return self.response
 
 
@@ -297,6 +464,7 @@ class OpenAICompatibleSemanticReviewer:
         self.timeout_seconds = timeout_seconds
 
     def review(self, request: SemanticModelRequest) -> SemanticReviewResponse:
+        require_rule_scoped_semantic_request(request)
         if request.model_version != self.model_version:
             raise SemanticClientError("request model_version does not match client configuration")
         body = {
@@ -333,6 +501,9 @@ class OpenAICompatibleSemanticReviewer:
                                     request.candidate_evidence_by_rule.items()
                                 )
                             },
+                            "allowed_contract_evidence_ids_by_rule": contract_evidence_ids_by_rule(
+                                request.candidate_evidence_by_rule
+                            ),
                         },
                         ensure_ascii=False,
                     ),
@@ -403,8 +574,13 @@ def validate_semantic_response(
         seen.add(item.rule_id)
         missing = set(item.evidence_ids) - set(known_evidence)
         if missing:
-            raise ValueError(
-                f"semantic response references missing evidence for {item.rule_id}: {sorted(missing)}"
+            raise SemanticEvidenceContextError(
+                rule_id=item.rule_id,
+                evidence_ids=missing,
+                message=(
+                    "semantic response references missing evidence for "
+                    f"{item.rule_id}: {sorted(missing)}"
+                ),
             )
         rule_source_evidence = {
             evidence_id
@@ -413,20 +589,26 @@ def validate_semantic_response(
             == EvidenceType.EXTERNAL_REFERENCE
         }
         if rule_source_evidence:
-            raise ValueError(
-                f"semantic response cannot cite rule source evidence for {item.rule_id}: "
-                f"{sorted(rule_source_evidence)}"
+            raise SemanticEvidenceContextError(
+                rule_id=item.rule_id,
+                evidence_ids=rule_source_evidence,
+                message=(
+                    "semantic response cannot cite rule source evidence for "
+                    f"{item.rule_id}: {sorted(rule_source_evidence)}"
+                ),
             )
         allowed_evidence_ids = allowed_evidence_ids_by_rule.get(item.rule_id)
         if allowed_evidence_ids is None:
-            raise ValueError(
-                f"semantic response has no evidence context for {item.rule_id}"
+            raise SemanticEvidenceContextError(
+                rule_id=item.rule_id,
+                evidence_ids=item.evidence_ids,
+                message=f"semantic response has no evidence context for {item.rule_id}",
             )
         outside_context = set(item.evidence_ids) - allowed_evidence_ids
         if outside_context:
-            raise ValueError(
-                f"semantic response cites evidence outside its context for {item.rule_id}: "
-                f"{sorted(outside_context)}"
+            raise SemanticEvidenceContextError(
+                rule_id=item.rule_id,
+                evidence_ids=outside_context,
             )
     if seen != expected:
         missing = sorted(expected - seen)

@@ -41,8 +41,11 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen --extra dev
 
+      - name: Verify application configuration contract
+        run: uv run python scripts/check_config_contract.py
+
       - name: Check Python lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts/check_config_contract.py
 
       - name: Check CI smoke script formatting
         run: uv run ruff format --check scripts/ci_api_smoke.py

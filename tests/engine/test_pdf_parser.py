@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-import fitz
+import pymupdf
 
 from contract_review.models import DocumentKind
 from contract_review.parser import ParseError, find_text_evidence, parse_pdf, sha256_file
@@ -9,7 +9,7 @@ from tests.test_support.workspace import create_test_workspace
 
 
 def _write_text_pdf(path: Path) -> None:
-    pdf = fitz.open()
+    pdf = pymupdf.open()
     page = pdf.new_page(width=600, height=800)
     page.insert_text((60, 80), "Section 8 Payment Terms")
     page.insert_text((60, 130), "Contract total amount is CNY 1000000; numeric amount is 900000.")
@@ -81,7 +81,7 @@ class PdfParserTests(unittest.TestCase):
 
     def test_blank_text_page_is_explicitly_marked_for_ocr(self) -> None:
         pdf_path = self.tmp_path / "scanned-contract.pdf"
-        pdf = fitz.open()
+        pdf = pymupdf.open()
         pdf.new_page(width=600, height=800)
         pdf.save(str(pdf_path))
         pdf.close()

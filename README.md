@@ -28,6 +28,11 @@ cp .env.example .env
 | `CONTRACT_REVIEW_ENDPOINT` | OpenAI 兼容的大模型接口 | 页面能打开，但语义审查不会调用外部模型；确定性规则和事实抽取仍可执行 |
 | `CONTRACT_REVIEW_API_KEY` | 模型接口密钥 | 接口需要鉴权时审查失败 |
 | `CONTRACT_REVIEW_MODEL` | 模型名 | 请求体缺少模型名，审查失败 |
+| `CONTRACT_REVIEW_MODEL_MAX_ATTEMPTS` / `CONTRACT_REVIEW_MODEL_RETRY_BACKOFF_SECONDS` / `CONTRACT_REVIEW_MODEL_RETRY_JITTER_RATIO` / `CONTRACT_REVIEW_MODEL_MAX_BACKOFF_SECONDS` | 外部模型最大尝试次数 / 指数退避起始秒数 / 抖动比例 / 单次退避上限 | 默认 `5` 次 / `0.25` 秒 / `0.2` / `30` 秒；连接、超时及临时 HTTP 状态有限重试，遵循 `Retry-After` 且不超过上限，耗尽后安全降级 |
+| `CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED` / `...FAILURE_THRESHOLD` / `...OPEN_TIMEOUT_SECONDS` | 外部模型按操作、端点和模型共享的熔断开关 / 连续临时失败阈值 / open 冷却秒数 | 默认开启 / `3` 次 / `30` 秒；熔断期间 fail-fast，冷却后只放行一个 half-open 探针，非临时业务错误不计入失败 |
+| `CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY` / `CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS` | 进程内 chat 模型共享并发上限 / 等待槽位的最长秒数 | 默认 `1` / `30` 秒；阶段 2 硬上限为 `3`，超时后语义层安全降级，不会继续堆积请求 |
+| `CONTRACT_REVIEW_MODEL_ADAPTIVE_CONCURRENCY_ENABLED` 及 `ADAPTIVE_*` | 按最近模型调用窗口调整下一次审查的规则级并发 | 默认关闭；只在 `1～3` 边界内升降档，达到延迟阈值或失败时降档，连续成功窗口后才升档 |
+| `CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY` | 单次审查的规则级模型并发上限 | 默认 `1`（串行兼容）；阶段 1 硬上限为 `3`，更高值会被拒绝 |
 | `OCR_GATEWAY_BASE_URL` | OCR 网关地址 | 扫描件/印章识别连不到网关；启动时只打 warning，不阻止进程 |
 | `OCR_GATEWAY_TOKEN` | OCR 网关鉴权（网关开了鉴权才需要） | 扫描件/印章识别 401 |
 | `API_TOKEN` | 本服务 API 鉴权 Token | 未配置时受保护 API 返回 503；缺少或错误 Token 返回 401 |
@@ -39,6 +44,8 @@ cp .env.example .env
 可选但建议一并填：
 
 - `CONTRACT_REVIEW_EMBEDDING_ENDPOINT` / `CONTRACT_REVIEW_EMBEDDING_MODEL` / `CONTRACT_REVIEW_EMBEDDING_API_KEY`：启用词法与向量混合召回；不填则使用引擎词法检索
+- `CONTRACT_REVIEW_EMBEDDING_TIMEOUT_SECONDS`：embedding 单次请求超时；传输重试仍使用上面的模型传输尝试次数和退避策略
+- `CONTRACT_REVIEW_EMBEDDING_MAX_CONCURRENCY` / `CONTRACT_REVIEW_EMBEDDING_QUEUE_TIMEOUT_SECONDS`：进程内 embedding 共享并发上限 / 有界等待秒数；默认 `1` / `30` 秒，阶段 2 硬上限为 `3`
 - `CONTRACT_REVIEW_PROVIDER`：默认 `openai-compatible`
 - `AUTH_HEADER_NAME`：本服务鉴权请求头名称，默认 `X-API-Token`
 - `OTEL_ENABLED` / `OTEL_SERVICE_NAME`：可选 OpenTelemetry 链路追踪；先执行 `uv sync --frozen --extra otel`，未安装 SDK 或未开启时为 no-op，span 不包含合同正文、提示词或密钥
@@ -88,6 +95,12 @@ docker compose up --build
 业务规则集中在 `data/contract_core_rules_v0.15.json`，加载时执行规则 ID、Playbook 立场、checker 绑定和 `ReviewResult` Schema 兼容门禁；草稿或不兼容快照不能进入审查。`publish_playbook_bundle` 只生成新的发布快照和指纹，不覆盖源文件。专家评测种子集位于 `evals/expert_contract_review_cases.json`，每个案例由完整合同包和专家标注闭环组成，严格区分条款定位、证据引用、规则判断、`UNKNOWN`、金额事实、金额计算、版本比较和红线建议；其中 `unknown_false_pass` 专门拦截证据不足却自动通过。数据契约和离线评测边界见 [评测说明](evals/README.md)。
 
 ## 测试
+
+测试门禁固定遵循三条规则：
+
+1. 可回放的应用入口必须覆盖“首次执行 → 持久化 → 回放”成对流程，不能只测核心函数的单次结果。
+2. `retrieval_index`、模型/规则版本、缓存身份等会影响结果的实现身份必须做 round-trip 断言，确认回放恢复同一执行实现。
+3. 普通 pytest 默认关闭 OCR、embedding、模型和 Redis 等外部依赖；目标测试使用隔离 fake/mock，真实外部联调使用单独命令，不读取开发机 `.env` 作为隐式测试开关。
 
 ```bash
 uv run --extra dev pytest

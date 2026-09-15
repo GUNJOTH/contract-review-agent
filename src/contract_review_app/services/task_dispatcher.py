@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-HEAVY_QUEUE = "contract.heavy"
+from contract_review_app.config import settings
 
 
 @dataclass(frozen=True)
@@ -14,9 +14,7 @@ class TaskDispatchConfig:
     queue_name: str
 
 
-_TASKS: dict[str, TaskDispatchConfig] = {
-    "contract-review": TaskDispatchConfig("contract-review", HEAVY_QUEUE),
-}
+_SUPPORTED_TASK_TYPES = frozenset({"contract-review"})
 
 _HEAVY_SUFFIXES = {".pdf", ".doc", ".docx"}
 _HEAVY_CONTENT_TYPES = {
@@ -33,16 +31,17 @@ def get_dispatch_config(
     input_content_type: str | None = None,
 ) -> TaskDispatchConfig:
     del input_filename, input_content_type
-    config = _TASKS.get(task_type)
-    if config is None:
+    if task_type not in _SUPPORTED_TASK_TYPES:
         raise ValueError(f"Unsupported task type: {task_type}")
     return TaskDispatchConfig(
-        task_type=config.task_type,
-        queue_name=HEAVY_QUEUE,
+        task_type=task_type,
+        queue_name=settings.CELERY_DEFAULT_QUEUE,
     )
 
 
-def _is_heavy_input(*, input_filename: str | None, input_content_type: str | None) -> bool:
+def _is_heavy_input(
+    *, input_filename: str | None, input_content_type: str | None
+) -> bool:
     if input_content_type in _HEAVY_CONTENT_TYPES:
         return True
     if input_filename and Path(input_filename).suffix.lower() in _HEAVY_SUFFIXES:

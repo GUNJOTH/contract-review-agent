@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-import fitz
+import pymupdf
 
 from contract_review.models import BoundingBox, ReviewContext, Rule, RuleBundle
 from contract_review.ocr import OCRPageResult, OCRTextBlock, StaticOCRProvider
@@ -17,7 +17,7 @@ class OcrParserTests(unittest.TestCase):
         self.addCleanup(self._temp_dir.cleanup)
         self.work_path = Path(self._temp_dir.name)
         self.pdf_path = self.work_path / "scan-like.pdf"
-        pdf = fitz.open()
+        pdf = pymupdf.open()
         pdf.new_page(width=600, height=800)
         pdf.save(str(self.pdf_path))
         pdf.close()

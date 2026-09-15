@@ -16,7 +16,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from uuid import uuid4
+from tempfile import mkdtemp
 
 from .event_store import JsonStageEventStore, StageEventStoreError
 from .models import ReviewResult
@@ -24,6 +24,9 @@ from .replay import build_result_fingerprint
 from .audit import audit_result
 
 STORE_VERSION = "json-audit-store-0.3.0"
+_WINDOWS_MAX_PATH = 260
+_STORAGE_KEY_HEX_LENGTH = 32
+_STAGE_EVENT_PATH_TOKEN = "events"
 
 
 class AuditStoreError(RuntimeError):
@@ -94,6 +97,24 @@ def _safe_run_id(run_id: str) -> str:
     return run_id
 
 
+def _storage_key(run_id: str) -> str:
+    """将外部运行 ID 映射为受控长度的内部文件系统键。"""
+
+    digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    return f"r-{digest[:_STORAGE_KEY_HEX_LENGTH]}"
+
+
+def _revision_timestamp(revision_id: str) -> int | None:
+    for pattern, base in (
+        (r"^r-(\d{19})$", 10),
+        (r"^revision-(\d+)(?:-|$)", 10),
+    ):
+        match = re.match(pattern, revision_id)
+        if match is not None:
+            return int(match.group(1), base)
+    return None
+
+
 def _json_bytes(payload: object) -> bytes:
     return json.dumps(
         payload,
@@ -109,34 +130,89 @@ class JsonAuditStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
 
+    def _locate_artifact_dir(self, run_id: str) -> Path:
+        """定位新布局工件，找不到时回退到旧的 run_id 目录布局。"""
+
+        storage_target = self.root / _storage_key(run_id)
+        if storage_target.exists():
+            return storage_target
+        legacy_target = self.root / run_id
+        if legacy_target.exists():
+            return legacy_target
+        return storage_target
+
+    def _validate_windows_path_budget(self, storage_key: str) -> None:
+        """在写入前拒绝会超过 Windows 路径上限的全新工件根目录。"""
+
+        if os.name != "nt":
+            return
+        root = Path(os.path.abspath(self.root))
+        longest_path = (
+            root
+            / storage_key
+            / "revisions"
+            / f"r-{'0' * 19}"
+            / "stage-events"
+            / f"review_run-{_STAGE_EVENT_PATH_TOKEN}.jsonl"
+        )
+        if len(str(longest_path)) >= _WINDOWS_MAX_PATH:
+            raise AuditStoreError(
+                "audit store root path is too deep for the Windows MAX_PATH budget"
+            )
+
+    @staticmethod
+    def _stage_events_path(root: Path, path_token: str) -> Path:
+        return root / "stage-events" / f"review_run-{path_token}.jsonl"
+
+    @staticmethod
+    def _stage_event_path_token(manifest: dict[str, object], run_id: str) -> str:
+        storage_key = manifest.get("storage_key")
+        if storage_key is None:
+            # 旧版工件没有内部键，继续按旧文件名读取。
+            return run_id
+        expected_key = _storage_key(run_id)
+        if storage_key != expected_key:
+            raise AuditStoreError(f"review artifact storage key mismatch: {run_id}")
+        return _STAGE_EVENT_PATH_TOKEN
+
     def save(self, result: ReviewResult) -> Path:
         run_id = _safe_run_id(result.run.run_id)
+        storage_key = _storage_key(run_id)
+        self._validate_windows_path_budget(storage_key)
         expected_fingerprint = build_result_fingerprint(result)
         if result.run.result_fingerprint != expected_fingerprint:
             raise AuditStoreError("review result fingerprint is missing or invalid")
         audit = audit_result(result)
         if not audit.passed:
             raise AuditStoreError(f"review artifact failed audit: {audit.issues}")
-        target = self.root / run_id
-        if target.exists():
+        target = self.root / storage_key
+        legacy_target = self.root / run_id
+        if target.exists() or legacy_target.exists():
             raise AuditStoreError(f"review artifact already exists: {run_id}")
         self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self.root / f".{run_id}.tmp-{uuid4().hex}"
-        temporary.mkdir()
+        # 临时目录和阶段账本文件名均使用受控短键，外部 run_id 只保留在内容中。
+        # 这样较深部署目录下不会因外部 ID 叠加路径而触发 Windows MAX_PATH。
+        # mkdtemp 会在同一存储根目录下创建短名临时目录，并处理名称冲突。
+        temporary = Path(mkdtemp(prefix=".base-", dir=self.root))
         payload = result.model_dump(mode="json")
         payload_bytes = _json_bytes(payload)
         payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
         manifest = {
             "store_version": STORE_VERSION,
             "run_id": run_id,
+            "storage_key": storage_key,
             "result_fingerprint": result.run.result_fingerprint,
             "payload_sha256": payload_sha256,
         }
         (temporary / "review.json").write_bytes(payload_bytes)
-        event_store = JsonStageEventStore(temporary)
+        event_store = JsonStageEventStore(
+            temporary, path_token=_STAGE_EVENT_PATH_TOKEN
+        )
         for event in result.run.stage_events:
             event_store.append_stage_event(event)
-        stage_events_path = temporary / "stage-events" / f"review_run-{run_id}.jsonl"
+        stage_events_path = self._stage_events_path(
+            temporary, _STAGE_EVENT_PATH_TOKEN
+        )
         stage_events_path.parent.mkdir(parents=True, exist_ok=True)
         stage_events_path.touch(exist_ok=True)
         stage_events_bytes = stage_events_path.read_bytes()
@@ -160,7 +236,9 @@ class JsonAuditStore:
         """追加不可变修订；提供期望指纹时以原子 CAS 方式提交。"""
 
         run_id = _safe_run_id(result.run.run_id)
-        target = self.root / run_id
+        storage_key = _storage_key(run_id)
+        self._validate_windows_path_budget(storage_key)
+        target = self._locate_artifact_dir(run_id)
         if not target.is_dir() or not (target / "review.json").is_file():
             raise AuditStoreError(f"base review artifact does not exist: {run_id}")
 
@@ -182,6 +260,7 @@ class JsonAuditStore:
             return self._append_revision_unlocked(
                 result,
                 run_id=run_id,
+                storage_key=storage_key,
                 target=target,
             )
 
@@ -199,6 +278,7 @@ class JsonAuditStore:
         result: ReviewResult,
         *,
         run_id: str,
+        storage_key: str,
         target: Path,
     ) -> Path:
         """在已持有运行追加锁时写入修订目录。"""
@@ -207,23 +287,20 @@ class JsonAuditStore:
         revisions_root = target / "revisions"
         revisions_root.mkdir(parents=True, exist_ok=True)
         prior_timestamps = [
-            int(match.group(1))
+            timestamp
             for item in revisions_root.iterdir()
             if item.is_dir()
-            and (match := re.match(r"^revision-(\d+)(?:-|$)", item.name)) is not None
+            if (timestamp := _revision_timestamp(item.name)) is not None
         ]
         revision_timestamp = max(time.time_ns(), max(prior_timestamps, default=0) + 1)
         # 持有运行锁后用单调递增时间戳命名即可保证唯一和追加顺序，避免
         # 冗长随机后缀再次把 Windows 审计账本路径推过 MAX_PATH。
-        revision_id = f"revision-{revision_timestamp:019d}"
+        revision_id = f"r-{revision_timestamp:019d}"
         revision_target = revisions_root / revision_id
-        # Windows 下阶段账本文件名还会再次携带 run_id。临时目录若继续嵌在
-        # ``run_id/revisions`` 下，API 测试和较深部署目录容易超过 MAX_PATH，
-        # 从而在写入阶段账本时表现为 FileNotFoundError。存储根目录与目标
-        # revisions 目录位于同一文件系统，根目录临时工件仍可通过 rename
-        # 原子提交，同时不改变最终审计工件布局。
-        temporary = self.root / f".{run_id}-revision-{uuid4().hex[:12]}.tmp"
-        temporary.mkdir()
+        # 修订临时目录位于存储根目录，阶段账本文件名使用固定短 token；
+        # 这样外部 run_id 不再参与临时写入路径，同时仍可在同一文件系统内
+        # 通过 rename 原子提交修订工件。
+        temporary = Path(mkdtemp(prefix=".rev-", dir=self.root))
         payload = result.model_dump(mode="json")
         payload_bytes = _json_bytes(payload)
         payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
@@ -231,14 +308,19 @@ class JsonAuditStore:
             "store_version": STORE_VERSION,
             "revision_id": revision_id,
             "run_id": run_id,
+            "storage_key": storage_key,
             "result_fingerprint": result.run.result_fingerprint,
             "payload_sha256": payload_sha256,
         }
         (temporary / "review.json").write_bytes(payload_bytes)
-        event_store = JsonStageEventStore(temporary)
+        event_store = JsonStageEventStore(
+            temporary, path_token=_STAGE_EVENT_PATH_TOKEN
+        )
         for event in result.run.stage_events:
             event_store.append_stage_event(event)
-        stage_events_path = temporary / "stage-events" / f"review_run-{run_id}.jsonl"
+        stage_events_path = self._stage_events_path(
+            temporary, _STAGE_EVENT_PATH_TOKEN
+        )
         stage_events_path.parent.mkdir(parents=True, exist_ok=True)
         stage_events_path.touch(exist_ok=True)
         stage_events_bytes = stage_events_path.read_bytes()
@@ -255,7 +337,8 @@ class JsonAuditStore:
 
     def load(self, run_id: str) -> ReviewResult:
         run_id = _safe_run_id(run_id)
-        artifact_dir = self.root / run_id
+        self._validate_windows_path_budget(_storage_key(run_id))
+        artifact_dir = self._locate_artifact_dir(run_id)
         artifact_source = self._latest_artifact_source(artifact_dir)
         payload_path = artifact_source / "review.json"
         manifest_path = artifact_source / "manifest.json"
@@ -271,6 +354,7 @@ class JsonAuditStore:
             raise AuditStoreError(
                 f"unsupported review artifact version: {manifest.get('store_version')}"
             )
+        path_token = self._stage_event_path_token(manifest, run_id)
         actual_sha256 = hashlib.sha256(payload_bytes).hexdigest()
         if (
             manifest.get("run_id") != run_id
@@ -281,7 +365,7 @@ class JsonAuditStore:
         ledger_root = artifact_source / "stage-events"
         if not ledger_root.is_dir():
             raise AuditStoreError(f"stage event ledger is missing: {run_id}")
-        stage_events_path = ledger_root / f"review_run-{run_id}.jsonl"
+        stage_events_path = self._stage_events_path(artifact_source, path_token)
         if not stage_events_path.is_file():
             raise AuditStoreError(f"stage event ledger is missing: {run_id}")
         try:
@@ -295,7 +379,9 @@ class JsonAuditStore:
         if expected_event_digest != hashlib.sha256(stage_events_bytes).hexdigest():
             raise AuditStoreError(f"stage event ledger integrity failed: {run_id}")
         try:
-            events = JsonStageEventStore(artifact_source).list_stage_events(
+            events = JsonStageEventStore(
+                artifact_source, path_token=path_token
+            ).list_stage_events(
                 "review_run", run_id
             )
         except StageEventStoreError as exc:
@@ -319,10 +405,13 @@ class JsonAuditStore:
             revisions = sorted(
                 item
                 for item in revisions_root.iterdir()
-                if item.is_dir() and item.name.startswith("revision-")
+                if item.is_dir() and _revision_timestamp(item.name) is not None
             )
             if revisions:
-                return revisions[-1]
+                return max(
+                    revisions,
+                    key=lambda item: _revision_timestamp(item.name) or 0,
+                )
         return artifact_dir
 
     @staticmethod
@@ -359,8 +448,22 @@ class JsonAuditStore:
     def list_run_ids(self) -> list[str]:
         if not self.root.is_dir():
             return []
-        return sorted(
-            item.name
-            for item in self.root.iterdir()
-            if item.is_dir() and not item.name.startswith(".")
-        )
+        run_ids: list[str] = []
+        for item in self.root.iterdir():
+            if not item.is_dir() or item.name.startswith("."):
+                continue
+            manifest_path = self._latest_artifact_source(item) / "manifest.json"
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                # 旧布局目录名就是外部 run_id；完整校验仍交给 load。
+                run_ids.append(item.name)
+                continue
+            if not isinstance(manifest, dict) or not isinstance(
+                manifest.get("run_id"), str
+            ):
+                raise AuditStoreError(f"invalid review artifact manifest: {item}")
+            run_id = _safe_run_id(manifest["run_id"])
+            self._stage_event_path_token(manifest, run_id)
+            run_ids.append(run_id)
+        return sorted(run_ids)

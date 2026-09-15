@@ -9,6 +9,7 @@ from contract_review_app.repositories.redis_task_store import (
     _ADMIT_SCRIPT,
     _LEASE_WRITE_SCRIPT,
     _RELEASE_LEASE_SCRIPT,
+    TASK_REQUEUE_DISPATCH_KEY,
     RedisTaskStore,
 )
 
@@ -35,6 +36,9 @@ class _Pipeline:
 
     def zrem(self, key, member):
         self.client.sorted_sets[key].discard(member)
+
+    def srem(self, key, member):
+        self.client.sets[key].discard(member)
 
     def execute(self):
         return []
@@ -83,6 +87,13 @@ class _FencedClient:
             end = len(values) - 1
         return values[start : end + 1]
 
+    def srem(self, key, *members):
+        for member in members:
+            self.sets[key].discard(member)
+
+    def sscan_iter(self, key, count=None):
+        return iter(list(self.sets[key]))
+
     def eval(self, script, numkeys, *args):
         keys = list(args[:numkeys])
         argv = list(args[numkeys:])
@@ -120,6 +131,7 @@ class _FencedClient:
             running_key,
             previous_status_key,
             current_status_key,
+            dispatch_pending_key,
         ) = keys
         (
             expected_token,
@@ -134,6 +146,7 @@ class _FencedClient:
             heartbeat_at,
             _heartbeat_ttl,
             recovery,
+            dispatch_pending,
         ) = argv
         if self.values.get(fence_key) != str(expected_token) or not self.exists(
             task_key
@@ -158,6 +171,10 @@ class _FencedClient:
             self.sets[running_key].add(task_id)
         else:
             self.sets[running_key].discard(task_id)
+        if current_status_running == "1":
+            self.sets[dispatch_pending_key].discard(task_id)
+        elif dispatch_pending == "1":
+            self.sets[dispatch_pending_key].add(task_id)
         if event_json:
             self.lists[events_key].append(event_json)
             self.lists[events_key] = self.lists[events_key][-int(event_limit) :]
@@ -277,6 +294,7 @@ def test_stale_worker_is_fenced_after_reconcile_and_reacquire():
     assert requeued is not None
     assert requeued.status == AsyncTaskStatus.PENDING
     assert requeued.lease_token == 0
+    assert task.task_id in client.sets[TASK_REQUEUE_DISPATCH_KEY]
 
     second_token = store.acquire_lease(task.task_id)
     assert second_token == 3
@@ -287,6 +305,7 @@ def test_stale_worker_is_fenced_after_reconcile_and_reacquire():
         lease_token=second_token,
     )
     assert second_running is not None
+    assert task.task_id not in client.sets[TASK_REQUEUE_DISPATCH_KEY]
 
     assert (
         store.heartbeat(
@@ -363,3 +382,69 @@ def test_reconcile_closes_max_retry_task_after_lease_expiry(monkeypatch):
     assert stored.status == AsyncTaskStatus.FAILED
     assert stored.stage == AsyncTaskStage.FAILED
     assert len(dead_letters) == 1
+
+
+def test_reconcile_retries_failed_requeue_publish(monkeypatch):
+    """恢复投递失败时保留意图，并在下一轮巡检继续投递。"""
+
+    from contract_review_app.tasks import reconcile_tasks
+
+    task = _task().model_copy(
+        update={
+            "task_id": "cr-requeue-dispatch-retry",
+            "retry_count": 0,
+        }
+    )
+    client = _FencedClient(task)
+    store = RedisTaskStore(client)
+    token = store.acquire_lease(task.task_id)
+    assert token == 1
+    assert (
+        store.mark_running(
+            task.task_id,
+            worker_id="worker-a",
+            started_at="2026-09-11T00:00:00+08:00",
+            lease_token=token,
+        )
+        is not None
+    )
+    client.delete(store._lock_key(task.task_id))
+
+    def stale_running(*, heartbeat_before):
+        del heartbeat_before
+        current = store.get(task.task_id)
+        return (
+            [current] if current and current.status == AsyncTaskStatus.RUNNING else []
+        )
+
+    store.stale_running = stale_running
+    publisher = type("Publisher", (), {})()
+    publisher.failed = True
+    publisher.calls = 0
+
+    def apply_async(*args, **kwargs):
+        publisher.calls += 1
+        if publisher.failed:
+            raise RuntimeError("broker unavailable")
+
+    publisher.apply_async = apply_async
+    monkeypatch.setattr(reconcile_tasks, "task_store", store)
+    monkeypatch.setattr(reconcile_tasks, "execute_contract_review_task", publisher)
+    monkeypatch.setattr(reconcile_tasks.settings, "TASK_MAX_RETRIES", 1)
+    monkeypatch.setattr(reconcile_tasks.settings, "TASK_CLEANUP_BATCH_SIZE", 10)
+    monkeypatch.setattr(reconcile_tasks, "_sync_queue_depth", lambda queue_name: None)
+    monkeypatch.setattr(
+        reconcile_tasks.metrics, "record_async_task_requeued", lambda *args: None
+    )
+
+    assert reconcile_tasks.reconcile_stale_tasks.run() == 1
+    stored = store.get(task.task_id)
+    assert stored is not None
+    assert stored.status == AsyncTaskStatus.PENDING
+    assert task.task_id in client.sets[TASK_REQUEUE_DISPATCH_KEY]
+    assert publisher.calls == 1
+
+    publisher.failed = False
+    assert reconcile_tasks.reconcile_stale_tasks.run() == 0
+    assert publisher.calls == 2
+    assert task.task_id not in client.sets[TASK_REQUEUE_DISPATCH_KEY]

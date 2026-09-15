@@ -17,8 +17,12 @@ from contract_review.models import (
     SemanticModelRequest,
     SemanticReviewResponse,
 )
-from contract_review.semantic import SemanticClientError
+from contract_review.semantic import (
+    SemanticClientError,
+    SemanticProviderUnavailableError,
+)
 
+from contract_review_app.services.model_transport import HttpxModelTransport
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 
 
@@ -98,13 +102,28 @@ def _ok_payload(content: str) -> dict:
     }
 
 
+def _patch_transport_post(monkeypatch, callback):
+    """把旧的 POST 测试回调适配到连接池传输边界。"""
+
+    def post_json(_transport, endpoint, *, payload, headers, timeout, operation):
+        del operation
+        response = callback(endpoint, payload, headers, timeout)
+        response.raise_for_status()
+        return response
+
+    monkeypatch.setattr(
+        "contract_review_app.services.model_transport.HttpxModelTransport.post_json",
+        post_json,
+    )
+
+
 def test_review_parses_fenced_json_content(monkeypatch):
     payload = _ok_payload(
         '```json\n{"items": [{"rule_id": "R1", "status": "pass", '
         '"reason": "金额一致", "evidence_ids": ["e1"]}]}\n```'
     )
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post",
+    _patch_transport_post(
+        monkeypatch,
         lambda *args, **kwargs: FakeResponse(payload),
     )
     client = RelaySemanticReviewer(
@@ -128,8 +147,8 @@ def test_review_extracts_json_from_preamble(monkeypatch):
         '好的，审查结果如下：{"items": [{"rule_id": "R1", "status": "warn", '
         '"reason": "建议关注", "evidence_ids": ["e1"]}]}'
     )
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post",
+    _patch_transport_post(
+        monkeypatch,
         lambda *args, **kwargs: FakeResponse(payload),
     )
     client = RelaySemanticReviewer(
@@ -158,9 +177,7 @@ def test_review_sends_business_context_with_structured_request(monkeypatch):
             )
         }
     )
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post", fake_post
-    )
+    _patch_transport_post(monkeypatch, fake_post)
     RelaySemanticReviewer(
         endpoint="http://fake/v1/chat/completions", model_version="test-model"
     ).review(request)
@@ -168,6 +185,23 @@ def test_review_sends_business_context_with_structured_request(monkeypatch):
     user_payload = json.loads(captured["body"]["messages"][1]["content"])
     assert user_payload["review_context"]["party_position"] == "buyer"
     assert user_payload["review_context"]["review_scope"] == ["金额"]
+    assert user_payload["allowed_contract_evidence_ids_by_rule"] == {"R1": ["e1"]}
+
+
+def test_review_rejects_shared_rule_context_before_http(monkeypatch):
+    _patch_transport_post(
+        monkeypatch,
+        lambda *args, **kwargs: pytest.fail("共享规则上下文不应发送到语义模型"),
+    )
+    request = _request().model_copy(update={"rule_ids": ["R1", "R2"]})
+    client = RelaySemanticReviewer(
+        endpoint="http://fake/v1/chat/completions", model_version="test-model"
+    )
+
+    with pytest.raises(
+        SemanticClientError, match="requires exactly one rule-scoped request"
+    ):
+        client.review(request)
 
 
 def test_review_omits_response_format_unless_json_mode(monkeypatch):
@@ -181,9 +215,7 @@ def test_review_omits_response_format_unless_json_mode(monkeypatch):
     client = RelaySemanticReviewer(
         endpoint="http://fake/v1/chat/completions", model_version="test-model"
     )
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post", fake_post
-    )
+    _patch_transport_post(monkeypatch, fake_post)
     client.review(_request())
     assert "response_format" not in captured["body"]
 
@@ -206,8 +238,8 @@ def test_review_raises_client_error_on_http_failure(monkeypatch):
                 "bad request", request=request, response=response
             )
 
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post",
+    _patch_transport_post(
+        monkeypatch,
         lambda *args, **kwargs: FailingResponse(),
     )
     client = RelaySemanticReviewer(
@@ -219,8 +251,8 @@ def test_review_raises_client_error_on_http_failure(monkeypatch):
 
 def test_review_raises_client_error_on_non_json_content(monkeypatch):
     payload = _ok_payload("抱歉，我无法回答。")
-    monkeypatch.setattr(
-        "contract_review_app.services.semantic_client.httpx.post",
+    _patch_transport_post(
+        monkeypatch,
         lambda *args, **kwargs: FakeResponse(payload),
     )
     client = RelaySemanticReviewer(
@@ -228,3 +260,83 @@ def test_review_raises_client_error_on_non_json_content(monkeypatch):
     )
     with pytest.raises(SemanticClientError):
         client.review(_request())
+
+
+class _SequencedClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def post(self, *args, **kwargs):
+        del args, kwargs
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def test_transport_retries_transient_errors_then_reuses_the_same_client():
+    response = FakeResponse(_ok_payload('{"items": []}'))
+    http_client = _SequencedClient(
+        [httpx.ConnectTimeout("connect"), httpx.ReadTimeout("read"), response]
+    )
+    transport = HttpxModelTransport(
+        max_attempts=3,
+        backoff_seconds=0,
+        client=http_client,
+    )
+
+    result = transport.post_json(
+        "http://fake/v1/chat/completions",
+        payload={"model": "test-model"},
+        headers={},
+        timeout=1,
+        operation="semantic_review",
+    )
+
+    assert result is response
+    assert http_client.calls == 3
+
+
+def test_transport_does_not_retry_http_business_error():
+    request = httpx.Request("POST", "http://fake/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+    http_client = _SequencedClient([response])
+    transport = HttpxModelTransport(
+        max_attempts=3,
+        backoff_seconds=0,
+        client=http_client,
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        transport.post_json(
+            "http://fake/v1/chat/completions",
+            payload={"model": "test-model"},
+            headers={},
+            timeout=1,
+            operation="semantic_review",
+        )
+    assert http_client.calls == 1
+
+
+def test_semantic_client_exhausted_transport_uses_specialized_error():
+    http_client = _SequencedClient(
+        [httpx.ConnectTimeout("connect")] * 3
+    )
+    transport = HttpxModelTransport(
+        max_attempts=3,
+        backoff_seconds=0,
+        client=http_client,
+    )
+    client = RelaySemanticReviewer(
+        endpoint="http://fake/v1/chat/completions",
+        model_version="test-model",
+        transport=transport,
+    )
+
+    with pytest.raises(SemanticProviderUnavailableError) as error:
+        client.review(_request())
+
+    assert error.value.attempts == 3
+    assert http_client.calls == 3

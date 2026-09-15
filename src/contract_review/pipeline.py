@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ from .models import (
     ReviewReport,
     ReviewResult,
     ReviewStatus,
+    Rule,
     RuleBundle,
     ReviewContext,
     SemanticModelRequest,
@@ -74,7 +76,7 @@ from .models import (
 from .ocr import OCRProvider
 from .parser import parse_document, sha256_file
 from .playbook import PLAYBOOK_ENGINE_VERSION
-from .replay import build_result_fingerprint
+from .replay import build_replay_fingerprint, build_result_fingerprint
 from .replay import verify_replay_inputs
 from .revisions import attach_revision_set
 from .rule_checkers import RULE_CHECKER_VERSION
@@ -88,13 +90,21 @@ from .semantic import (
     DEFAULT_SYSTEM_INSTRUCTION,
     build_semantic_batch_request_fingerprint,
     build_semantic_model_request,
+    combine_isolated_semantic_responses,
     findings_from_semantic_response,
+    isolate_semantic_model_request,
     is_model_judged_rule,
+    SemanticClientError,
+    SemanticEvidenceContextError,
+    SemanticProviderUnavailableError,
     SemanticReviewer,
+    validate_semantic_response,
 )
 
-PIPELINE_VERSION = "review-pipeline-0.10.0"
+PIPELINE_VERSION = "review-pipeline-0.12.0"
 REPORT_VERSION = "review-report-0.3.0"
+SEMANTIC_REVIEW_FALLBACK_CONFIGURATION_KEY = "semantic_review_fallback"
+SEMANTIC_RULE_CONCURRENCY_HARD_LIMIT = 3
 
 
 class ReviewPipelineError(ValueError):
@@ -103,6 +113,23 @@ class ReviewPipelineError(ValueError):
 
 class ReplayMismatch(ReviewPipelineError):
     """回放结果无法复现原始审查内容时抛出。"""
+
+
+def validate_semantic_rule_concurrency(value: int) -> int:
+    """校验单次审查的规则级模型并发上限。
+
+    阶段 1 只开放经过真实 A/B 验证的 1～3 档，避免配置误写为无界或
+    未验证的高并发。后续提高硬上限必须经过独立压测和真实完整审查验收。
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ReviewPipelineError("semantic_rule_max_concurrency 必须是整数")
+    if not 1 <= value <= SEMANTIC_RULE_CONCURRENCY_HARD_LIMIT:
+        raise ReviewPipelineError(
+            "semantic_rule_max_concurrency 必须在 1 到 "
+            f"{SEMANTIC_RULE_CONCURRENCY_HARD_LIMIT} 之间"
+        )
+    return value
 
 
 def _require_auditable_result(result: ReviewResult) -> None:
@@ -769,6 +796,164 @@ def run_review(
     return result
 
 
+def _mark_semantic_review_degraded(
+    result: ReviewResult,
+    *,
+    reason: str,
+) -> ReviewResult:
+    """丢弃不可信模型响应并保留可审计的确定性基线。"""
+
+    configuration = dict(result.run.configuration)
+    configuration[SEMANTIC_REVIEW_FALLBACK_CONFIGURATION_KEY] = {
+        "status": "DEGRADED",
+        "reason": reason,
+    }
+    configuration_fingerprint = build_replay_fingerprint(
+        package_id=result.package.package_id,
+        documents=result.documents,
+        parser_version=result.run.parser_version,
+        rule_bundle=result.rule_bundle,
+        model_version=result.run.model_version,
+        configuration=configuration,
+    )
+    run = result.run.model_copy(
+        update={
+            "configuration": configuration,
+            "configuration_fingerprint": configuration_fingerprint,
+        }
+    )
+    degraded = result.model_copy(update={"run": run})
+    result_fingerprint = build_result_fingerprint(degraded)
+    return degraded.model_copy(
+        update={
+            "run": run.model_copy(update={"result_fingerprint": result_fingerprint})
+        }
+    )
+
+
+def _review_one_semantic_rule(
+    *,
+    rule_id: str,
+    request: SemanticModelRequest,
+    client: SemanticReviewer,
+    rules_by_id: Mapping[str, Rule],
+    known_evidence: Mapping[str, Evidence],
+    allowed_evidence_ids_by_rule: Mapping[str, Sequence[str]],
+) -> SemanticReviewResponse:
+    """调用并校验单条规则，供有界执行器提交独立任务。"""
+
+    isolated_request = isolate_semantic_model_request(
+        request,
+        rule_id=rule_id,
+    )
+    response = client.review(isolated_request)
+    if response.request_fingerprint != isolated_request.request_fingerprint:
+        raise ReviewPipelineError(
+            "isolated semantic response request fingerprint does not match its rule context"
+        )
+    if response.provider != isolated_request.provider:
+        raise ReviewPipelineError(
+            "isolated semantic response provider does not match its rule context"
+        )
+    if response.model_version != isolated_request.model_version:
+        raise ReviewPipelineError(
+            "isolated semantic response model version does not match its rule context"
+        )
+    if response.prompt_version != isolated_request.prompt_version:
+        raise ReviewPipelineError(
+            "isolated semantic response prompt version does not match its rule context"
+        )
+    validate_semantic_response(
+        response,
+        rules={rule_id: rules_by_id[rule_id]},
+        known_evidence=known_evidence,
+        allowed_evidence_ids_by_rule={
+            rule_id: allowed_evidence_ids_by_rule[rule_id]
+        },
+        expected_rule_ids=[rule_id],
+    )
+    return response
+
+
+def _review_semantic_rules_in_isolation(
+    baseline: ReviewResult,
+    request: SemanticModelRequest,
+    client: SemanticReviewer,
+    *,
+    max_concurrency: int = 1,
+) -> SemanticReviewResponse:
+    """以有界并发逐规则调用模型，并在合并前验证每个响应的证据边界。"""
+
+    max_concurrency = validate_semantic_rule_concurrency(max_concurrency)
+    rules_by_id = {rule.rule_id: rule for rule in request.rule_definitions}
+    known_evidence = evidence_by_id(baseline.evidence)
+    allowed_evidence_ids_by_rule = allowed_contract_evidence_ids_by_rule(
+        request.candidate_evidence_by_rule,
+        baseline.evidence_assessments,
+    )
+    if max_concurrency == 1 or len(request.rule_ids) == 1:
+        isolated_responses = [
+            _review_one_semantic_rule(
+                rule_id=rule_id,
+                request=request,
+                client=client,
+                rules_by_id=rules_by_id,
+                known_evidence=known_evidence,
+                allowed_evidence_ids_by_rule=allowed_evidence_ids_by_rule,
+            )
+            for rule_id in request.rule_ids
+        ]
+        return combine_isolated_semantic_responses(request, isolated_responses)
+
+    responses_by_rule: dict[str, SemanticReviewResponse] = {}
+    executor = ThreadPoolExecutor(
+        max_workers=min(max_concurrency, len(request.rule_ids)),
+        thread_name_prefix="semantic-rule",
+    )
+    futures = {
+        executor.submit(
+            _review_one_semantic_rule,
+            rule_id=rule_id,
+            request=request,
+            client=client,
+            rules_by_id=rules_by_id,
+            known_evidence=known_evidence,
+            allowed_evidence_ids_by_rule=allowed_evidence_ids_by_rule,
+        ): rule_id
+        for rule_id in request.rule_ids
+    }
+    try:
+        semantic_errors: dict[str, Exception] = {}
+        for future in as_completed(futures):
+            rule_id = futures[future]
+            try:
+                responses_by_rule[rule_id] = future.result()
+            except (
+                ReviewPipelineError,
+                SemanticClientError,
+                SemanticEvidenceContextError,
+            ) as exc:
+                # 先收集所有已提交任务的已知业务异常，避免完成顺序掩盖
+                # 不允许降级的程序/响应错误。
+                semantic_errors[rule_id] = exc
+    finally:
+        # 已启动的任务无法强制中止；取消尚未开始的任务，并且不合并任何部分响应。
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    if semantic_errors:
+        for rule_id in sorted(semantic_errors):
+            error = semantic_errors[rule_id]
+            if not isinstance(
+                error,
+                (SemanticEvidenceContextError, SemanticProviderUnavailableError),
+            ):
+                raise error
+        raise semantic_errors[sorted(semantic_errors)[0]]
+
+    isolated_responses = [responses_by_rule[rule_id] for rule_id in request.rule_ids]
+    return combine_isolated_semantic_responses(request, isolated_responses)
+
+
 def run_review_with_semantic_client(
     paths: Sequence[str | Path],
     *,
@@ -791,9 +976,18 @@ def run_review_with_semantic_client(
     knowledge_index_factory: Callable[[Sequence[KnowledgeChunk]], KnowledgeIndex]
     | None = None,
     retrieval_top_k: int = 5,
+    semantic_max_concurrency: int = 1,
     review_context: ReviewContext,
 ) -> ReviewResult:
-    """Run deterministic review, call one provider, then re-run with its snapshot."""
+    """先生成确定性基线，再调用模型并用成功响应重建结果。"""
+
+    semantic_max_concurrency = validate_semantic_rule_concurrency(
+        semantic_max_concurrency
+    )
+    effective_configuration = {
+        **(configuration or {}),
+        "semantic_rule_max_concurrency": semantic_max_concurrency,
+    }
 
     baseline = run_review(
         paths,
@@ -806,7 +1000,7 @@ def run_review_with_semantic_client(
         document_precedence=document_precedence,
         ocr_provider=ocr_provider,
         model_version=model_version,
-        configuration=configuration,
+        configuration=effective_configuration,
         extra_evidence=extra_evidence,
         knowledge_index_factory=knowledge_index_factory,
         retrieval_top_k=retrieval_top_k,
@@ -823,27 +1017,43 @@ def run_review_with_semantic_client(
     if request is None:
         # 无正文证据时保持确定性 UNKNOWN 结果，不制造一条没有事实依据的模型调用。
         return baseline
-    response = client.review(request)
-    return run_review(
-        paths,
-        package_id=package_id,
-        rule_bundle=rule_bundle,
-        contract_type_fact=contract_type_fact,
-        contract_type_evidence=contract_type_evidence,
-        document_kinds=document_kinds,
-        document_filenames=document_filenames,
-        document_precedence=document_precedence,
-        ocr_provider=ocr_provider,
-        model_version=model_version,
-        configuration=configuration,
-        semantic_request=request,
-        semantic_response=response,
-        run_id=run_id,
-        extra_evidence=extra_evidence,
-        knowledge_index_factory=knowledge_index_factory,
-        retrieval_top_k=retrieval_top_k,
-        review_context=review_context,
-    )
+    try:
+        response = _review_semantic_rules_in_isolation(
+            baseline,
+            request,
+            client,
+            max_concurrency=semantic_max_concurrency,
+        )
+        return run_review(
+            paths,
+            package_id=package_id,
+            rule_bundle=rule_bundle,
+            contract_type_fact=contract_type_fact,
+            contract_type_evidence=contract_type_evidence,
+            document_kinds=document_kinds,
+            document_filenames=document_filenames,
+            document_precedence=document_precedence,
+            ocr_provider=ocr_provider,
+            model_version=model_version,
+            configuration=effective_configuration,
+            semantic_request=request,
+            semantic_response=response,
+            run_id=run_id,
+            extra_evidence=extra_evidence,
+            knowledge_index_factory=knowledge_index_factory,
+            retrieval_top_k=retrieval_top_k,
+            review_context=review_context,
+        )
+    except SemanticEvidenceContextError:
+        return _mark_semantic_review_degraded(
+            baseline,
+            reason="evidence_outside_context",
+        )
+    except SemanticProviderUnavailableError:
+        return _mark_semantic_review_degraded(
+            baseline,
+            reason="provider_unavailable",
+        )
 
 
 def _replay_document_filenames(
