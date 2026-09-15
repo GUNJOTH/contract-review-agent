@@ -117,9 +117,6 @@ class Settings(BaseSettings):
     TASK_DLQ_MAX_LEN: int = 1000
     TASK_INPUT_DIR: str = "runtime/tasks/input"
 
-    DEBUG_OUTPUT_DIR: str = "runtime/debug"
-    ENABLE_DEBUG_SAVE: bool = True
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
