@@ -55,6 +55,9 @@ jobs:
           uv run python -m compileall -q src tests
           node --check src/contract_review_app/static/js/app.js
 
+      - name: Prepare pytest workspace
+        run: mkdir -p .test-work
+
       - name: Run tests with coverage report
         run: >-
           uv run pytest
