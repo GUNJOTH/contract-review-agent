@@ -222,13 +222,6 @@ def execute_rule_bundle(
                 for evidence_id in candidate.evidence_ids
             )
         )
-        rule_candidate_evidence_ids = list(
-            dict.fromkeys(
-                evidence_id
-                for candidate in rule_candidates
-                for evidence_id in candidate.evidence_ids
-            )
-        )
         rule_candidate_ids = {candidate.candidate_id for candidate in rule_candidates}
         rule_facts_by_type = {
                 fact_type: [
