@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Validate and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Validate release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          release_sha = os.environ["RELEASE_SHA"]
+          project = tomllib.loads(
+              Path("pyproject.toml").read_text(encoding="utf-8")
+          )["project"]
+          version = project["version"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+              raise SystemExit(
+                  f"标签 {tag!r} 不符合 vMAJOR.MINOR.PATCH 格式。"
+              )
+          if tag != f"v{version}":
+              raise SystemExit(
+                  f"标签 {tag!r} 与 pyproject.toml 版本 {version!r} 不一致。"
+              )
+
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          heading = f"## [{version}]"
+          match = re.search(
+              rf"^{re.escape(heading)}[^\n]*\n(?P<body>.*?)(?=^## \[|\Z)",
+              changelog,
+              re.MULTILINE | re.DOTALL,
+          )
+          if match is None or not match.group("body").strip():
+              raise SystemExit(
+                  f"CHANGELOG.md 缺少非空的 {heading} 版本条目。"
+              )
+
+          subprocess.run(["git", "fetch", "origin", "main", "--no-tags"], check=True)
+          if subprocess.run(
+              ["git", "merge-base", "--is-ancestor", release_sha, "origin/main"]
+          ).returncode != 0:
+              raise SystemExit("发布标签没有指向 main 的提交，不创建 Release。")
+
+          Path(".release-notes.md").write_text(
+              match.group("body").strip() + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --notes-file .release-notes.md \
+            --generate-notes
