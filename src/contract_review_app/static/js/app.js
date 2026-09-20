@@ -95,6 +95,22 @@ const api = {
   get(path) {
     return api.request("GET", path);
   },
+  /** 带 JSON 请求体的 POST；调用方只负责给出对象，序列化与头在此统一处理。 */
+  post(path, body) {
+    return api.request("POST", path, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  put(path, body) {
+    return api.request("PUT", path, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  del(path) {
+    return api.request("DELETE", path);
+  },
   /** 带上传进度的 multipart 请求（XHR） */
   upload(path, formData, onProgress) {
     return new Promise((resolve, reject) => {
@@ -217,6 +233,29 @@ const STATUS_META = {
   CANCELED: { label: "已取消", cls: "gray" },
   EXPIRED: { label: "已过期", cls: "orange" },
 };
+
+// 审查流水线状态（ReviewStatus）：HUMAN_REVIEW 表示「分析已完成、等人工核实」，
+// 不是「还在跑」。直接上屏英文枚举会让人误判审查未结束，这里统一成中文文案。
+const REVIEW_STATUS_META = {
+  RECEIVED: "已接收",
+  PARSED: "已解析",
+  QUALITY_GATED: "已过质量门禁",
+  INDEXED: "已建索引",
+  EXTRACTED: "要素已抽取",
+  RULE_CHECKED: "规则已判定",
+  SEMANTIC_REVIEWED: "语义已判定",
+  HUMAN_REVIEW: "分析完成 · 待人工复核",
+  FINALIZED: "已定稿",
+  FAILED: "失败",
+};
+
+function statusText(status) {
+  if (!status) return "-";
+  if (REVIEW_STATUS_META[status]) return REVIEW_STATUS_META[status];
+  const meta = STATUS_META[status];
+  return meta ? meta.label : String(status);
+}
+
 const FINDING_META = {
   PASS: { label: "通过", cls: "green" },
   WARN: { label: "警告", cls: "yellow" },
@@ -236,7 +275,30 @@ const AI_LEVEL_META = {
   WARN: { label: "需关注", cls: "yellow" },
   INFO: { label: "提示", cls: "blue" },
   UNKNOWN: { label: "未知", cls: "gray" },
+  PASS: { label: "符合", cls: "green" },
+  NOT_APPLICABLE: { label: "符合", cls: "green" },
 };
+const VERDICT_META = {
+  不符: { label: "不符", cls: "red", levels: ["BLOCK", "WARN"] },
+  待确认: { label: "待确认", cls: "gray", levels: ["UNKNOWN", "INFO"] },
+  符合: { label: "符合", cls: "green", levels: ["PASS", "NOT_APPLICABLE"] },
+};
+const VERDICT_ORDER = ["不符", "待确认", "符合"];
+const VERDICT_ALIASES = {
+  不通过: "不符",
+  不清楚: "待确认",
+  通过: "符合",
+};
+
+function itemVerdict(item) {
+  const raw = item?.verdict;
+  if (raw && VERDICT_META[raw]) return raw;
+  if (raw && VERDICT_ALIASES[raw]) return VERDICT_ALIASES[raw];
+  const level = String(item?.risk_level || item?.status || "UNKNOWN").toUpperCase();
+  if (level === "PASS" || level === "NOT_APPLICABLE") return "符合";
+  if (level === "BLOCK" || level === "WARN") return "不符";
+  return "待确认";
+}
 
 function badge(key, meta) {
   const m = meta[key];
@@ -248,7 +310,7 @@ const TASK_TYPE_LABELS = {
 };
 
 /* ---------------- 导航 ---------------- */
-const PAGES = { review: renderReviewPage, rules: renderRulesPage, tasks: renderTasksPage };
+const PAGES = { review: renderReviewPage, draft: renderDraftPage, rules: renderRulesPage, tasks: renderTasksPage };
 let currentPage = null;
 
 function pageHead(kicker, title, desc) {
@@ -361,7 +423,7 @@ function renderReviewPage(content) {
       el("div", { class: "flex", style: "flex-wrap:wrap" }, [
         el("button", { class: "btn btn-primary", id: "btn-review-sync", text: "同步审查", onclick: submitReviewSync }),
         el("button", { class: "btn btn-secondary", id: "btn-review-async", text: "异步审查", onclick: submitReviewAsync }),
-        el("button", { class: "btn btn-ghost", text: "查看资信风险", onclick: openCreditRiskDialog }),
+        el("button", { class: "btn btn-ghost", text: "客商风险", onclick: openCreditRiskDialog }),
         el("button", { class: "btn btn-ghost", text: "版本比对", onclick: openCompareDialog }),
         el("span", { class: "muted", text: "大批量请走异步，结果可在任务中心查看" }),
       ]),
@@ -390,12 +452,82 @@ function mergeFiles(current, incoming) {
 }
 
 
+/**
+ * 单一清单：以规则包**全量规则**为骨架，AI 判定按 rule_id 覆盖到对应规则上。
+ *
+ * 规则侧 findings 覆盖 RuleBundle 的每一条规则（含符合/不适用），是清单的
+ * 底座——「所有规则都要展示出来」靠这一层保证，模型漏答或降级都不会丢行。
+ * AI 侧只贡献判定结论（等级/理由/原文），规则身份（编号、分类、条文位置）
+ * 仍取自规则包。AI 在规则之外额外发现的风险点（无 rule_id）追加在末尾。
+ */
 function reviewItems(resp) {
   const rr = resp?.review_result;
-  return (rr?.findings || [])
-    .filter((finding) => finding.status !== "PASS" && finding.status !== "NOT_APPLICABLE")
-    .map((finding) => projectReviewFinding(finding, rr))
-    .sort((left, right) => findingSeverity(right.risk_level) - findingSeverity(left.risk_level));
+  // 全量 findings（含 PASS/不适用）参与投影——内控栏的符合/不符/待确认
+  // 分栏需要完整规则清单。
+  const ruleItems = (rr?.findings || []).map((finding) => projectReviewFinding(finding, rr));
+  // 通读式 AI 风险分析（批次 2）：规则库外的补充判据，module 由模型声明。
+  const aiItems = (rr?.risk_analysis_response?.items || []).map((item) => ({
+    ...item,
+    risk_id: item.item_id,
+    source: "ai",
+    module: item.module || "风险点",
+    quote: item.quote || null,
+    verdict: itemVerdict(item),
+  }));
+  if (!aiItems.length) return sortBySeverity(ruleItems);
+
+  // rule_id 优先；个别条目没回填 rule_id 时退化为标题逐字匹配（兼容历史存档）。
+  // 标题索引建在规则侧：规则侧每条都有 rule_id，AI 侧才可能缺，只有把标题
+  // 映射回规则 id，两边才落在同一个 key 上。
+  const ruleIdByTitle = new Map();
+  ruleItems.forEach((item) => {
+    const title = String(item.title || "").trim();
+    if (title && !ruleIdByTitle.has(title)) ruleIdByTitle.set(title, item.rule_id);
+  });
+  const matchKey = (item) => {
+    if (item?.rule_id) return `id:${item.rule_id}`;
+    const title = String(item?.title || "").trim();
+    const mapped = ruleIdByTitle.get(title);
+    return mapped ? `id:${mapped}` : `title:${title}`;
+  };
+
+  const pending = new Map();
+  aiItems.forEach((item) => {
+    const key = matchKey(item);
+    if (!pending.has(key)) pending.set(key, []);
+    pending.get(key).push(item);
+  });
+
+  const merged = ruleItems.map((base) => {
+    const hits = pending.get(`id:${base.rule_id}`);
+    if (!hits || !hits.length) return base;
+    const ai = hits.shift();
+    if (!hits.length) pending.delete(`id:${base.rule_id}`);
+    const level = ai.risk_level || base.risk_level;
+    return {
+      ...base,
+      // AI 判定的等级与理由优先，规则身份/分类/条文位置保留规则侧
+      risk_level: level,
+      // 只喂 risk_level：base 里继承来的旧 verdict 会让 itemVerdict 直接短路
+      verdict: itemVerdict({ risk_level: level }),
+      reason: ai.reason || base.reason,
+      quote: ai.quote || base.quote,
+      confidence: ai.confidence != null ? ai.confidence : base.confidence,
+      ai_risk_level: ai.risk_level || null,
+      ai_reason: ai.reason || null,
+    };
+  });
+
+  // 规则清单之外的风险点，以及未能对上任何规则的 AI 条目
+  const extras = [];
+  pending.forEach((hits) => extras.push(...hits));
+  return sortBySeverity([...merged, ...extras]);
+}
+
+function sortBySeverity(items) {
+  return items.slice().sort(
+    (left, right) => findingSeverity(right.risk_level) - findingSeverity(left.risk_level),
+  );
 }
 
 function projectReviewFinding(finding, rr) {
@@ -415,6 +547,7 @@ function projectReviewFinding(finding, rr) {
     ...finding,
     risk_id: finding.finding_id,
     risk_level: status,
+    verdict: itemVerdict({ ...finding, risk_level: status }),
     suggested_action: finding.recommended_action,
     quote: quote?.display_excerpt || quote?.raw_excerpt || null,
     source: semanticRuleIds.has(finding.rule_id) ? "ai" : "rule",
@@ -454,44 +587,13 @@ function reviewMetric(text) {
 }
 
 function findingSeverity(status) {
-  return { BLOCK: 5, WARN: 4, INFO: 3, UNKNOWN: 2, PASS: 1 }[status] || 0;
-}
-
-function itemsByModule(resp, module) {
-  return reviewItems(resp).filter((item) => itemModule(item) === module);
-}
-
-function reviewFactValue(resp, key) {
-  return (resp?.review_result?.facts || [])
-    .filter((fact) => fact.fact_type === `contract_element:${key}`)
-    .map((fact) => fact.value)
-    .find((value) => value !== undefined && value !== null && value !== "") || "";
+  return { BLOCK: 5, WARN: 4, INFO: 3, UNKNOWN: 2, PASS: 1, NOT_APPLICABLE: 1 }[status] || 0;
 }
 
 function requireReviewResult(action) {
   if (reviewState.result?.review_result) return true;
   toast(`请先完成合同审查后再${action}`, "warn");
   return false;
-}
-
-function openCreditRiskDialog() {
-  if (!requireReviewResult("查看资信风险")) return;
-  const resp = reviewState.result;
-  const body = el("div", { class: "review-dialog" }, [
-    el("p", { class: "muted", text: "客商主体与资信风险均来自当前 ReviewResult 的事实、发现和证据。" }),
-    el("div", { id: "credit-dialog-body" }),
-  ]);
-  openModal("客商风险", body, { wide: true });
-  const host = $("#credit-dialog-body");
-  const items = itemsByModule(resp, "资信");
-  host.appendChild(el("div", { class: "grid grid-3" }, [
-    el("div", { class: "review-fact-field" }, [el("div", { class: "k", text: "甲方" }), el("div", { class: "v", text: reviewFactValue(resp, "party_a") || "未抽取" })]),
-    el("div", { class: "review-fact-field" }, [el("div", { class: "k", text: "乙方" }), el("div", { class: "v", text: reviewFactValue(resp, "party_b") || "未抽取" })]),
-    el("div", { class: "review-fact-field" }, [el("div", { class: "k", text: "资信风险项" }), el("div", { class: "v", text: String(items.length) })]),
-  ]));
-  host.appendChild(items.length
-    ? el("div", { class: "risk-list mt-8" }, items.map((item, index) => buildAiRiskItem(item, index)))
-    : el("p", { class: "muted mt-8", text: "当前 ReviewResult 未发现资信风险提示。" }));
 }
 
 function compareIgnoreFlags() {
@@ -525,10 +627,15 @@ function renderCompareFiles() {
   if (compareHint) compareHint.textContent = compareState.compareFile ? compareState.compareFile.name : "未选择比对文档";
 }
 
-function openCompareDialog() {
-  if (!requireReviewResult("进行版本比对")) return;
+/** 当前页面已选中的文件池：合同拟定页用表单附件，合同审查页用待审文件。 */
+function currentFilePool() {
+  return currentPage === "draft" ? elementsState.files : reviewState.files;
+}
+
+async function openCompareDialog() {
   compareState.result = null;
-  if (!compareState.baseFile && reviewState.files[0]) compareState.baseFile = reviewState.files[0];
+  const pool = currentFilePool();
+  if (!compareState.baseFile && pool[0]) compareState.baseFile = pool[0];
   const body = el("div", { class: "compare-dialog" }, [
     el("p", { class: "muted", text: "支持 Word、PDF 对比和相似度提醒。上传基准文档与比对文档后查看差异列表。" }),
     el("div", { class: "grid grid-2" }, [
@@ -547,6 +654,9 @@ function openCompareDialog() {
         ]),
       ]),
     ]),
+    el("p", { class: "muted", text: reviewState.result?.review_result
+      ? "版本差异会挂到当前审查结果上；基准文档需是本合同包里已审过的那一份。"
+      : "当前没有审查结果：将进行纯文档对比（无需先审查）；基准文档若恰好审过，差异会自动挂到该结果上。" }),
     el("div", { class: "compare-ignores" }, compareIgnoreFlags().map(([key, label]) =>
       el("label", { class: "compare-ignore" }, [
         el("input", {
@@ -563,6 +673,7 @@ function openCompareDialog() {
     el("div", { id: "compare-result" }),
   ]);
   openModal("文档对比", body, { wide: true });
+  renderCompareFiles();
 }
 
 async function submitCompare() {
@@ -584,10 +695,18 @@ async function submitCompare() {
     compareIgnoreFlags().forEach(([key]) => {
       if (compareState.options[key]) fd.append(key, "true");
     });
-    fd.append("ReviewResultPayload", JSON.stringify(reviewState.result.review_result));
+    if (reviewState.result?.review_result) {
+      // 有审查结果才挂载（可选）：以文件部件上传，完整 ReviewResult 常超
+      // 1MB，普通表单字段会撞 Starlette 的 max_part_size=1MB。
+      fd.append(
+        "ReviewResultPayload",
+        new Blob([JSON.stringify(reviewState.result.review_result)], { type: "application/json" }),
+        "review-result.json",
+      );
+    }
     const resp = await api.upload("/contract-compare", fd);
     compareState.result = resp;
-    reviewState.result = { review_result: resp.review_result };
+    if (resp.review_result) reviewState.result = { review_result: resp.review_result };
     renderCompareResult(resp);
   } catch (e) {
     if (host) host.innerHTML = "";
@@ -825,7 +944,9 @@ function renderReviewViews(wrap, resp) {
 
   // 单一核心清单：所有展示项都由 ReviewResult.findings 派生而来。
   const items = reviewItems(resp);
-  const blocked = items.some((it) => (it.risk_level || it.status) === "BLOCK");
+  const blocked = items.some((it) => itemVerdict(it) === "不符");
+  const verdictCounts = { 符合: 0, 不符: 0, 待确认: 0 };
+  items.forEach((item) => { verdictCounts[itemVerdict(item)] += 1; });
 
   // 摘要
   const overallCls = fm.cls === "red" ? "red" : fm.cls === "yellow" ? "yellow" : fm.cls === "green" ? "green" : "gray";
@@ -839,11 +960,40 @@ function renderReviewViews(wrap, resp) {
   lead.classList.add("stat-lead", overallCls);
   const summary = el("div", { class: "grid grid-4" }, [
     lead,
-    stat("风险项", String(items.length), "blue"),
+    stat("规则项", String(items.length), "blue", el("span", { class: "lead-sub", text: `不符 ${verdictCounts["不符"]} · 待确认 ${verdictCounts["待确认"]} · 符合 ${verdictCounts["符合"]}` })),
     stat("需人工复核", blocked ? "是" : "否", blocked ? "orange" : "green"),
     stat("审查指纹", run.result_fingerprint ? shortId(run.result_fingerprint) : "-", "gray", el("span", { class: "muted", text: `规则 ${run.rule_version || "-"} · 模型 ${run.model_version || "未启用"}` })),
   ]);
   wrap.appendChild(summary);
+
+  // 模型判定合同类型：仅在用户未声明类型时展示（用户输入为主），
+  // 判定值不参与本次审查的规则筛选，提示用户补录后重新审查。
+  const detectedType = rr.risk_analysis_response?.contract_type;
+  const declaredType = (rr.review_context?.contract_type || "").trim();
+  if (detectedType?.name && !declaredType) {
+    wrap.appendChild(el("div", { class: "cache-hit" }, [
+      el("span", { text: `模型判定合同类型：${detectedType.name}（依据：${detectedType.basis || "合同摘录"}）。本次审查未按类型筛选规则；填写合同类型后重新审查，结论会更精确。` }),
+    ]));
+  }
+
+  // 标准要素回填入口：字段值全部来自本次审查已产生的 contract_element:* 事实。
+  wrap.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "card-title" }, [
+      el("span", { text: "标准要素回填" }),
+      el("span", { class: "hint", text: "在「合同拟定」页填写、复制字段值" }),
+    ]),
+    el("div", { class: "action-bar" }, [
+      el("button", {
+        class: "btn btn-secondary",
+        text: "在合同拟定中打开要素表单",
+        onclick: () => {
+          closeModal();
+          navigate("draft");
+          loadElementForm(rr);
+        },
+      }),
+    ]),
+  ]));
 
   // 文件清单
   if (documents.length) {
@@ -894,6 +1044,12 @@ function itemModule(item) {
   return "内控";
 }
 
+const reviewWorkspace = {
+  showPanel() {},
+  openControl() {},
+  controlVerdict: "不符",
+};
+
 function buildReviewPanels(items, rr, run, report, evidence, documents, options = {}) {
   const grouped = {};
   REVIEW_PANELS.forEach(([name]) => { grouped[name] = []; });
@@ -910,9 +1066,15 @@ function buildReviewPanels(items, rr, run, report, evidence, documents, options 
       btn.classList.toggle("active", btn.getAttribute("data-panel") === current);
     });
     host.innerHTML = "";
-    const panelItems = (name === "合理性" || name === "风险点") ? items : (grouped[name] || []);
+    // v1 同款：内控是全量规则的核对清单（含符合项），合理性/风险点用全量
+    // 做指标卡片，资信只看归入该栏的条目。
+    const panelItems = (name === "内控" || name === "合理性" || name === "风险点")
+      ? items
+      : (grouped[name] || []);
     host.appendChild(buildPanelContent(name, panelItems, rr, run, report, evidence, documents));
   };
+
+  reviewWorkspace.showPanel = renderPanel;
 
   tabs.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => renderPanel(btn.getAttribute("data-panel")));
@@ -923,13 +1085,18 @@ function buildReviewPanels(items, rr, run, report, evidence, documents, options 
     return el("div", { class: "ppt-review-shell" }, [tabs, host]);
   }
   return el("div", { class: "card" }, [
-    el("div", { class: "card-title", text: "审查发现" }, [
-      el("span", { class: "hint", text: `共 ${items.length} 项` }),
+    el("div", { class: "card-title", text: "AI 审查" }, [
+      el("span", { class: "hint", text: `共 ${items.length} 条规则` }),
     ]),
     tabs,
     host,
-    el("div", { class: "muted mt-8", text: `合同包: ${rr.package?.package_id || "-"} · 审查状态: ${run.status || "-"} · 生成时间: ${fmtTime(report.generated_at)}` }),
+    el("div", { class: "muted mt-8", text: `合同包: ${rr.package?.package_id || "-"} · 审查状态: ${statusText(run.status)} · 生成时间: ${fmtTime(report.generated_at)}` }),
   ]);
+}
+
+function controlItemDomId(item) {
+  const key = item.rule_id || item.risk_id || controlNavTitle(item);
+  return `control-item-${String(key).replace(/[^\w\u4e00-\u9fff-]+/g, "_")}`;
 }
 
 function buildPanelContent(name, items, rr, run, report, evidence, documents) {
@@ -962,28 +1129,62 @@ function controlNavTitle(item) {
     .trim() || "未命名条款";
 }
 
+function isContractQuote(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (/^未(定位到合同原文|检索到相关原文|明确约定该项)/.test(value)) return false;
+  if (/需结合报价和履约安排补充/.test(value)) return false;
+  if (/AI 依据合同原文判定本合同类型/.test(value)) return false;
+  if (/^规则来源[：:]/.test(value)) return false;
+  return true;
+}
+
+function controlQuote(item) {
+  return isContractQuote(item.quote) ? String(item.quote).trim() : "";
+}
+
+function controlAdvice(item) {
+  return String(item.suggested_action || item.recommended_action || "").trim() || "暂无调整建议";
+}
+
+/** 当前语境下的"重新审查"：拟定页弹窗用表单附件，审查页用页面附件。 */
+function rerunActiveReview() {
+  if (currentPage === "draft" && typeof submitFillReview === "function" && elementsState.files.length) {
+    submitFillReview();
+    return;
+  }
+  submitReviewSync();
+}
+
 function buildControlBody(item) {
   return el("div", { class: "ppt-acc-body" }, [
     el("div", { class: "ppt-field" }, [
       el("div", { class: "ppt-field-label", text: "原文" }),
-      el("div", { class: "ppt-quote", text: item.quote || item.reason || "未定位到合同原文" }),
+      el("div", { class: "ppt-quote", text: controlQuote(item) || "" }),
     ]),
     el("div", { class: "ppt-field" }, [
       el("div", { class: "ppt-field-label", text: "建议" }),
-      el("div", { class: "ppt-advice", text: item.suggested_action || "暂无调整建议" }),
+      el("div", { class: "ppt-advice", text: controlAdvice(item) }),
     ]),
     el("div", { class: "ppt-control-actions" }, [
-      el("button", { class: "ppt-btn primary", text: "插入调整", onclick: () => copyText(item.suggested_action || item.reason || "") }),
-      el("button", { class: "ppt-btn", text: "插入评论", onclick: () => copyText(`【内控】${controlNavTitle(item)}\n原文：${item.quote || ""}\n建议：${item.suggested_action || item.reason || ""}`) }),
+      el("button", { class: "ppt-btn primary", text: "插入调整", onclick: () => copyText(controlAdvice(item)) }),
+      el("button", { class: "ppt-btn", text: "插入评论", onclick: () => copyText(`【内控】${controlNavTitle(item)}\n原文：${controlQuote(item)}\n建议：${controlAdvice(item)}`) }),
+      el("button", { class: "ppt-btn", text: "重新审查", onclick: rerunActiveReview }),
     ]),
   ]);
 }
 
-function buildControlPanel(items) {
-  if (!items.length) return el("p", { class: "muted", text: "本次审查没有内控命中项。" });
+function controlItems(items) {
+  return items.filter((item) => !/^合同类型判定/.test(item.title || ""));
+}
+
+function buildControlRuleList(items) {
+  if (!items.length) return el("p", { class: "muted", text: "该分类暂无规则。" });
   const list = el("div", { class: "ppt-acc" });
   let opened = -1;
   const rows = items.map((item, index) => {
+    const verdict = itemVerdict(item);
+    const vm = VERDICT_META[verdict] || VERDICT_META["待确认"];
     const head = el("button", {
       type: "button",
       class: "ppt-acc-head",
@@ -995,11 +1196,50 @@ function buildControlPanel(items) {
       el("span", { class: "ppt-acc-caret", text: "▸" }),
       el("span", { text: `${index + 1}. ${controlNavTitle(item)}` }),
     ]);
-    const row = el("div", { class: "ppt-acc-item" }, [head, buildControlBody(item)]);
+    const row = el("div", { class: `ppt-acc-item verdict-${vm.cls}`, id: controlItemDomId(item) }, [head, buildControlBody(item)]);
     return row;
   });
   rows.forEach((row) => list.appendChild(row));
+  if (rows[0]) rows[0].classList.add("open");
   return list;
+}
+
+function buildControlPanel(items) {
+  const source = controlItems(items);
+  if (!source.length) return el("p", { class: "muted", text: "本次审查没有规则。" });
+  const grouped = {};
+  VERDICT_ORDER.forEach((name) => { grouped[name] = []; });
+  source.forEach((item) => grouped[itemVerdict(item)].push(item));
+  let current = reviewWorkspace.controlVerdict;
+  if (!VERDICT_META[current] || !grouped[current]?.length) {
+    current = VERDICT_ORDER.find((name) => grouped[name].length) || VERDICT_ORDER[0];
+  }
+  const listHost = el("div", { class: "ppt-control-list" });
+  const tabs = el("div", { class: "tabs ppt-tabs ppt-control-tabs" }, VERDICT_ORDER.map((name) => {
+    const vm = VERDICT_META[name];
+    return el("button", {
+      type: "button",
+      class: `tab verdict-tab ${vm.cls}`,
+      "data-verdict": name,
+      text: `${name} ${grouped[name].length}`,
+    });
+  }));
+
+  const renderVerdict = (name) => {
+    current = name;
+    reviewWorkspace.controlVerdict = name;
+    tabs.querySelectorAll(".tab").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-verdict") === current);
+    });
+    listHost.innerHTML = "";
+    listHost.appendChild(buildControlRuleList(grouped[current] || []));
+  };
+
+  tabs.querySelectorAll(".tab").forEach((btn) => {
+    btn.addEventListener("click", () => renderVerdict(btn.getAttribute("data-verdict")));
+  });
+  renderVerdict(current);
+  return el("div", { class: "ppt-control-groups" }, [tabs, listHost]);
 }
 
 const RISK_POINT_KEYS = ["利润率", "资金要求", "项目预算", "收款进度"];
@@ -1039,13 +1279,28 @@ function isRiskPointItem(item) {
   return RISK_POINT_KEYS.includes(metricKey(item)) || extraRiskItems([item]).length > 0;
 }
 
-function reasonablenessLine(item, title) {
+function linkedControlItem(item, allItems) {
+  if (!item) return null;
+  const keys = new Set([item.rule_id, item.risk_id, controlNavTitle(item)].filter(Boolean));
+  return controlItems(allItems || []).find((candidate) => {
+    const candidateKeys = [candidate.rule_id, candidate.risk_id, controlNavTitle(candidate)].filter(Boolean);
+    return candidateKeys.some((key) => keys.has(key));
+  }) || (itemModule(item) === "内控" ? item : null);
+}
+
+function reasonablenessLine(item, title, allItems) {
   const name = title || item.metric || item.title || "";
   const text = item.value && item.value !== name ? `${item.value}。${item.reason || ""}` : (item.reason || "");
-  return el("li", {}, [
+  const control = linkedControlItem(item, allItems || []);
+  const line = el("li", { class: control ? "ppt-reason-link" : "" }, [
     el("b", { text: name.replace(/^[\d.、]+\s*/, "") }),
     el("span", { text }),
+    control ? el("span", { class: "ppt-link-hint", text: `内控 · ${itemVerdict(control)}` }) : null,
   ]);
+  if (control) {
+    line.addEventListener("click", () => reviewWorkspace.openControl(control));
+  }
+  return line;
 }
 
 function buildReasonablenessPanel(items) {
@@ -1061,8 +1316,8 @@ function buildReasonablenessPanel(items) {
     el("div", { class: "ppt-reason-col" }, [
       el("div", { class: "ppt-reason-head", text: name }),
       el("ol", { class: "ppt-reason-ol" }, name === "风险点与陷阱"
-        ? riskPointEntries(items).map(({ key, item }) => reasonablenessLine(item, key))
-        : grouped[name].map((item) => reasonablenessLine(item))),
+        ? riskPointEntries(items).map(({ key, item }) => reasonablenessLine(item, key, items))
+        : grouped[name].map((item) => reasonablenessLine(item, undefined, items))),
     ])
   ));
 }
@@ -1111,15 +1366,22 @@ function metricCardText(item, name) {
   return reason || value || "";
 }
 
-function buildInsightCard(item, key) {
+function buildInsightCard(item, key, allItems) {
   const name = key || metricKey(item);
-  return el("div", { class: "ppt-metric-card" }, [
+  const control = linkedControlItem(item, allItems || []);
+  const card = el("div", { class: `ppt-metric-card${control ? " ppt-metric-link" : ""}` }, [
     el("div", { class: "ppt-metric-head" }, [
       metricIconSvg(name),
       el("span", { text: name }),
+      control ? el("span", { class: `badge ${VERDICT_META[itemVerdict(control)].cls}`, text: itemVerdict(control) }) : null,
     ]),
     el("p", { text: metricCardText(item, name) }),
+    control ? el("div", { class: "ppt-link-hint", text: `对应内控：${controlNavTitle(control)}` }) : null,
   ]);
+  if (control) {
+    card.addEventListener("click", () => reviewWorkspace.openControl(control));
+  }
+  return card;
 }
 
 function donutChart(slices) {
@@ -1154,14 +1416,14 @@ function buildRiskPointPanel(items) {
   return el("div", { class: "ppt-risk" }, [
     el("div", { class: "ppt-risk-block" }, [
       el("div", { class: "ppt-block-title", text: "财务风险" }),
-      el("div", { class: "ppt-metric-row" }, finance.map((item, i) => buildInsightCard(item, financeKeys[i]))),
+      el("div", { class: "ppt-metric-row" }, finance.map((item, i) => buildInsightCard(item, financeKeys[i], items))),
     ]),
     el("div", { class: "ppt-risk-block" }, [
       el("div", { class: "ppt-block-title", text: "项目风险" }),
       el("div", { class: "ppt-risk-split" }, [
         el("div", { class: "ppt-metric-col" }, [
-          ...project.map((item, i) => buildInsightCard(item, projectKeys[i])),
-          ...extra.map((item) => buildInsightCard(item, metricKey(item))),
+          ...project.map((item, i) => buildInsightCard(item, projectKeys[i], items)),
+          ...extra.map((item) => buildInsightCard(item, metricKey(item), items)),
         ]),
         donutChart([
           { label: "项目预算", value: 58 },
@@ -1180,12 +1442,12 @@ function buildCreditPanel(items) {
   return el("div", { class: "ppt-credit" }, [
     el("div", { class: "ppt-risk-block" }, [
       el("div", { class: "ppt-block-title", text: "客户资信风险" }),
-      el("div", { class: "ppt-metric-row" }, credit.map((item, i) => buildInsightCard(item, creditKeys[i]))),
+      el("div", { class: "ppt-metric-row" }, credit.map((item, i) => buildInsightCard(item, creditKeys[i], items))),
     ]),
     el("div", { class: "ppt-risk-block" }, [
       el("div", { class: "ppt-block-title", text: "经营风险" }),
       el("div", { class: "ppt-risk-split" }, [
-        el("div", { class: "ppt-metric-col" }, business.map((item, i) => buildInsightCard(item, businessKeys[i]))),
+        el("div", { class: "ppt-metric-col" }, business.map((item, i) => buildInsightCard(item, businessKeys[i], items))),
         donutChart([
           { label: "注册资本", value: 58 },
           { label: "经营状况", value: 42 },
@@ -1254,7 +1516,7 @@ function buildFilteredRiskCard(items, rr, run, report, options = {}) {
     options.hideMeta ? null : el("div", { class: "card-title", text: "风险清单" }, [hint]),
     chips,
     listHost,
-    options.hideMeta ? null : el("div", { class: "muted mt-8", text: `合同包: ${rr.package?.package_id || "-"} · 审查状态: ${run.status || "-"} · 生成时间: ${fmtTime(report.generated_at)}` }),
+    options.hideMeta ? null : el("div", { class: "muted mt-8", text: `合同包: ${rr.package?.package_id || "-"} · 审查状态: ${statusText(run.status)} · 生成时间: ${fmtTime(report.generated_at)}` }),
   ]);
   return card;
 }
@@ -1300,35 +1562,903 @@ function buildFinding(f, evById, docById) {
 }
 
 /* ============================================================
+ * 合同拟定（v1 版式：合同附件 + 要素表单 + 抽取弹窗）
+ * ============================================================ */
+
+const ELEMENT_SOURCE_META = {
+  rule: { label: "规则抽到", cls: "green" },
+  ai: { label: "AI 补全", cls: "blue" },
+  merged: { label: "规则+AI", cls: "orange" },
+  empty: { label: "未抽到", cls: "gray" },
+};
+
+// v1「合同拟定」页的状态：附件、抽取结果、字段目录与原文预览。
+let elementsState = {
+  files: [],
+  packageId: newPackageId(),
+  form: null,
+  catalog: null,
+  overrides: {},
+  previewUrl: null,
+  previewHtml: "",
+  previewText: "",
+  previewKind: "",
+  previewMessage: "",
+};
+
+function renderDraftPage(content) {
+  content.appendChild(pageHead("CONTRACT FORM", "合同拟定", "按标准版合同管理：先上传合同附件，再做要素抽取、合同审查和文档对比"));
+  content.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "flex", style: "flex-wrap:wrap;gap:8px;align-items:center" }, [
+      el("button", { class: "btn btn-primary", text: "要素抽取", onclick: openExtractDialog }),
+      el("button", { class: "btn btn-secondary", text: "合同审查", onclick: openFillReviewDialog }),
+      el("button", { class: "btn btn-ghost", text: "客商风险", onclick: openCreditRiskDialog }),
+      el("button", { class: "btn btn-ghost", text: "文档对比", onclick: openCompareDialog }),
+      el("span", { class: "muted", id: "elements-status", text: elementsStatusText() }),
+    ]),
+  ]));
+  content.appendChild(el("div", { id: "contract-fill-form" }, [
+    el("div", { class: "card" }, [el("p", { class: "muted", text: "加载合同表单…" })]),
+  ]));
+  renderElementForm();
+  ensureElementCatalog();
+}
+
+function elementsStatusText() {
+  const fields = elementsState.form?.fields || [];
+  if (!fields.length) return "先添加合同附件，再点功能按钮";
+  const filled = fields.filter((item) => item.value).length;
+  return `共 ${fields.length} 项要素，已抽到 ${filled} 项`;
+}
+
+function updateElementsStatus() {
+  const node = $("#elements-status");
+  if (node) node.textContent = elementsStatusText();
+}
+
+/* ---------------- 合同信息表单 ---------------- */
+
+function renderElementForm() {
+  const host = $("#contract-fill-form");
+  if (!host) return;
+  host.innerHTML = "";
+  const items = elementFormItems();
+  host.appendChild(el("div", { class: "card contract-form-card" }, [
+    el("div", { class: "card-title", text: "合同信息" }, [
+      el("span", { class: "hint", text: "点开输入框后，抽出的内容在下方下拉列表中竖排显示" }),
+      el("span", { class: "grow" }),
+      items.some((item) => item.value)
+        ? el("button", { class: "link-btn", text: "填入全部抽取结果", onclick: fillAllExtracted })
+        : null,
+    ]),
+    el("div", { class: "contract-form-grid" }, [
+      buildAttachmentField(),
+      ...items.map(buildInlineFillField),
+    ]),
+    el("div", { class: "action-bar mt-8" }, [
+      el("button", { class: "btn btn-primary", text: "保存当前填写", onclick: confirmElementsFill }),
+      el("button", { class: "btn btn-ghost", text: "复制 JSON", onclick: () => copyText(JSON.stringify(collectElementValues(), null, 2)) }),
+    ]),
+  ]));
+  renderElementsFiles();
+  updateElementsStatus();
+}
+
+/** 有抽取结果用结果字段；没有就按字段目录生成空表单（v1 行为）。 */
+function elementFormItems() {
+  const fields = elementsState.form?.fields || [];
+  if (fields.length) {
+    return fields.map((item) => ({
+      key: item.key,
+      label: item.label,
+      value: item.value || "",
+      source: item.source || "empty",
+      confidence: typeof item.confidence === "number" ? item.confidence : null,
+      quote: item.quote || "",
+      hint: item.hint || "",
+      required: !!item.required,
+      candidates: (item.candidates || []).filter((value) => value && value !== item.value),
+    }));
+  }
+  return (elementsState.catalog?.fields || [])
+    .filter((item) => item.enabled !== false)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    .map((item) => ({
+      key: item.key,
+      label: item.label,
+      value: "",
+      source: "empty",
+      confidence: null,
+      quote: "",
+      hint: item.hint || "",
+      required: !!item.required,
+      candidates: [],
+    }));
+}
+
+async function ensureElementCatalog() {
+  if (elementsState.catalog) return;
+  try {
+    elementsState.catalog = await api.get("/contract-review/element-fields");
+  } catch {
+    // 目录拿不到时保持"加载合同表单…"占位，不阻塞已抽取结果的渲染。
+    return;
+  }
+  if (!elementsState.form) renderElementForm();
+}
+
+function buildAttachmentField() {
+  const input = el("input", {
+    type: "file",
+    class: "hidden",
+    id: "elements-file-input",
+    multiple: true,
+    accept: ".pdf,.doc,.docx,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    onchange: (e) => {
+      setElementFiles(e.target.files);
+      e.target.value = "";
+    },
+  });
+  const picker = el("div", { class: "attachment-control", id: "elements-dropzone" }, [
+    el("button", {
+      type: "button",
+      class: "btn btn-ghost btn-sm",
+      text: "添加附件",
+      onclick: (event) => { event.preventDefault(); input.click(); },
+    }),
+    el("span", { class: "muted", id: "elements-dz-hint", text: "支持 PDF / DOCX / XLSX" }),
+    input,
+    el("div", { class: "attachment-files", id: "elements-files" }),
+  ]);
+  picker.addEventListener("dragover", (e) => { e.preventDefault(); picker.classList.add("dragover"); });
+  picker.addEventListener("dragleave", () => picker.classList.remove("dragover"));
+  picker.addEventListener("drop", (e) => {
+    e.preventDefault();
+    picker.classList.remove("dragover");
+    if (e.dataTransfer.files.length) setElementFiles(e.dataTransfer.files);
+  });
+  return el("div", { class: "contract-field" }, [
+    el("label", { class: "contract-label" }, [el("span", { class: "req", text: "*" }), " 合同附件"]),
+    picker,
+  ]);
+}
+
+function setElementFiles(files, options = {}) {
+  const incoming = [...files];
+  const replace = options.replace === true || incoming.length === 0;
+  const append = !replace && options.append !== false && elementsState.files.length > 0;
+  elementsState.files = append ? mergeFiles(elementsState.files, incoming) : incoming;
+  if (!append) elementsState.packageId = newPackageId();
+  resetElementPreview();
+  renderElementsFiles();
+}
+
+function renderElementsFiles() {
+  const wrap = $("#elements-files");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const hint = $("#elements-dz-hint");
+  const dz = $("#elements-dropzone");
+  const count = elementsState.files.length;
+  if (hint) hint.textContent = count ? `已添加 ${count} 个文件` : "支持 PDF / DOCX / XLSX";
+  if (dz) dz.classList.toggle("has-files", count > 0);
+  if (!count) return;
+  for (const file of elementsState.files) {
+    wrap.appendChild(el("span", { class: "file-chip" }, [
+      el("span", { text: `${file.name}（${fmtBytes(file.size)}）` }),
+      el("span", {
+        class: "remove",
+        text: "✕",
+        onclick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setElementFiles(
+            elementsState.files.filter((item) => fileKey(item) !== fileKey(file)),
+            { replace: true },
+          );
+        },
+      }),
+    ]));
+  }
+}
+
+/** v1 的候选取值：本次抽到的值排最前，其余候选值依次排在后面。 */
+function candidateValues(item) {
+  const values = [];
+  const seen = new Set();
+  if (item.value) {
+    values.push(item.value);
+    seen.add(item.value);
+  }
+  for (const value of item.candidates || []) {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    values.push(text);
+  }
+  return values;
+}
+
+/** 抽取值来源说明，挂在输入框与候选项的悬浮提示上，不改变 v1 的版式。 */
+function elementFieldHint(item, value) {
+  if (!value) return "";
+  const meta = ELEMENT_SOURCE_META[item.source] || ELEMENT_SOURCE_META.empty;
+  const parts = [`来源：${meta.label}`];
+  if (typeof item.confidence === "number") parts.push(`置信度：${item.confidence.toFixed(2)}`);
+  if (item.quote) parts.push(`依据：${item.quote}`);
+  return parts.join("\n");
+}
+
+function buildInlineFillField(item) {
+  const suggestions = candidateValues(item);
+  const input = el("input", {
+    class: "input fill-input",
+    "data-element-key": item.key,
+    value: elementsState.overrides[item.key] ?? "",
+    placeholder: "请输入",
+    title: suggestions.length ? elementFieldHint(item, suggestions[0]) : "",
+    oninput: (e) => { elementsState.overrides[item.key] = e.target.value; },
+  });
+  const menu = suggestions.length
+    ? el("div", { class: "fill-dropdown hidden" }, suggestions.map((value) =>
+        el("button", {
+          type: "button",
+          class: "fill-dropdown-item",
+          text: value,
+          title: elementFieldHint(item, value),
+          onmousedown: (event) => event.preventDefault(),
+          onclick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            input.value = value;
+            elementsState.overrides[item.key] = value;
+            menu.classList.add("hidden");
+            input.focus();
+          },
+        })
+      ))
+    : null;
+  const hideMenu = () => { if (menu) menu.classList.add("hidden"); };
+  const showMenu = () => { if (menu) menu.classList.remove("hidden"); };
+  if (menu) {
+    input.addEventListener("focus", showMenu);
+    input.addEventListener("click", showMenu);
+    input.addEventListener("blur", () => setTimeout(hideMenu, 120));
+  }
+  const box = el("div", { class: "in-input-box" }, [input, menu]);
+  box.addEventListener("mousedown", (event) => {
+    if (event.target === box) {
+      event.preventDefault();
+      input.focus();
+    }
+  });
+  return el("div", { class: "contract-field" }, [
+    el("label", { class: "contract-label", text: item.label }),
+    box,
+  ]);
+}
+
+function collectElementValues() {
+  const values = {};
+  document.querySelectorAll("[data-element-key]").forEach((node) => {
+    values[node.getAttribute("data-element-key")] = node.value.trim();
+  });
+  return values;
+}
+
+function confirmElementsFill() {
+  const values = collectElementValues();
+  copyText(JSON.stringify(values, null, 2));
+  toast("已确认要素，JSON 已复制，可填充到合同模块", "ok");
+}
+
+/** 一键把抽到的值填进输入框，避免 17 个字段逐个点开下拉。 */
+function fillAllExtracted() {
+  const items = elementFormItems().filter((item) => item.value || item.candidates.length);
+  for (const item of items) {
+    const value = item.value || item.candidates[0];
+    elementsState.overrides[item.key] = value;
+    const node = document.querySelector(`[data-element-key="${item.key}"]`);
+    if (node) node.value = value;
+  }
+  toast(`已填入 ${items.length} 个字段，可继续手工修改`, "ok");
+}
+
+/* ---------------- 合同审查（页内完成，用表单里已添加的附件） ---------------- */
+
+function requireContractFiles(action) {
+  if (!elementsState.files.length) {
+    toast(`请先在合同信息中添加合同附件后再${action}`, "warn");
+    return false;
+  }
+  return true;
+}
+
+function openFillReviewDialog() {
+  if (!requireContractFiles("合同审查")) return;
+  const body = el("div", { class: "review-dialog" }, [
+    el("div", { id: "review-result" }),
+  ]);
+  openModal("合同审查", body, { wide: true });
+  if (reviewState.result?.review_result) {
+    renderReviewViews($("#review-result"), reviewState.result);
+  } else {
+    renderFillReviewStart();
+  }
+}
+
+/** v1 的「开始审查」表单：合同包 ID + 合同类型，直接用已添加的附件。 */
+function renderFillReviewStart() {
+  const wrap = $("#review-result");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  wrap.appendChild(el("div", {}, [
+    el("p", { class: "muted", text: "对照正式规则包审查本合同，结果按内控 / 合理性 / 风险点 / 资信展示；要素字段同时会回填到合同拟定表单。" }),
+    el("div", { class: "grid grid-2" }, [
+      el("div", { class: "form-row" }, [
+        el("label", { text: "合同包 ID" }),
+        el("input", {
+          class: "input",
+          id: "fill-review-pkg",
+          value: elementsState.packageId,
+          oninput: (e) => (elementsState.packageId = e.target.value.trim()),
+        }),
+      ]),
+      el("div", { class: "form-row" }, [
+        el("label", { text: "合同类型" }),
+        el("select", { class: "select", onchange: (e) => (reviewState.contractType = e.target.value) },
+          CONTRACT_TYPES.map((type) => el("option", { value: type, text: type || "— 不指定 —", selected: type === reviewState.contractType ? "" : null }))),
+      ]),
+    ]),
+    el("div", { class: "action-bar mt-8" }, [
+      el("button", { class: "btn btn-primary", id: "btn-fill-review", text: "开始审查", onclick: submitFillReview }),
+    ]),
+  ]));
+}
+
+async function submitFillReview() {
+  if (!requireContractFiles("合同审查")) return;
+  const btn = $("#btn-fill-review");
+  if (btn) btn.disabled = true;
+  const wrap = $("#review-result");
+  if (wrap) {
+    wrap.innerHTML = "";
+    wrap.appendChild(el("div", { class: "card" }, [
+      el("div", { class: "card-title", text: "审查中…" }),
+      el("p", { class: "muted", text: "正在解析合同、检测印章、召回规则并调用模型，耗时取决于文件大小与页数" }),
+    ]));
+  }
+  try {
+    const resp = await runDraftReview();
+    renderReviewViews(wrap, resp);
+    toast("审查完成，要素字段已回填到合同信息", "ok");
+  } catch (e) {
+    if (wrap) wrap.innerHTML = "";
+    renderReviewError(wrap, e.message);
+    toast(`审查失败: ${e.message}`, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderReviewError(wrap, message, title = "审查失败") {
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  wrap.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "card-title", text: title }),
+    el("p", { class: "muted", text: message || "未知错误" }),
+  ]));
+}
+
+/** 用表单里的附件跑一次审查，并同步刷新要素表单（合同审查 / 客商风险共用）。 */
+async function runDraftReview() {
+  const fd = new FormData();
+  elementsState.files.forEach((file) => fd.append("files", file));
+  fd.append("PackageId", elementsState.packageId);
+  if (reviewState.contractType) fd.append("ContractType", reviewState.contractType);
+  const resp = await api.upload("/contract-review", fd);
+  reviewState.result = resp;
+  elementsState.form = await api.post("/contract-review/element-form", {
+    review_result: resp.review_result,
+  });
+  elementsState.overrides = {};
+  renderElementForm();
+  return resp;
+}
+
+/* ---------------- 客商风险 ---------------- */
+
+const CREDIT_CHECK_META = {
+  RISK: { label: "有风险", cls: "red" },
+  CLEAR: { label: "已核验通过", cls: "green" },
+  UNKNOWN: { label: "待人工确认", cls: "yellow" },
+  UNAVAILABLE: { label: "待接入数据源", cls: "gray" },
+};
+
+const ELEMENT_SOURCE_LABEL = {
+  rule: "规则抽到",
+  ai: "AI 补全",
+  merged: "规则+AI",
+  empty: "未抽到",
+};
+
+async function openCreditRiskDialog() {
+  // 合同拟定页没有审查结果时，用表单里的附件直接跑一次（v1 行为）；
+  // 合同审查页则要求先完成审查，避免在这里重复触发一次耗时审查。
+  if (!reviewState.result?.review_result) {
+    if (currentPage === "draft") {
+      if (!requireContractFiles("查看客商风险")) return;
+    } else if (!requireReviewResult("查看客商风险")) {
+      return;
+    }
+  }
+  const body = el("div", { class: "review-dialog" }, [
+    el("p", { class: "muted", text: "客商风险对接合同主体与资信规则。有企业征信平台时，可将甲方/乙方送去核验。" }),
+    el("div", { id: "credit-dialog-body" }, [el("p", { class: "muted", text: "正在汇总客商风险…" })]),
+  ]);
+  openModal("客商风险", body, { wide: true });
+  const host = $("#credit-dialog-body");
+  try {
+    if (!reviewState.result?.review_result) await runDraftReview();
+    const view = await api.post("/contract-review/credit-risk", {
+      review_result: reviewState.result.review_result,
+    });
+    renderCreditRiskView(host, view);
+  } catch (e) {
+    if (host) {
+      host.innerHTML = "";
+      host.appendChild(el("p", { class: "muted", text: "客商风险分析失败：" + (e?.message || e) }));
+    }
+    toast(`客商风险分析失败: ${e?.message || e}`, "err");
+  }
+}
+
+function renderCreditRiskView(host, view) {
+  if (!host) return;
+  host.innerHTML = "";
+  host.appendChild(el("div", { class: "cache-hit", text: view?.data_source_message || "" }));
+
+  const subjects = view?.subjects || [];
+  if (subjects.length) {
+    host.appendChild(el("div", { class: "ocr-field-grid mt-8" }, subjects.map((item) => {
+      const meta = ELEMENT_SOURCE_LABEL[item.source] || item.source;
+      const confidence = typeof item.confidence === "number" ? ` · 置信度 ${item.confidence.toFixed(2)}` : "";
+      return el("div", { class: "ocr-field" + (item.value ? "" : " empty") }, [
+        el("div", { class: "k", text: item.role }),
+        el("div", { class: "v", text: item.value || "未从合同正文识别" }),
+        el("div", { class: "muted", text: item.value ? `${meta}${confidence}` : "可在合同信息中人工补录" }),
+      ]);
+    })));
+  }
+
+  const findings = view?.subject_findings || [];
+  host.appendChild(el("div", { class: "card-title mt-8" }, [
+    el("span", { text: "主体类审查发现" }),
+    el("span", { class: "hint", text: `${findings.length} 条` }),
+  ]));
+  host.appendChild(findings.length
+    ? el("div", {}, findings.map((item) => el("div", { class: "credit-finding" }, [
+        el("div", { class: "credit-finding-head" }, [
+          badge(String(item.status || "UNKNOWN").toUpperCase(), FINDING_META),
+          badge(String(item.risk_level || "unclassified"), RISK_META),
+          el("span", { text: item.title || item.rule_id }),
+        ]),
+        el("p", { text: item.reason || "" }),
+        item.recommended_action ? el("p", { class: "muted", text: `建议动作：${item.recommended_action}` }) : null,
+      ])))
+    : el("p", { class: "muted", text: "本次审查未产生合同主体类发现。当前规则包里没有资信/征信类规则。" }));
+
+  const checks = view?.checks || [];
+  host.appendChild(el("div", { class: "card-title mt-8" }, [
+    el("span", { text: "外部核验项" }),
+    el("span", { class: "hint", text: view?.data_source_connected ? "已接入征信数据源" : "企业征信数据源未接入" }),
+  ]));
+  host.appendChild(el("div", { class: "table-wrap" }, [
+    el("table", { class: "table" }, [
+      el("thead", {}, [el("tr", {}, [
+        el("th", { text: "核验项" }),
+        el("th", { text: "状态" }),
+        el("th", { text: "说明" }),
+      ])]),
+      el("tbody", {}, checks.map((item) => el("tr", {}, [
+        el("td", { class: "rule-title", text: item.label }),
+        el("td", {}, [badge(String(item.status || "UNAVAILABLE"), CREDIT_CHECK_META)]),
+        el("td", { class: "muted", text: item.detail || "" }),
+      ]))),
+    ]),
+  ]));
+  host.appendChild(el("p", { class: "muted", text: view?.summary || "" }));
+}
+
+/* ---------------- 要素抽取（跑一次审查并回填表单） ---------------- */
+
+function openExtractDialog() {
+  if (!elementsState.files.length) {
+    toast("请先在合同信息中添加合同附件", "warn");
+    return;
+  }
+  const body = el("div", { class: "extract-workspace" }, [
+    el("div", { id: "extract-preview" }),
+    el("div", { class: "extract-dialog" }, [
+      el("div", { id: "element-schema" }),
+      el("div", { class: "form-row" }, [
+        el("label", {}, [el("span", { class: "req", text: "*" }), " 合同包 ID"]),
+        el("input", { class: "input", id: "elements-pkg", value: elementsState.packageId, oninput: (e) => (elementsState.packageId = e.target.value.trim()) }),
+      ]),
+      el("div", { class: "action-bar mt-8" }, [
+        el("button", { class: "btn btn-primary", id: "btn-elements-sync", text: "开始抽取", onclick: submitElementsSync }),
+        el("button", { class: "btn btn-ghost", text: "取消", onclick: closeModal }),
+      ]),
+    ]),
+  ]);
+  openModal("要素抽取", body, { wide: true });
+  loadElementSchema();
+  loadExtractPreview(elementsState.files[0]);
+}
+
+/** v1 的可编辑要素口径表：新增 / 编辑 / 停用 / 删除都直接写回目录快照。 */
+async function loadElementSchema() {
+  const wrap = $("#element-schema");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  wrap.appendChild(el("p", { class: "muted", text: "加载字段目录…" }));
+  let catalog;
+  try {
+    catalog = await api.get("/contract-review/element-fields");
+    elementsState.catalog = catalog;
+  } catch (e) {
+    wrap.innerHTML = "";
+    wrap.appendChild(el("p", { class: "muted", text: "要素定义加载失败：" + (e?.message || e) }));
+    return;
+  }
+  const fields = catalog.fields || [];
+  const editable = catalog.editable !== false;
+  wrap.innerHTML = "";
+  wrap.appendChild(el("div", { class: "schema-block" }, [
+    el("div", { class: "card-title" }, [
+      el("span", { text: "自定义抽取要素" }),
+      el("span", { class: "hint", text: `共 ${fields.length} 项 · 启用后才会抽取` }),
+      el("span", { class: "grow" }),
+      editable
+        ? el("button", { class: "btn btn-primary btn-sm", text: "新增要素", onclick: () => openElementFieldForm(null) })
+        : el("span", { class: "badge gray", text: "只读" }),
+    ]),
+    editable
+      ? null
+      : el("p", { class: "muted", text: "当前使用内置要素定义（未配置 CONTRACT_ELEMENT_FIELDS_PATH），无法在线编辑。" }),
+    el("div", { class: "table-wrap" }, [
+      el("table", { class: "table" }, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "要素名称" }),
+          el("th", { text: "字段键" }),
+          el("th", { text: "别名/提示词" }),
+          el("th", { text: "必填" }),
+          el("th", { text: "是否启用" }),
+          el("th", { text: "操作" }),
+        ])]),
+        el("tbody", {}, fields.map((field) => el("tr", {}, [
+          el("td", { class: "rule-title", text: field.label }),
+          el("td", { class: "mono", text: field.key }),
+          el("td", { class: "muted", text: (field.aliases || []).join("、") || "-" }),
+          el("td", {}, [field.required ? el("span", { class: "badge orange", text: "是" }) : el("span", { class: "muted", text: "否" })]),
+          el("td", {}, [
+            el("button", {
+              class: "enable-toggle" + (field.enabled ? " on" : ""),
+              text: field.enabled ? "是" : "否",
+              disabled: editable ? null : "",
+              onclick: () => toggleElementField(field, !field.enabled),
+            }),
+          ]),
+          el("td", {}, editable ? [
+            el("button", { class: "link-btn", text: "编辑", onclick: () => openElementFieldForm(field) }),
+            el("button", { class: "link-btn danger", text: "删除", onclick: () => deleteElementField(field) }),
+          ] : [el("span", { class: "muted", text: "-" })]),
+        ]))),
+      ]),
+    ]),
+    el("p", { class: "muted", text: `目录 ${catalog.catalog_id} · 抽取器 ${catalog.extractor_version} · 指纹 ${shortId(catalog.fingerprint)}` }),
+  ]));
+  // 口径变了，主表单的字段清单也要跟着变。
+  renderElementForm();
+}
+
+function openElementFieldForm(field) {
+  const editing = !!(field && field.key);
+  const form = el("div", { class: "rule-form" }, [
+    el("div", { class: "form-row" }, [
+      el("label", {}, [el("span", { class: "req", text: "*" }), " 要素名称"]),
+      el("input", { class: "input", id: "el-label", value: field?.label || "", placeholder: "如 质保期" }),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "字段键（可空，自动生成）" }),
+      el("input", { class: "input", id: "el-key", value: field?.key || "", placeholder: "如 warranty_period", disabled: editing ? "" : null }),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "别名/提示词（逗号分隔）" }),
+      el("input", { class: "input", id: "el-aliases", value: (field?.aliases || []).join("、"), placeholder: "如 质保期,质量保证期" }),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "自定义正则（每行一条，可空）" }),
+      el("textarea", { class: "input", id: "el-patterns", placeholder: "如 质保期[:：]\\s*([^\\n]{2,40})" }, (field?.patterns || []).join("\n")),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "填写提示（可空）" }),
+      el("input", { class: "input", id: "el-hint", value: field?.hint || "", placeholder: "表单里显示给填写人的说明" }),
+    ]),
+    el("div", { class: "flex", style: "gap:20px" }, [
+      el("label", { class: "muted" }, [
+        el("input", { type: "checkbox", id: "el-required", checked: field?.required ? "" : null }),
+        " 必填（缺失时列入 missing_required）",
+      ]),
+      el("label", { class: "muted" }, [
+        el("input", { type: "checkbox", id: "el-enabled", checked: !field || field.enabled !== false ? "" : null }),
+        " 启用抽取",
+      ]),
+    ]),
+    el("div", { class: "action-bar mt-8" }, [
+      el("button", { class: "btn btn-primary", text: editing ? "保存" : "新增", onclick: () => saveElementField(field) }),
+      el("button", { class: "btn btn-ghost", text: "取消", onclick: closeModal }),
+    ]),
+  ]);
+  openModal(editing ? "编辑要素" : "新增要素", form);
+}
+
+function elementFieldFormValues() {
+  return {
+    label: $("#el-label")?.value?.trim() || "",
+    key: $("#el-key")?.value?.trim() || "",
+    aliases: ($("#el-aliases")?.value || "").split(/[,，、]/).map((item) => item.trim()).filter(Boolean),
+    patterns: ($("#el-patterns")?.value || "").split("\n").map((item) => item.trim()).filter(Boolean),
+    hint: $("#el-hint")?.value?.trim() || "",
+    required: !!$("#el-required")?.checked,
+    enabled: !!$("#el-enabled")?.checked,
+  };
+}
+
+async function saveElementField(field) {
+  const values = elementFieldFormValues();
+  if (!values.label) { toast("请填写要素名称", "warn"); return; }
+  if (!values.aliases.length && !values.patterns.length) {
+    toast("至少填写一个别名或一条正则，否则该字段抽不到任何内容", "warn");
+    return;
+  }
+  try {
+    if (field?.key) {
+      await api.put(`/contract-review/element-fields/${encodeURIComponent(field.key)}`, values);
+      toast("要素已更新", "ok");
+    } else {
+      await api.post("/contract-review/element-fields", values);
+      toast("要素已新增", "ok");
+    }
+    closeModal();
+    await loadElementSchema();
+  } catch (e) {
+    toast("保存失败：" + (e?.message || e), "err");
+  }
+}
+
+async function toggleElementField(field, enabled) {
+  try {
+    await api.put(`/contract-review/element-fields/${encodeURIComponent(field.key)}`, { enabled });
+    await loadElementSchema();
+  } catch (e) {
+    toast("操作失败：" + (e?.message || e), "err");
+  }
+}
+
+async function deleteElementField(field) {
+  if (!window.confirm(`确定删除要素「${field.label}」？之后将不再抽取该字段。`)) return;
+  try {
+    await api.del(`/contract-review/element-fields/${encodeURIComponent(field.key)}`);
+    toast("要素已删除", "ok");
+    await loadElementSchema();
+  } catch (e) {
+    toast("删除失败：" + (e?.message || e), "err");
+  }
+}
+
+async function submitElementsSync() {
+  if (!elementsState.files.length) { toast("请至少选择一个合同文件", "warn"); return; }
+  if (!elementsState.packageId) { toast("请填写合同包 ID", "warn"); return; }
+  const btn = $("#btn-elements-sync");
+  if (btn) btn.disabled = true;
+  try {
+    await runDraftReview();
+    closeModal();
+    navigate("draft");
+    toast("抽取完成，点开输入框可选择填充", "ok");
+  } catch (e) {
+    toast(`提取失败: ${e.message}`, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function loadElementForm(reviewResult) {
+  const host = $("#contract-fill-form");
+  if (!host) return;
+  host.innerHTML = "";
+  host.appendChild(el("div", { class: "card" }, [el("p", { class: "muted", text: "正在投影要素表单…" })]));
+  try {
+    elementsState.form = await api.post("/contract-review/element-form", { review_result: reviewResult });
+    elementsState.overrides = {};
+    renderElementForm();
+  } catch (e) {
+    host.innerHTML = "";
+    host.appendChild(el("div", { class: "card" }, [
+      el("div", { class: "card-title", text: "载入失败" }),
+      el("p", { class: "muted", text: e?.message || String(e) }),
+      el("p", { class: "muted", text: "若提示结果未登记，请重新做一次要素抽取；服务重启会清空内存中的结果登记。" }),
+    ]));
+  }
+}
+
+/* ---------------- 合同原文预览 ---------------- */
+
+function revokeElementPreview() {
+  if (elementsState.previewUrl) {
+    URL.revokeObjectURL(elementsState.previewUrl);
+    elementsState.previewUrl = null;
+  }
+}
+
+function resetElementPreview() {
+  revokeElementPreview();
+  elementsState.previewHtml = "";
+  elementsState.previewText = "";
+  elementsState.previewKind = "";
+  elementsState.previewMessage = "";
+}
+
+function setElementPreview(file) {
+  resetElementPreview();
+  if (file) elementsState.previewUrl = URL.createObjectURL(file);
+}
+
+function nativePreviewKind(file) {
+  if (!file) return "";
+  const name = file.name || "";
+  const type = file.type || "";
+  if (type === "application/pdf" || /\.pdf$/i.test(name)) return "pdf";
+  if (type.startsWith("image/") || /\.(png|jpe?g|gif|bmp|webp)$/i.test(name)) return "image";
+  return "";
+}
+
+async function loadExtractPreview(file) {
+  setElementPreview(file);
+  renderExtractPreview();
+  if (!file) return;
+  const nativeKind = nativePreviewKind(file);
+  if (nativeKind) {
+    elementsState.previewKind = nativeKind;
+    renderExtractPreview();
+    return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await api.upload("/contract-preview", fd);
+    elementsState.previewHtml = resp.html || "";
+    elementsState.previewText = resp.text || "";
+    elementsState.previewKind = resp.kind || (resp.html ? "html" : "text");
+    elementsState.previewMessage = resp.message || "";
+    renderExtractPreview();
+  } catch (e) {
+    elementsState.previewKind = "error";
+    elementsState.previewMessage = e.message || "打开合同原文失败";
+    renderExtractPreview();
+  }
+}
+
+function renderExtractPreview() {
+  const host = $("#extract-preview");
+  if (!host) return;
+  host.innerHTML = "";
+  host.appendChild(buildContractPreviewPane());
+}
+
+function buildContractPreviewPane() {
+  const file = elementsState.files[0];
+  const url = elementsState.previewUrl;
+  const name = file ? file.name : "";
+  const kind = elementsState.previewKind || nativePreviewKind(file);
+  let viewer;
+  if (url && kind === "pdf") {
+    viewer = el("iframe", { class: "contract-preview-frame", src: url, title: name || "合同预览" });
+  } else if (url && kind === "image") {
+    viewer = el("img", { class: "contract-preview-image", src: url, alt: name || "合同预览" });
+  } else if (kind === "html" && elementsState.previewHtml) {
+    viewer = el("iframe", {
+      class: "contract-preview-frame",
+      srcdoc: elementsState.previewHtml,
+      title: name || "合同预览",
+      sandbox: "allow-same-origin",
+    });
+  } else if (elementsState.previewText) {
+    viewer = el("pre", { class: "contract-preview-text", text: elementsState.previewText });
+  } else if (file && !kind) {
+    viewer = el("div", { class: "contract-preview-empty" }, [
+      el("p", { class: "muted", text: "正在打开合同原文…" }),
+    ]);
+  } else if (elementsState.previewMessage) {
+    viewer = el("div", { class: "contract-preview-fallback" }, [
+      el("p", { class: "muted", text: elementsState.previewMessage }),
+    ]);
+  } else {
+    viewer = el("div", { class: "contract-preview-empty" }, [
+      el("p", { class: "muted", text: "选择合同文件后，原文会在这里打开。" }),
+    ]);
+  }
+  return el("div", { class: "card contract-preview-pane" }, [
+    el("div", { class: "card-title", text: "合同原文" }, [
+      el("span", { class: "hint", text: name || "未选择文件" }),
+    ]),
+    viewer,
+  ]);
+}
+
+/* ============================================================
  * 正式规则包（只读）
  * ============================================================ */
 
+/* ============================================================
+ * 规则引擎库（合同检查标准 + AI 自进化规则）
+ * ============================================================ */
+
+const RULE_TOPICS = ["合同类型", "金额", "付款", "发票", "源代码相关（按关键字搜索）", "知识产权", "新技术架构描述相关", "合同主体", "合规性/交付问题", "软件开发服务合同（0税率）重点检查项"];
+const RULE_PAGE_SIZES = [10, 20, 50];
+let aiRulesState = { topics: RULE_TOPICS, pager: {} };
+const RULE_LEVEL_TO_V2 = { WARN: "medium", BLOCK: "high", INFO: "low" };
+const RULE_LEVEL_FROM_V2 = { medium: "WARN", high: "BLOCK", low: "INFO", critical: "BLOCK" };
+
 async function renderRulesPage(content) {
-  content.appendChild(pageHead("RULE BUNDLE", "正式规则包", "当前审查使用的版本化 RuleBundle；规则随 ReviewResult 固化，应用层不再维护第二套规则库。"));
-  content.appendChild(el("div", { id: "rules-list" }));
-  await loadRuleCatalog();
+  content.appendChild(pageHead("RULE ENGINE", "规则引擎库", "每套规则都有两部分：上方规则列表，下方规则引擎按 PPT 评分矩阵展示（权重 + 高/中/低分标准）"));
+  content.appendChild(el("div", { id: "ai-rules-list" }));
+  await loadAiRules();
 }
 
-async function loadRuleCatalog() {
-  const wrap = $("#rules-list");
+async function loadAiRules() {
+  const wrap = $("#ai-rules-list");
   if (!wrap) return;
   wrap.innerHTML = "";
   wrap.appendChild(el("p", { class: "muted", text: "加载中…" }));
   try {
-    const data = await api.get("/contract-review/rule-bundle");
-    const rules = data.rules || [];
+    const data = await api.get("/contract-review/rules-engine");
+    aiRulesState.topics = data.topics && data.topics.length ? data.topics : RULE_TOPICS;
+    const packs = data.packs || {};
+    const approval = (packs.approval && packs.approval.rules) || [];
+    const aiRules = (packs.ai && packs.ai.rules) || [];
     wrap.innerHTML = "";
-    wrap.appendChild(el("div", { class: "card" }, [
-      el("div", { class: "card-title" }, [
-        el("span", { text: data.bundle_id || "正式规则包" }),
-        el("span", { class: "hint", text: `共 ${rules.length} 条` }),
-        el("span", { class: "grow" }),
-        el("span", { class: "badge gray", text: "只读" }),
-        el("button", { class: "btn btn-secondary btn-sm", text: "刷新", onclick: loadRuleCatalog }),
-      ]),
-      data.source_filename ? el("p", { class: "muted", text: `来源：${data.source_filename} · 版本：${data.bundle_id || "-"}` }) : null,
-      rules.length ? el("div", { class: "table-wrap" }, [buildFormalRuleTable(rules)]) : el("p", { class: "muted", text: "暂无正式规则。" }),
-    ]));
+    wrap.appendChild(buildRulePack({
+      mark: "HT",
+      title: "合同检查标准",
+      hint: `共 ${approval.length} 条`,
+      empty: "暂无合同审批规则。服务启动后会写入检查标准，也可手动新增。",
+      rules: approval,
+      groups: (packs.approval && packs.approval.groups) || groupRulesByTopic(approval),
+      engineTitle: "规则引擎",
+      engineHint: "按检查维度分类，展示权重和高中低分标准",
+      guide: "列表中新增、编辑、启用或删除后立即生效，规则引擎评分矩阵同步更新。",
+      defaultTopic: "合规性/交付问题",
+      // 固定规则池隐藏「规则内容」列：50/57 条 condition 为空，列内常年是 "-"。
+      conditionColumn: null,
+    }));
+    wrap.appendChild(buildRulePack({
+      mark: "AI",
+      title: "AI 自进化规则",
+      hint: `共 ${aiRules.length} 条 · 审查后由模型提炼，待确认后生效`,
+      empty: "暂无 AI 规则。完成一次合同审查后，模型提炼的检查点会出现在这里。",
+      rules: aiRules,
+      groups: (packs.ai && packs.ai.groups) || groupRulesByTopic(aiRules),
+      engineTitle: "AI 规则引擎",
+      engineHint: "与上方同一批 AI 规则，按维度展示评分标准",
+      guide: "确认启用后进入审查提示池；规则引擎按同一批规则分维度展示。",
+      defaultTopic: "其他检查",
+      hideCreate: true,
+      // AI 规则池保留该列并改名：condition 即模型提炼该检查点的理由，
+      // 是审批「是否确认启用」的依据，不能省。
+      conditionColumn: "提炼依据",
+    }));
   } catch (e) {
     wrap.innerHTML = "";
     wrap.appendChild(el("div", { class: "card" }, [
@@ -1337,27 +2467,342 @@ async function loadRuleCatalog() {
   }
 }
 
-function buildFormalRuleTable(rules) {
-  return el("table", { class: "table rule-engine-table" }, [
-    el("thead", {}, [el("tr", {}, [
-      el("th", { text: "规则编号" }),
-      el("th", { text: "规则名称" }),
-      el("th", { text: "分类" }),
-      el("th", { text: "检查方式" }),
-      el("th", { text: "风险等级" }),
-      el("th", { text: "适用范围" }),
-      el("th", { text: "人工复核" }),
-    ])]),
-    el("tbody", {}, rules.map((rule) => el("tr", {}, [
-      el("td", { class: "mono", text: rule.rule_id || rule.code || "-" }),
-      el("td", {}, [el("div", { class: "rule-title", text: rule.title || "-" }), el("div", { class: "muted", text: rule.condition || "" })]),
-      el("td", { text: rule.category || "-" }),
-      el("td", { class: "mono", text: rule.check_method || "-" }),
-      el("td", { text: rule.risk_level || "UNKNOWN" }),
-      el("td", { class: "muted", text: (rule.applies_to || []).join("、") || "全部" }),
-      el("td", {}, [rule.human_review ? el("span", { class: "badge orange", text: "是" }) : el("span", { class: "muted", text: "否" })]),
-    ]))),
+function groupRulesByTopic(rules) {
+  const buckets = {};
+  for (const rule of rules) {
+    const topic = rule.topic || "其他检查";
+    buckets[topic] = buckets[topic] || [];
+    buckets[topic].push(rule);
+  }
+  const names = [...aiRulesState.topics.filter((name) => buckets[name]), ...Object.keys(buckets).filter((name) => !aiRulesState.topics.includes(name))];
+  return names.map((name) => ({ name, count: buckets[name].length, rules: buckets[name] }));
+}
+
+function isRuleEnabled(rule) {
+  return rule.enabled !== false;
+}
+
+function rulePager(key) {
+  if (!aiRulesState.pager[key]) aiRulesState.pager[key] = { page: 1, size: 10 };
+  return aiRulesState.pager[key];
+}
+
+function pagedSlice(items, pager) {
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / pager.size) || 1);
+  if (pager.page > pages) pager.page = pages;
+  if (pager.page < 1) pager.page = 1;
+  const start = (pager.page - 1) * pager.size;
+  return { total, pages, start, rows: items.slice(start, start + pager.size) };
+}
+
+function buildTablePager(pager, total, onChange) {
+  const pages = Math.max(1, Math.ceil(total / pager.size) || 1);
+  const from = total ? (pager.page - 1) * pager.size + 1 : 0;
+  const to = Math.min(total, pager.page * pager.size);
+  const numbers = [];
+  const windowStart = Math.max(1, Math.min(pager.page - 2, pages - 4));
+  const windowEnd = Math.min(pages, windowStart + 4);
+  for (let i = windowStart; i <= windowEnd; i++) numbers.push(i);
+  return el("div", { class: "table-pager" }, [
+    el("span", { class: "pager-info", text: `显示 ${from} 到 ${to} 条，共 ${total} 条` }),
+    el("div", { class: "pager-controls" }, [
+      el("select", {
+        class: "pager-size",
+        onchange: (e) => { pager.size = Number(e.target.value) || 10; pager.page = 1; onChange(); },
+      }, RULE_PAGE_SIZES.map((size) => el("option", { value: String(size), text: `${size}条/页`, selected: pager.size === size ? "" : null }))),
+      el("button", { class: "pager-btn", text: "‹", disabled: pager.page <= 1 ? "" : null, onclick: () => { if (pager.page > 1) { pager.page -= 1; onChange(); } } }),
+      ...numbers.map((num) => el("button", {
+        class: "pager-btn" + (num === pager.page ? " active" : ""),
+        text: String(num),
+        onclick: () => { pager.page = num; onChange(); },
+      })),
+      el("button", { class: "pager-btn", text: "›", disabled: pager.page >= pages ? "" : null, onclick: () => { if (pager.page < pages) { pager.page += 1; onChange(); } } }),
+    ]),
   ]);
+}
+
+function buildRulePack(pack) {
+  const listHost = el("div", { class: "rule-table-host" });
+  const renderList = () => {
+    const pager = rulePager(`${pack.mark}-list`);
+    const slice = pagedSlice(pack.rules, pager);
+    listHost.innerHTML = "";
+    if (!pack.rules.length) {
+      listHost.appendChild(el("p", { class: "muted", text: pack.empty }));
+      return;
+    }
+    listHost.appendChild(el("div", { class: "table-wrap" }, [buildApprovalRuleTable(slice.rows, slice.start, pack.conditionColumn)]));
+    listHost.appendChild(buildTablePager(pager, slice.total, renderList));
+  };
+  renderList();
+  return el("div", { class: "rule-pack" }, [
+    el("div", { class: "card" }, [
+      el("div", { class: "card-title" }, [
+        el("span", { class: "rule-pack-mark", text: pack.mark }),
+        el("span", { text: pack.title }),
+        el("span", { class: "hint", text: pack.hint }),
+        el("span", { class: "grow" }),
+        pack.hideCreate ? null : el("button", { class: "btn btn-primary btn-sm", text: "新增规则", onclick: () => openRuleForm({ topic: pack.defaultTopic }, pack.conditionColumn) }),
+        el("button", { class: "btn btn-secondary btn-sm", text: "刷新", onclick: loadAiRules }),
+      ]),
+      listHost,
+    ]),
+    buildScoreMatrixCard(pack),
+  ]);
+}
+
+function buildApprovalRuleTable(rules, start = 0, conditionColumn = "规则内容") {
+  // conditionColumn 传假值时整列不渲染：固定规则池 57 条里有 50 条 condition
+  // 为 null，该列只会显示 "-"，白占 420px 列宽。AI 规则池必须保留此列，
+  // 那里的 condition 是模型提炼该检查点的理由（rule_edits.condition =
+  // item.reason 回退 title），是审批「是否确认启用」的唯一依据，故换个列名。
+  const head = el("tr", {}, [
+    el("th", { class: "col-index", text: "" }),
+    el("th", { text: "规则编号" }),
+    el("th", { text: "规则名称" }),
+    conditionColumn ? el("th", { text: conditionColumn }) : null,
+    el("th", { text: "是否启用" }),
+    el("th", { text: "操作" }),
+  ]);
+  const body = rules.map((rule, index) => {
+    const enabled = isRuleEnabled(rule);
+    return el("tr", {}, [
+      el("td", { class: "muted", text: String(start + index + 1) }),
+      el("td", { class: "mono", text: rule.code || "-" }),
+      el("td", {}, [
+        el("div", { class: "rule-title", text: rule.title }),
+        rule.status === "draft" ? el("span", { class: "badge orange", text: "待确认" }) : null,
+      ]),
+      conditionColumn ? el("td", { class: "rule-condition", text: rule.condition || "-" }) : null,
+      el("td", {}, [
+        el("button", {
+          class: "enable-toggle" + (enabled ? " on" : ""),
+          text: enabled ? "是" : "否",
+          onclick: () => toggleRuleEnabled(rule, !enabled),
+        }),
+      ]),
+      el("td", {}, [
+        el("button", { class: "link-btn", text: "编辑", onclick: () => openRuleForm(rule, conditionColumn) }),
+        el("button", { class: "link-btn danger", text: "删除", onclick: () => deleteRule(rule) }),
+      ]),
+    ]);
+  });
+  return el("table", { class: "table rule-engine-table" }, [
+    el("thead", {}, [head]),
+    el("tbody", {}, body),
+  ]);
+}
+
+function flattenScoreRows(groups) {
+  const rows = [];
+  (groups || []).forEach((group) => {
+    (group.rules || []).forEach((rule) => rows.push({ group: group.name, rule }));
+  });
+  return rows;
+}
+
+function regroupScoreRows(rows) {
+  const groups = [];
+  rows.forEach((row) => {
+    const last = groups[groups.length - 1];
+    if (!last || last.name !== row.group) groups.push({ name: row.group, rules: [row.rule] });
+    else last.rules.push(row.rule);
+  });
+  return groups;
+}
+
+function buildScoreMatrixCard(pack) {
+  const host = el("div", { class: "score-matrix-host" });
+  const allRows = flattenScoreRows(pack.groups);
+  const renderMatrix = () => {
+    const pager = rulePager(`${pack.mark}-matrix`);
+    const slice = pagedSlice(allRows, pager);
+    const groups = regroupScoreRows(slice.rows);
+    const rows = [];
+    let rowNo = slice.start + 2;
+    groups.forEach((group) => {
+      (group.rules || []).forEach((rule, index) => {
+        const cells = [el("td", { class: "muted col-index", text: String(rowNo) })];
+        if (index === 0) {
+          cells.push(el("td", { class: "score-group", rowspan: String(group.rules.length), text: group.name }));
+        }
+        cells.push(
+          el("td", { text: rule.title }),
+          el("td", { class: "score-weight", text: String(rule.weight ?? 10) }),
+          el("td", { class: "score-high", text: rule.high_standard || "-" }),
+          el("td", { class: "score-mid", text: rule.mid_standard || "-" }),
+          el("td", { class: "score-low", text: rule.low_standard || "-" }),
+        );
+        rows.push(el("tr", {}, cells));
+        rowNo += 1;
+      });
+    });
+    host.innerHTML = "";
+    if (!allRows.length) {
+      host.appendChild(el("p", { class: "muted", text: "暂无规则可展示。" }));
+      return;
+    }
+    host.appendChild(el("div", { class: "table-wrap" }, [
+      el("table", { class: "table score-matrix" }, [
+        el("thead", {}, [
+          el("tr", { class: "score-letters" }, [
+            el("th", { class: "col-index" }),
+            el("th", { text: "A" }),
+            el("th", { text: "B" }),
+            el("th", { text: "C" }),
+            el("th", { text: "D" }),
+            el("th", { text: "E" }),
+            el("th", { text: "F" }),
+          ]),
+          el("tr", {}, [
+            el("th", { class: "col-index", text: "1" }),
+            el("th", { text: "检查维度" }),
+            el("th", { text: "规则名称" }),
+            el("th", { text: "权重" }),
+            el("th", { text: "高分标准 (8-10 分)" }),
+            el("th", { text: "中等标准 (4-7 分)" }),
+            el("th", { text: "低分标准 (0-3 分)" }),
+          ]),
+        ]),
+        el("tbody", {}, rows),
+      ]),
+    ]));
+    host.appendChild(buildTablePager(pager, slice.total, renderMatrix));
+  };
+  renderMatrix();
+  return el("div", { class: "card" }, [
+    el("div", { class: "card-title" }, [
+      el("span", { text: pack.engineTitle }),
+      el("span", { class: "hint", text: `${pack.engineHint} · 共 ${pack.rules.length} 条` }),
+    ]),
+    el("div", { class: "score-guide" }, [
+      el("b", { text: "操作指引" }),
+      el("span", { text: pack.guide }),
+    ]),
+    host,
+  ]);
+}
+
+// conditionLabel 由规则池决定：AI 池传「提炼依据」，与上方列表列名保持一致；
+// 固定规则池列表不显示该列、传 null，弹窗回退默认「规则内容」。
+function openRuleForm(rule, conditionLabel) {
+  const editing = !!(rule && rule.id);
+  const topics = aiRulesState.topics.length ? aiRulesState.topics : RULE_TOPICS;
+  const currentTopic = rule?.topic || topics[0];
+  const form = el("div", { class: "rule-form" }, [
+    el("div", { class: "form-row" }, [
+      el("label", { text: "规则名称" }),
+      el("input", { class: "input", id: "rule-title", value: rule?.title || "", placeholder: "如 金额大小写一致" }),
+    ]),
+    el("div", { class: "grid grid-2" }, [
+      el("div", { class: "form-row" }, [
+        el("label", { text: "规则编号（可空，自动生成）" }),
+        el("input", { class: "input", id: "rule-code", value: rule?.code || "", placeholder: "如 HTSP-202511-006" }),
+      ]),
+      el("div", { class: "form-row" }, [
+        el("label", { text: "检查维度" }),
+        el("select", { class: "select", id: "rule-topic" },
+          topics.map((name) => el("option", { value: name, text: name, selected: currentTopic === name ? "" : null }))),
+      ]),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "风险等级" }),
+      el("select", { class: "select", id: "rule-level" },
+        [["WARN", "需关注"], ["BLOCK", "重大风险"], ["INFO", "提示"]].map(([v, t]) =>
+          el("option", { value: v, text: t, selected: (rule?.risk_level || "WARN") === v ? "" : null }))),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: conditionLabel || "规则内容" }),
+      el("textarea", { class: "input", id: "rule-condition", rows: "4", placeholder: "判定条件，例如：合同金额大小写必须一致", text: rule?.condition || "" }),
+    ]),
+    el("div", { class: "grid grid-2" }, [
+      el("div", { class: "form-row" }, [
+        el("label", { text: "权重" }),
+        el("input", { class: "input", id: "rule-weight", type: "number", min: "1", max: "100", value: String(rule?.weight || 10) }),
+      ]),
+      el("div", { class: "form-row" }, [
+        el("label", { text: "建议动作（可空）" }),
+        el("input", { class: "input", id: "rule-action", value: rule?.suggested_action || "", placeholder: "如 核对金额大小写" }),
+      ]),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "高分标准 (8-10 分)" }),
+      el("input", { class: "input", id: "rule-high", value: rule?.high_standard || "", placeholder: "如 约定完整、口径一致" }),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "中等标准 (4-7 分)" }),
+      el("input", { class: "input", id: "rule-mid", value: rule?.mid_standard || "", placeholder: "如 约定不完整或口径不清" }),
+    ]),
+    el("div", { class: "form-row" }, [
+      el("label", { text: "低分标准 (0-3 分)" }),
+      el("input", { class: "input", id: "rule-low", value: rule?.low_standard || "", placeholder: "如 未约定或明显不符" }),
+    ]),
+    el("div", { class: "action-bar mt-8" }, [
+      el("button", { class: "btn btn-primary", text: editing ? "保存修改" : "创建并启用", onclick: () => saveRuleForm(rule) }),
+      el("button", { class: "btn btn-ghost", text: "取消", onclick: closeModal }),
+    ]),
+  ]);
+  openModal(editing ? "编辑规则" : "新增规则", form);
+}
+
+async function saveRuleForm(rule) {
+  const level = $("#rule-level")?.value || "WARN";
+  const payload = {
+    rule_id: $("#rule-code")?.value?.trim() || undefined,
+    title: $("#rule-title")?.value?.trim(),
+    category: $("#rule-topic")?.value,
+    check_method: "keyword",
+    risk_level: RULE_LEVEL_TO_V2[level] || null,
+    condition: $("#rule-condition")?.value?.trim() || null,
+    suggested_action: $("#rule-action")?.value?.trim() || null,
+    weight: Number($("#rule-weight")?.value || 10),
+    high_standard: $("#rule-high")?.value?.trim() || null,
+    mid_standard: $("#rule-mid")?.value?.trim() || null,
+    low_standard: $("#rule-low")?.value?.trim() || null,
+  };
+  if (!payload.title) { toast("请填写规则名称", "warn"); return; }
+  try {
+    if (rule?.id) {
+      await api.put(`/contract-review/rules/${encodeURIComponent(rule.id)}`, { payload });
+      toast("规则已更新", "ok");
+    } else {
+      await api.post("/contract-review/rules", { payload });
+      toast("规则已创建并启用", "ok");
+    }
+    closeModal();
+    await loadAiRules();
+  } catch (e) {
+    toast("保存失败：" + (e?.message || e), "err");
+  }
+}
+
+async function toggleRuleEnabled(rule, enabled) {
+  try {
+    if (rule.status === "draft") {
+      // AI 自进化候选行：开关 = 确认启用（v1 的确认流程）。
+      if (!enabled) return;
+      await api.post(`/contract-review/rules/${encodeURIComponent(rule.id)}/confirm`, {});
+      toast("规则已确认启用，进入合同检查标准", "ok");
+    } else {
+      await api.post(`/contract-review/rules/${encodeURIComponent(rule.id)}/${enabled ? "enable" : "disable"}`, {});
+      toast(enabled ? "规则已启用，下次审查生效" : "规则已停用", "ok");
+    }
+    await loadAiRules();
+  } catch (e) {
+    toast("操作失败：" + (e?.message || e), "err");
+  }
+}
+
+async function deleteRule(rule) {
+  if (!window.confirm(`确定删除规则「${rule.title}」？列表和规则引擎会同步移除。`)) return;
+  try {
+    await api.request("DELETE", `/contract-review/rules/${encodeURIComponent(rule.id)}`);
+    toast("规则已删除", "ok");
+    await loadAiRules();
+  } catch (e) {
+    toast("删除失败：" + (e?.message || e), "err");
+  }
 }
 
 /* ============================================================

@@ -426,11 +426,11 @@ class TaskService:
         first_content_type: str | None = None
         for upload in files:
             data = await upload.read()
-            if len(data) > settings.MAX_IMAGE_SIZE:
+            if len(data) > settings.MAX_DOCUMENT_SIZE:
                 raise AppError(
                     400,
                     "LimitExceeded.TooLargeFileError",
-                    f"文件 {upload.filename} 超过大小限制 ({settings.MAX_IMAGE_SIZE} bytes)",
+                    f"文件 {upload.filename} 超过大小限制（最大 {settings.MAX_DOCUMENT_SIZE // 1048576} MB）",
                 )
             payloads.append(
                 (upload.filename or "upload.bin", data, upload.content_type)

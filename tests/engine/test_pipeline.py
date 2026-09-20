@@ -1,7 +1,9 @@
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+from unittest import mock
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -968,6 +970,47 @@ class PipelineTests(unittest.TestCase):
         loaded = store.load(result.run.run_id)
         self.assertTrue(revision.is_dir())
         self.assertEqual(len(loaded.decisions), 1)
+        self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
+
+    def test_append_retries_transient_rename_denial(self) -> None:
+        """目录被瞬时占用时（Windows WinError 5）提交应重试，而不是直接上报存储不可用。"""
+
+        result = run_review(
+            [self.pdf_path],
+            package_id="pkg-store-rename-retry",
+            rule_bundle=self.bundle,
+            review_context=ReviewContext(contract_type="software"),
+            run_id="run-store-rename-retry",
+        )
+        store = JsonAuditStore(self.work_path / "audit-store-rename-retry")
+        store.save(result)
+        finding = next(
+            finding for finding in result.findings if finding.status == "UNKNOWN"
+        )
+        reviewed = record_review_decision(
+            result,
+            finding.finding_id,
+            decision="ACCEPT",
+            actor_id="reviewer-retry",
+            actor_role="legal",
+            comment="瞬时占用后重试提交。",
+        )
+
+        real_rename = os.rename
+        attempts: list[str] = []
+
+        def flaky_rename(source, target):
+            attempts.append(str(target))
+            if len(attempts) < 3:
+                raise PermissionError(13, "Permission denied")
+            return real_rename(source, target)
+
+        with mock.patch("contract_review.store.os.rename", flaky_rename):
+            revision = store.append_revision(reviewed)
+
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(revision.is_dir())
+        loaded = store.load(result.run.run_id)
         self.assertEqual(loaded.run.result_fingerprint, reviewed.run.result_fingerprint)
 
     def test_json_store_appended_revision_survives_a_deep_windows_path(self) -> None:

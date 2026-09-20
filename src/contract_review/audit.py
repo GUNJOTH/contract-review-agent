@@ -5,10 +5,14 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pydantic import Field
 
+from .element_completion import (
+    ELEMENT_COMPLETION_VERSION,
+    is_element_completion_fact,
+)
 from .evidence import (
     DETERMINISTIC_EVIDENCE_ASSESSOR,
     EVIDENCE_ASSESSMENT_VERSION,
@@ -43,11 +47,14 @@ from .knowledge import (
 )
 from .reranking import LEGAL_RELEVANCE_RERANKER_VERSION
 from .retrieval import (
+    ELEMENT_LOCATION_VERSION,
     build_candidate_evidence,
+    build_element_location_query,
     build_retrieval_query,
     build_rule_retrieval_filter,
 )
 from .replay import build_replay_fingerprint, build_result_fingerprint
+from .risk_analysis import LEVELS_WITHOUT_EVIDENCE
 from .rules import (
     assert_rule_bundle_compatible,
     is_rule_in_scope,
@@ -280,6 +287,20 @@ def audit_result(result: ReviewResult) -> AuditReport:
     )
     if not checks["evidence_assessment_version"]:
         issues.append("运行配置未声明当前 EvidenceAssessment 版本")
+    checks["element_catalog_identity"] = _element_catalog_identity_is_valid(result)
+    if not checks["element_catalog_identity"]:
+        issues.append("运行配置未声明要素目录身份，或要素事实未按该口径抽取")
+    checks["element_location_identity"] = _element_location_identity_is_valid(
+        result
+    )
+    if not checks["element_location_identity"]:
+        issues.append("要素定位检索的运行配置声明与检索轨迹不一致")
+    checks["risk_analysis_integrity"] = _risk_analysis_integrity_is_valid(result)
+    if not checks["risk_analysis_integrity"]:
+        issues.append("风险分析请求、响应与运行配置声明不一致，或证据越界")
+    checks["element_completion_identity"] = _element_completion_identity_is_valid(result)
+    if not checks["element_completion_identity"]:
+        issues.append("要素 AI 补全的请求、响应与补全事实不一致")
     fact_ids = [fact.fact_id for fact in result.facts]
     checks["unique_fact_ids"] = len(fact_ids) == len(set(fact_ids))
     if not checks["unique_fact_ids"]:
@@ -353,8 +374,16 @@ def audit_result(result: ReviewResult) -> AuditReport:
     if not checks["rule_coverage"]:
         issues.append("rule coverage is incomplete or contains duplicate findings")
 
+    # 要素字段定位检索（purpose=element_location）不是规则审查链路的一部分，
+    # 不参与"每条适用规则恰好一条查询"的覆盖率计算；它自身的身份由
+    # element_location_identity 检查项单独校验。
+    rule_traces = [
+        trace
+        for trace in result.retrieval_traces
+        if trace.retrieval_query.purpose != "element_location"
+    ]
     retrieval_rule_ids = {
-        trace.retrieval_query.rule_id for trace in result.retrieval_traces
+        trace.retrieval_query.rule_id for trace in rule_traces
     }
     expected_retrieval_rule_ids = {
         rule.rule_id
@@ -368,7 +397,7 @@ def audit_result(result: ReviewResult) -> AuditReport:
     }
     checks["retrieval_rule_coverage"] = (
         selection_is_valid
-        and len(retrieval_rule_ids) == len(result.retrieval_traces)
+        and len(retrieval_rule_ids) == len(rule_traces)
         and retrieval_rule_ids == expected_retrieval_rule_ids
     )
     if not checks["retrieval_rule_coverage"]:
@@ -608,23 +637,47 @@ def _knowledge_integrity_is_valid(
     expected_candidates = []
     for trace in result.retrieval_traces:
         query = trace.retrieval_query
-        rule = rules_by_id.get(query.rule_id)
-        if rule is None:
-            return False
-        try:
-            expected_query = build_retrieval_query(
-                rule,
-                review_context=result.review_context,
-                retrieval_filter=build_rule_retrieval_filter(
-                    rule,
-                    rule_bundle=result.rule_bundle,
+        if query.purpose == "element_location":
+            # 要素定位检索不是规则审查链路：它的查询必须能从运行配置里
+            # 声明的字段词重算出来，声明与轨迹缺一不可。
+            identity = result.run.configuration.get("element_location")
+            if not isinstance(identity, Mapping):
+                return False
+            if (
+                identity.get("location_version") != ELEMENT_LOCATION_VERSION
+                or identity.get("query_id") != query.query_id
+            ):
+                return False
+            field_terms = identity.get("field_terms")
+            if not isinstance(field_terms, list) or not field_terms:
+                return False
+            try:
+                expected_query = build_element_location_query(
+                    [str(item) for item in field_terms],
+                    location_version=str(identity.get("location_version", "")),
                     documents=result.documents,
-                    clauses=result.clauses,
                     review_context=result.review_context,
-                ),
-            )
-        except (TypeError, ValueError):
-            return False
+                )
+            except (TypeError, ValueError):
+                return False
+        else:
+            rule = rules_by_id.get(query.rule_id)
+            if rule is None:
+                return False
+            try:
+                expected_query = build_retrieval_query(
+                    rule,
+                    review_context=result.review_context,
+                    retrieval_filter=build_rule_retrieval_filter(
+                        rule,
+                        rule_bundle=result.rule_bundle,
+                        documents=result.documents,
+                        clauses=result.clauses,
+                        review_context=result.review_context,
+                    ),
+                )
+            except (TypeError, ValueError):
+                return False
         if query != expected_query:
             return False
         if trace.trace_id != _retrieval_trace_id(
@@ -638,7 +691,7 @@ def _knowledge_integrity_is_valid(
             LEGAL_RELEVANCE_RERANKER_VERSION,
         }:
             return False
-        if (
+        if query.purpose != "element_location" and (
             query.rule_id not in rule_ids
             or query.rule_id not in trace.used_for_rule_ids
             or query.rule_version != rule_versions[query.rule_id]
@@ -652,7 +705,9 @@ def _knowledge_integrity_is_valid(
         )
         if set(query.document_kinds) != set(expected_document_kinds):
             return False
-        if not set(trace.used_for_rule_ids).issubset(rule_ids):
+        if query.purpose != "element_location" and not set(
+            trace.used_for_rule_ids
+        ).issubset(rule_ids):
             return False
         if query.retrieval_filter.applicable_rule_ids and not set(
             trace.used_for_rule_ids
@@ -1192,6 +1247,148 @@ def _semantic_snapshot_is_valid(result: ReviewResult, evidence_set: set[str]) ->
         retrieval_queries_by_rule=request.retrieval_queries_by_rule,
     )
     return request.request_fingerprint == expected
+
+
+def _risk_analysis_integrity_is_valid(result: ReviewResult) -> bool:
+    """校验通读风险分析的请求、响应与运行配置声明互相一致。
+
+    旧存量运行（早于风险分析判据）没有该字段，视为合法；新运行必须
+    请求与响应成对、指纹与配置声明一致，且每条风险项引用的证据真实存在、
+    置信度低于 1——防止模型判据绕过证据链进入结果。
+    """
+
+    request = result.risk_analysis_request
+    response = result.risk_analysis_response
+    if (request is None) != (response is None):
+        return False
+    if request is None:
+        return True
+
+    identity = result.run.configuration.get("risk_analysis")
+    if not isinstance(identity, Mapping):
+        return False
+    if (
+        identity.get("request_fingerprint") != request.request_fingerprint
+        or identity.get("item_count") != len(response.items)
+    ):
+        return False
+
+    evidence_set = {item.evidence_id for item in result.evidence}
+    if response.request_fingerprint != request.request_fingerprint:
+        return False
+    return all(
+        set(item.evidence_ids).issubset(evidence_set)
+        and (
+            item.evidence_ids
+            or str(item.risk_level) in LEVELS_WITHOUT_EVIDENCE
+        )
+        and item.confidence <= 0.99
+        for item in response.items
+    )
+
+
+def _element_catalog_identity_is_valid(result: ReviewResult) -> bool:
+    """校验要素事实的抽取口径与运行配置声明的目录身份一致。
+
+    这段检查挡的是"声明一套目录、实际按另一套口径抽"的静默漂移：配置里的
+    ``extractor_version`` 必须与每条 ``contract_element:*`` 事实上记录的
+    版本相同，``fingerprint`` 必须是完整的目录内容指纹。
+    """
+
+    identity = result.run.configuration.get("element_catalog")
+    if not isinstance(identity, Mapping):
+        return False
+    extractor_version = identity.get("extractor_version")
+    fingerprint = identity.get("fingerprint")
+    if not isinstance(extractor_version, str) or not extractor_version:
+        return False
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+        return False
+    return all(
+        fact.extractor_version == extractor_version
+        for fact in result.facts
+        if fact.fact_type.startswith("contract_element:")
+    )
+
+
+def _element_location_identity_is_valid(result: ReviewResult) -> bool:
+    """校验要素定位检索的运行配置声明与检索轨迹一一对应。
+
+    旧存量运行（早于要素定位通路）既没有声明也没有轨迹，视为合法；
+    新运行必须两者齐备且互相指向，缺任何一侧都直接失败。
+    """
+
+    traces = [
+        trace
+        for trace in result.retrieval_traces
+        if trace.retrieval_query.purpose == "element_location"
+    ]
+    identity = result.run.configuration.get("element_location")
+    if not isinstance(identity, Mapping):
+        return not traces
+    if len(traces) != 1:
+        return False
+    return (
+        identity.get("query_id") == traces[0].retrieval_query.query_id
+        and identity.get("location_version") == ELEMENT_LOCATION_VERSION
+        and identity.get("top_k") == traces[0].top_k
+    )
+
+
+def _element_completion_identity_is_valid(result: ReviewResult) -> bool:
+    """校验要素 AI 补全的请求、响应与补全事实三者自洽。
+
+    这段检查挡的是三类静默漂移：补全事实没有对应的响应出处；响应覆盖了本次
+    目标之外的字段；补全值被伪造成确定性结论（置信度等于 1）。请求与响应必须
+    成对出现，否则回放时无法重建同一批事实。
+    """
+
+    identity = result.run.configuration.get("element_completion")
+    completion_facts = [
+        fact for fact in result.facts if is_element_completion_fact(fact)
+    ]
+    if not isinstance(identity, Mapping):
+        # 早于要素补全的存量结果没有这个配置块；只要结果里也确实没有补全事实，
+        # 就算自洽——否则等于用新功能去否决旧快照。
+        return not completion_facts
+    completion_version = identity.get("completion_version")
+    if completion_version != ELEMENT_COMPLETION_VERSION:
+        return False
+    request = result.element_completion_request
+    response = result.element_completion_response
+    if (request is None) != (response is None):
+        return False
+    if request is None:
+        return not completion_facts
+    if request.request_fingerprint != response.request_fingerprint:
+        return False
+    if identity.get("request_fingerprint") != response.request_fingerprint:
+        return False
+    if identity.get("prompt_version") != response.prompt_version:
+        return False
+    if identity.get("provider") != request.provider:
+        return False
+    if identity.get("target_keys") != [target.key for target in request.targets]:
+        return False
+    target_keys = {target.key for target in request.targets}
+    allowed_evidence_ids = set(request.allowed_evidence_ids)
+    if any(
+        fact.fact_type.split(":", 1)[1] not in target_keys
+        for fact in completion_facts
+    ):
+        return False
+    if any(
+        fact.confidence is None or fact.confidence >= 1 for fact in completion_facts
+    ):
+        return False
+    if any(
+        not set(fact.evidence_ids).issubset(allowed_evidence_ids)
+        for fact in completion_facts
+    ):
+        return False
+    return identity.get("completed_keys") == sorted(
+        fact.fact_type.split(":", 1)[1] for fact in completion_facts
+    )
 
 
 def _fact_integrity_is_valid(

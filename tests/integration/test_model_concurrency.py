@@ -163,6 +163,9 @@ def test_application_passes_chat_concurrency_policy_without_calling_provider(
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL", "test-chat-model")
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY", 2)
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS", 7.0)
+    # 语义并发固定为串行，闸门容量才由全局值单独决定——这正是本用例要验证的旧行为
+    # （语义并发另有专门用例验证，见下方两个对称性测试）。
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY", 1)
     monkeypatch.setattr(review_service, "RelaySemanticReviewer", _NoopReviewer)
 
     reviewer = review_service._semantic_client()
@@ -170,6 +173,75 @@ def test_application_passes_chat_concurrency_policy_without_calling_provider(
     assert reviewer is not None
     assert captured["max_concurrency"] == 2
     assert captured["queue_timeout_seconds"] == 7.0
+
+
+def test_semantic_gate_opens_with_semantic_concurrency_alone(monkeypatch) -> None:
+    """只提高语义并发就应真正并发，不需要同时抬全局模型并发。"""
+
+    captured: dict[str, object] = {}
+
+    class _NoopReviewer:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        settings,
+        "CONTRACT_REVIEW_ENDPOINT",
+        "http://phase2-semantic-gate.test/v1/chat",
+    )
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL", "test-chat-model")
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS", 7.0)
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY", 3)
+    monkeypatch.setattr(review_service, "RelaySemanticReviewer", _NoopReviewer)
+
+    selected, controller = review_service._semantic_concurrency_policy()
+    reviewer = review_service._semantic_client()
+
+    assert selected == 3
+    assert controller is None
+    assert reviewer is not None
+    # 闸门容量跟随语义配置敞开，全局值仍是 1 不构成瓶颈。
+    assert captured["max_concurrency"] == 3
+    # 并发开启后等待窗口放宽到一次请求超时，避免共用闸门时被排队超时误判为不可用。
+    assert captured["queue_timeout_seconds"] == max(
+        7.0, settings.CONTRACT_REVIEW_TIMEOUT_SECONDS
+    )
+
+
+def test_adaptive_policy_ceiling_follows_semantic_concurrency(monkeypatch) -> None:
+    """自适应封顶不得回落到全局模型并发，否则语义并发配置会被静默忽略。"""
+
+    monkeypatch.setattr(
+        settings,
+        "CONTRACT_REVIEW_ENDPOINT",
+        "http://phase2-adaptive-semantic.test/v1/chat",
+    )
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL", "test-chat-model")
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(
+        settings,
+        "CONTRACT_REVIEW_MODEL_ADAPTIVE_CONCURRENCY_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_ADAPTIVE_MIN_CONCURRENCY", 1)
+    monkeypatch.setattr(
+        settings,
+        "CONTRACT_REVIEW_MODEL_ADAPTIVE_INITIAL_CONCURRENCY",
+        2,
+    )
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_MODEL_ADAPTIVE_MAX_CONCURRENCY", 3)
+    monkeypatch.setattr(settings, "CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY", 3)
+
+    selected, controller = review_service._semantic_concurrency_policy()
+
+    assert controller is not None
+    # 若封顶仍取全局值（1），初始并发 2 会直接越过上限并误报配置错误。
+    assert controller.snapshot()["max_limit"] == 3
+    assert selected == 2
 
 
 def test_embedding_transport_builds_an_independent_gate_without_calling_provider(

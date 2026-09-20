@@ -545,7 +545,12 @@ class RetrievalQuery(ModelBase):
         default=TERMINOLOGY_NORMALIZATION_VERSION,
         min_length=1,
     )
-    purpose: Literal["rule_review", "playbook_position", "cross_document_consistency"]
+    purpose: Literal[
+        "rule_review",
+        "playbook_position",
+        "cross_document_consistency",
+        "element_location",
+    ]
     text: str = Field(min_length=1, max_length=4000)
     clause_types: list[str] = Field(default_factory=list)
     lexical_terms: list[str] = Field(default_factory=list)
@@ -727,6 +732,64 @@ class SemanticReviewItem(ModelBase):
     evidence_ids: list[str] = Field(min_length=1)
     confidence: float | None = Field(default=None, ge=0, le=1)
     recommended_action: str | None = None
+
+
+class RiskAnalysisItem(ModelBase):
+    """通读式 AI 风险分析的一条结论（v1 覆盖率口径）。
+
+    与语义审查的 ``SemanticReviewItem`` 分工：语义审查逐规则对照给出结论，
+    覆盖率由审计结构性保证；风险分析让模型通读合同摘录，**对规则清单里的
+    每条规则输出判定**（PASS=符合 / BLOCK / WARN / UNKNOWN=摘录不足 /
+    NOT_APPLICABLE=本规则不适用），并
+    补充规则库没有覆盖的风险点（不带 ``rule_id`` 的条目，v1 ``source="ai"``
+    的那部分）。
+    """
+
+    item_id: str
+    title: str
+    risk_level: Literal[
+        "BLOCK", "WARN", "INFO", "PASS", "UNKNOWN", "NOT_APPLICABLE"
+    ]
+    reason: str = ""
+    quote: str = ""
+    # 规则判定项里"符合"（PASS）允许无证据引用；非 PASS 项的证据约束由
+    # ``risk_analysis.validate_risk_analysis_response`` 按等级裁决——
+    # PASS / NOT_APPLICABLE / UNKNOWN 允许空证据，其余等级必须有证据。
+    evidence_ids: list[str] = Field(default_factory=list)
+    module: str = "内控"
+    rule_id: str | None = None
+    confidence: float = Field(ge=0, le=1)
+
+
+class RiskAnalysisRequest(ModelBase):
+    """通读式风险分析的请求快照：合同摘录、规则目录提示与已发现摘要。"""
+
+    request_id: str
+    provider: str
+    model_version: str
+    prompt_version: str
+    request_fingerprint: str = Field(min_length=64, max_length=64)
+    candidate_evidence: list[CandidateEvidence] = Field(default_factory=list)
+    allowed_evidence_ids: list[str] = Field(default_factory=list)
+    rule_hints: list[dict[str, Any]] = Field(default_factory=list)
+    known_findings: list[dict[str, Any]] = Field(default_factory=list)
+    system_instruction: str = Field(min_length=1)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+
+
+class RiskAnalysisResponse(ModelBase):
+    response_id: str
+    provider: str
+    model_version: str
+    prompt_version: str
+    request_fingerprint: str = Field(min_length=64, max_length=64)
+    items: list[RiskAnalysisItem] = Field(default_factory=list)
+    # 模型判定的合同类型（v1 能力）：用户未在 ReviewContext 声明类型时，编排层
+    # 会用该类型重跑一遍规则引擎与语义判据（见 pipeline._rerun_with_ai_contract_
+    # type）——合同类型是规则适用性的唯一开关，不回填的话规则侧全量落 UNKNOWN。
+    # 用户已声明时只作参考展示，不覆盖用户输入。
+    contract_type: dict[str, Any] | None = None
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class SemanticReviewResponse(ModelBase):
@@ -1082,6 +1145,13 @@ class Rule(ModelBase):
     checker: str | None = Field(default=None, min_length=1)
     expected_value: Any | None = None
     risk_level: RiskLevel | None = None
+    # v1 规则引擎评分矩阵口径：权重 + 高/中/低分标准。基础快照未填写时
+    # 展示层落默认值，填写后随快照一起进入指纹。
+    weight: int = Field(default=10, ge=1, le=100)
+    high_standard: str | None = None
+    mid_standard: str | None = None
+    low_standard: str | None = None
+    suggested_action: str | None = None
     applicability: dict[str, ApplicabilitySpec] = Field(default_factory=dict)
     required_evidence: list[str] = Field(default_factory=list)
     human_review: bool = False
@@ -1167,6 +1237,75 @@ class SemanticModelRequest(ModelBase):
                 for candidate in candidates
             ):
                 raise ValueError("语义请求候选证据与其 RetrievalQuery 不一致")
+        return self
+
+
+class ElementCompletionTarget(ModelBase):
+    """AI 补全允许填写的单个要素字段。"""
+
+    key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    hint: str = ""
+    aliases: list[str] = Field(default_factory=list)
+
+
+class ElementCompletionItem(ModelBase):
+    """模型对一个要素字段给出的补全结论。
+
+    ``evidence_id`` 必须指向本次请求携带的候选证据白名单；``confidence`` 被
+    限制为严格小于 1，便于下游区分"确定性抽取"与"模型补全"。
+    """
+
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    confidence: float = Field(gt=0, lt=1)
+    evidence_id: str = Field(min_length=1)
+    quote: str = ""
+
+
+class ElementCompletionResponse(ModelBase):
+    response_id: str
+    provider: str
+    model_version: str
+    prompt_version: str
+    request_fingerprint: str = Field(min_length=64, max_length=64)
+    items: list[ElementCompletionItem] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ElementCompletionRequest(ModelBase):
+    """发送给要素补全客户端的字段清单与候选证据快照。"""
+
+    request_id: str
+    provider: str
+    model_version: str
+    prompt_version: str
+    request_fingerprint: str = Field(min_length=64, max_length=64)
+    catalog_id: str = Field(min_length=1)
+    catalog_fingerprint: str = Field(min_length=64, max_length=64)
+    catalog_extractor_version: str = Field(min_length=1)
+    targets: list[ElementCompletionTarget] = Field(min_length=1)
+    candidate_evidence: list[CandidateEvidence] = Field(min_length=1)
+    allowed_evidence_ids: list[str] = Field(min_length=1)
+    system_instruction: str = Field(min_length=1)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_targets_and_evidence(self) -> "ElementCompletionRequest":
+        """保证目标字段唯一，且白名单与候选证据逐条对应。"""
+
+        target_keys = [target.key for target in self.targets]
+        if len(target_keys) != len(set(target_keys)):
+            raise ValueError("要素补全请求的 targets 必须唯一")
+        candidate_evidence_ids = {
+            evidence_id
+            for candidate in self.candidate_evidence
+            for evidence_id in candidate.evidence_ids
+        }
+        if not candidate_evidence_ids:
+            raise ValueError("要素补全请求的候选证据必须携带 evidence_id")
+        if set(self.allowed_evidence_ids) != candidate_evidence_ids:
+            raise ValueError("要素补全请求白名单必须与候选证据一一对应")
         return self
 
 
@@ -1398,7 +1537,11 @@ class ReviewResult(ModelBase):
     candidate_evidence: list[CandidateEvidence] = Field(default_factory=list)
     evidence_assessments: list[EvidenceAssessment]
     semantic_request: SemanticModelRequest | None = None
+    risk_analysis_request: RiskAnalysisRequest | None = None
+    risk_analysis_response: RiskAnalysisResponse | None = None
     semantic_response: SemanticReviewResponse | None = None
+    element_completion_request: ElementCompletionRequest | None = None
+    element_completion_response: ElementCompletionResponse | None = None
     attachment_references: list[AttachmentReference] = Field(default_factory=list)
     facts: list[ContractFact] = Field(default_factory=list)
     clauses: list[ContractClause]

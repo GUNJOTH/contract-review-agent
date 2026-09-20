@@ -441,6 +441,18 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
   color: #374151; line-height: 1.7; background: #fff; white-space: pre-wrap;
 }
 .ppt-control-actions { display: flex; gap: 10px; margin-left: 58px; }
+.ppt-control-groups { display: flex; flex-direction: column; gap: 12px; }
+.ppt-control-tabs { margin-bottom: 8px; }
+.ppt-control-list { min-height: 360px; }
+.ppt-acc-item.verdict-red { border-left: 3px solid #dc2626; padding-left: 8px; }
+.ppt-acc-item.verdict-gray { border-left: 3px solid #64748b; padding-left: 8px; }
+.ppt-acc-item.verdict-green { border-left: 3px solid #16a34a; padding-left: 8px; }
+.ppt-tabs .tab.verdict-tab.red.active { color: #b91c1c; border-bottom-color: #dc2626; }
+.ppt-tabs .tab.verdict-tab.gray.active { color: #475569; border-bottom-color: #64748b; }
+.ppt-tabs .tab.verdict-tab.green.active { color: #15803d; border-bottom-color: #16a34a; }
+.ppt-reason-link, .ppt-metric-link { cursor: pointer; }
+.ppt-reason-link:hover b, .ppt-metric-link:hover { color: #2563eb; }
+.ppt-link-hint { display: block; margin-top: 6px; color: #2563eb; font-size: 12px; }
 .ppt-btn {
   border: 1px solid #d1d5db; background: #fff; color: #374151; border-radius: 4px;
   padding: 6px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
@@ -580,6 +592,12 @@ details[open] > .tree-summary::before { transform: rotate(45deg); }
 .score-matrix .score-high { background: #f0fdf4; }
 .score-matrix .score-mid { background: #fffbeb; }
 .score-matrix .score-low { background: #fef2f2; }
+.rule-pack { display: flex; flex-direction: column; gap: 16px; margin-bottom: 28px; }
+.rule-pack-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 22px; border-radius: 6px; margin-right: 8px;
+  background: #e0f2fe; color: #0369a1; font-size: 11px; font-weight: 800;
+}
 .table-pager {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 10px 12px 2px; color: #6b7280; font-size: 13px;
@@ -715,3 +733,109 @@ details[open] > .tree-summary::before { transform: rotate(45deg); }
   .topbar { padding: 0 12px; }
   .input-sm { width: 130px; }
 }
+
+/* ===== 合同拟定：与 v1 同一套版式（左标签右输入框的竖排表单） ===== */
+.contract-form-card { max-width: 860px; }
+.contract-form-grid {
+  display: flex; flex-direction: column; gap: 14px;
+}
+.contract-field {
+  display: flex; align-items: flex-start; gap: 16px;
+}
+.contract-label {
+  width: 132px; flex-shrink: 0; padding-top: 10px;
+  text-align: right; color: var(--text-2); font-size: 13px; font-weight: 500;
+}
+.contract-field .in-input-box,
+.contract-field .attachment-control { flex: 1; min-width: 0; }
+.contract-label .req { color: var(--red); }
+
+.attachment-control {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  min-height: 40px; padding: 6px 0;
+}
+.attachment-control.dragover { outline: 1px dashed var(--accent); outline-offset: 4px; border-radius: 8px; }
+.attachment-files { width: 100%; display: flex; flex-wrap: wrap; }
+
+.in-input-box {
+  position: relative; min-height: 40px;
+  border: 1px solid var(--border); border-radius: 8px; background: #fff;
+}
+.in-input-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+.fill-input {
+  width: 100%; border: 0 !important; background: transparent; box-shadow: none !important;
+  padding: 8px 12px; min-height: 40px;
+}
+.fill-dropdown {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+  background: #fff; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .12); z-index: 20;
+  max-height: 240px; overflow: auto; padding: 4px 0;
+}
+.fill-dropdown.hidden { display: none; }
+.fill-dropdown-item {
+  display: block; width: 100%; border: 0; background: transparent;
+  color: #1d4ed8; text-align: left; padding: 8px 12px; font-size: 13px;
+  cursor: pointer; font-family: inherit; line-height: 1.45;
+}
+.fill-dropdown-item:hover { background: #eff6ff; }
+
+/* ===== 规则引擎库：草稿规则表单 ===== */
+.rule-form { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
+.rule-form .input, .rule-form .select { width: 100%; }
+.rule-form .action-bar { margin: 4px 0 0; }
+
+/* ===== 客商风险 ===== */
+.ocr-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.ocr-field { padding: 12px 14px; border-radius: 12px; background: #f8fafc; border: 1px solid var(--border); }
+.ocr-field .k { font-size: 11px; color: var(--text-3); }
+.ocr-field .v { font-size: 15px; font-weight: 700; margin-top: 4px; word-break: break-all; }
+.ocr-field.empty { opacity: .62; }
+.ocr-field.empty .v { font-weight: 500; color: var(--text-3); }
+.credit-finding {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; margin-bottom: 10px; background: #fff;
+}
+.credit-finding-head { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 4px; flex-wrap: wrap; }
+.credit-finding p { margin: 0; color: var(--text-2); font-size: 13px; }
+
+/* ===== 要素抽取弹窗与合同原文预览 ===== */
+.schema-block { margin-bottom: 16px; }
+.rule-form .form-row { margin-bottom: 12px; }
+.rule-form textarea.input { min-height: 96px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.enable-toggle {
+  min-width: 44px; border: 1px solid #bbf7d0; background: #f0fdf4; color: #15803d;
+  border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.enable-toggle.on { background: #dcfce7; color: #15803d; }
+.enable-toggle:not(.on) { background: #f8fafc; color: #64748b; border-color: #e2e8f0; }
+.enable-toggle:disabled { cursor: not-allowed; opacity: .6; }
+.extract-workspace {
+  display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1fr);
+  gap: 16px; align-items: start;
+}
+@media (max-width: 900px) { .extract-workspace { grid-template-columns: 1fr; } }
+.extract-dialog { max-height: 72vh; overflow: auto; }
+.extract-dialog .schema-block { margin-bottom: 16px; }
+.contract-preview-pane { min-height: 420px; }
+.contract-preview-frame, .contract-preview-image {
+  width: 100%; height: 58vh; min-height: 360px; border: 1px solid var(--border);
+  border-radius: 8px; background: #fff;
+}
+.contract-preview-empty, .contract-preview-fallback {
+  min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; background: #f8fafc; border: 1px dashed var(--border); border-radius: 8px; padding: 24px;
+}
+.contract-preview-text {
+  height: 58vh; min-height: 360px; overflow: auto; margin: 0; padding: 16px 18px;
+  background: #fff; border: 1px solid var(--border); border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: var(--text);
+}
+
+
+/* ===== 规则引擎库：草稿规则表单 ===== */
+.rule-form { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; }
+.rule-form .input, .rule-form .select { width: 100%; }
+.rule-form .action-bar { margin: 4px 0 0; }

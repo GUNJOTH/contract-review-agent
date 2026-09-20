@@ -32,7 +32,8 @@ cp .env.example .env
 | `CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED` / `...FAILURE_THRESHOLD` / `...OPEN_TIMEOUT_SECONDS` | 外部模型按操作、端点和模型共享的熔断开关 / 连续临时失败阈值 / open 冷却秒数 | 默认开启 / `3` 次 / `30` 秒；熔断期间 fail-fast，冷却后只放行一个 half-open 探针，非临时业务错误不计入失败 |
 | `CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY` / `CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS` | 进程内 chat 模型共享并发上限 / 等待槽位的最长秒数 | 默认 `1` / `30` 秒；阶段 2 硬上限为 `3`，超时后语义层安全降级，不会继续堆积请求 |
 | `CONTRACT_REVIEW_MODEL_ADAPTIVE_CONCURRENCY_ENABLED` 及 `ADAPTIVE_*` | 按最近模型调用窗口调整下一次审查的规则级并发 | 默认关闭；只在 `1～3` 边界内升降档，达到延迟阈值或失败时降档，连续成功窗口后才升档 |
-| `CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY` | 单次审查的规则级模型并发上限 | 默认 `1`（串行兼容）；阶段 1 硬上限为 `3`，更高值会被拒绝 |
+| `CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY` | 单次审查的规则级模型并发上限 | 默认 `1`（串行兼容）；硬上限为 `3`，更高值会被拒绝。语义审查用的是自己那份模型闸门，改这一个值即可生效；并发度进审查缓存身份，改完按新模式重新审查 |
+| `CONTRACT_REVIEW_RISK_ANALYSIS_MAX_CONCURRENCY` | 通读风险分析的分片并发上限（规则清单按 15 条切片后并行调用） | 默认 `1`（逐片串行）；硬上限同为 `3`。风险分析用的是自己那份模型闸门，改这一个值即可生效；并发度进审查缓存身份，改完按新模式重新审查 |
 | `OCR_GATEWAY_BASE_URL` | OCR 网关地址 | 扫描件/印章识别连不到网关；启动时只打 warning，不阻止进程 |
 | `OCR_GATEWAY_TOKEN` | OCR 网关鉴权（网关开了鉴权才需要） | 扫描件/印章识别 401 |
 | `API_TOKEN` | 本服务 API 鉴权 Token | 未配置时受保护 API 返回 503；缺少或错误 Token 返回 401 |

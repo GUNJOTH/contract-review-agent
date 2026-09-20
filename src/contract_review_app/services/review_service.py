@@ -11,19 +11,24 @@ from pathlib import Path
 from loguru import logger
 
 from contract_review import (
+    ContractElementCatalog,
     ReplayMismatch,
-    load_active_rule_bundle,
+    build_builtin_contract_element_catalog,
+    load_contract_element_catalog,
     parse_contract_package,
     replay_review,
     run_review,
     run_review_with_semantic_client,
 )
 from contract_review.audit import audit_result
+from contract_review.element_completion import ELEMENT_COMPLETION_VERSION
 from contract_review.knowledge import KnowledgeIndex
+from contract_review.risk_analysis import RISK_ANALYSIS_VERSION
 from contract_review.rule_checkers import RULE_CHECKER_VERSION
 from contract_review.pipeline import (
     PIPELINE_VERSION,
     SEMANTIC_REVIEW_FALLBACK_CONFIGURATION_KEY,
+    validate_risk_analysis_concurrency,
     validate_semantic_rule_concurrency,
 )
 from contract_review.models import (
@@ -58,8 +63,15 @@ from contract_review_app.services.model_transport import (
     validate_circuit_failure_threshold,
 )
 from contract_review_app.services.seal_evidence import SealEvidenceDetector
+from contract_review_app.services.element_completion_client import (
+    RelayElementCompletionClient,
+)
+from contract_review_app.services.risk_analysis_client import (
+    RelayRiskAnalysisClient,
+)
 from contract_review_app.services.semantic_client import RelaySemanticReviewer
 from contract_review_app.services.pii_gate import gate_paths
+from contract_review_app.services import rule_edits
 from contract_review_app.services.triton_ocr_provider import TritonOCRProvider
 from contract_review_app.services.vector_knowledge_index import HybridKnowledgeIndex
 from contract_review_app.telemetry.tracing import set_span_attributes, start_span
@@ -85,6 +97,44 @@ def core_rules_path() -> Path | None:
     return settings.resolve_path(configured) if configured else None
 
 
+def element_catalog_path() -> Path | None:
+    """返回要素字段目录快照路径；空配置表示回退内置字段定义。"""
+
+    configured = settings.CONTRACT_ELEMENT_FIELDS_PATH.strip()
+    return settings.resolve_path(configured) if configured else None
+
+
+def load_element_catalog() -> ContractElementCatalog:
+    """加载并校验版本化要素字段目录快照。
+
+    目录未配置时回退内置定义；已配置但缺失、非法或未通过门禁时直接抛错，
+    不静默降级成"少抽几个字段"，否则审查结果会看起来正常但要素缺口无声扩大。
+    """
+
+    path = element_catalog_path()
+    if path is None:
+        return build_builtin_contract_element_catalog()
+    return load_contract_element_catalog(path)
+
+
+def _semantic_gate_limit() -> int:
+    """语义侧并发容量上限：按语义自己的配置敞开，无需同时改全局值。
+
+    进程内模型闸门按 (operation, endpoint, model) 复用，"semantic_review" 那份
+    独立于风险分析与要素补全，所以语义可以按自己的并发度敞开容量——只调
+    ``CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY`` 一个值就能生效，不必再去动全局的
+    ``CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY``。取 max 是为了兼容旧用法：全局值
+    高于语义值时仍按全局值敞开，行为与改动前一致。
+    """
+
+    return max(
+        validate_model_concurrency(settings.CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY),
+        validate_semantic_rule_concurrency(
+            settings.CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY
+        ),
+    )
+
+
 def _semantic_concurrency_policy() -> tuple[
     int, AdaptiveConcurrencyController | None
 ]:
@@ -93,9 +143,10 @@ def _semantic_concurrency_policy() -> tuple[
     configured_limit = validate_semantic_rule_concurrency(
         settings.CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY
     )
-    global_limit = validate_model_concurrency(
-        settings.CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY
-    )
+    # 自适应并发的封顶同样取语义自己的容量：若仍以全局模型并发为封顶，把语义并发
+    # 提到 3 而全局仍是 1 时，自适应会把上限压回 1（初始并发大于上限时还会误报
+    # 配置错误），用户的配置被静默忽略。
+    global_limit = _semantic_gate_limit()
     if not (
         settings.CONTRACT_REVIEW_MODEL_ADAPTIVE_CONCURRENCY_ENABLED
         and settings.CONTRACT_REVIEW_ENDPOINT
@@ -138,7 +189,19 @@ def _semantic_client() -> RelaySemanticReviewer | None:
     """配置了 CONTRACT_REVIEW_ENDPOINT 时构造语义客户端，否则返回 None。"""
     if not settings.CONTRACT_REVIEW_ENDPOINT:
         return None
-    _, adaptive_controller = _semantic_concurrency_policy()
+    # 闸门容量取语义自己的并发容量（与风险分析分片同款）：这样只把
+    # CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY 提到 3 就能真正并发，不必同时
+    # 调整全局模型并发；旧用法（全局更大）仍然照旧。
+    gate_limit = _semantic_gate_limit()
+    selected_limit, adaptive_controller = _semantic_concurrency_policy()
+    queue_timeout_seconds = settings.CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS
+    if selected_limit > 1:
+        # 并发开启后同一时刻可能有多个调用共用这份闸门，等待窗口若短于一次请求
+        # 的耗时，排在后面的调用必然被排队超时误判成"提供方不可用"。与风险分析
+        # 分片一致，把窗口放宽到一次请求的超时时间。
+        queue_timeout_seconds = max(
+            queue_timeout_seconds, settings.CONTRACT_REVIEW_TIMEOUT_SECONDS
+        )
     circuit_breaker = None
     if settings.CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED:
         circuit_breaker = shared_model_circuit_breaker(
@@ -156,11 +219,91 @@ def _semantic_client() -> RelaySemanticReviewer | None:
         timeout_seconds=settings.CONTRACT_REVIEW_TIMEOUT_SECONDS,
         max_attempts=settings.CONTRACT_REVIEW_MODEL_MAX_ATTEMPTS,
         backoff_seconds=settings.CONTRACT_REVIEW_MODEL_RETRY_BACKOFF_SECONDS,
+        max_concurrency=gate_limit,
+        queue_timeout_seconds=queue_timeout_seconds,
+        jitter_ratio=settings.CONTRACT_REVIEW_MODEL_RETRY_JITTER_RATIO,
+        max_backoff_seconds=settings.CONTRACT_REVIEW_MODEL_MAX_BACKOFF_SECONDS,
+        adaptive_controller=adaptive_controller,
+        circuit_breaker=circuit_breaker,
+    )
+
+
+def _element_completion_client() -> RelayElementCompletionClient | None:
+    """要素补全客户端：需要同时开启开关并配置模型端点。"""
+
+    if not settings.CONTRACT_ELEMENT_AI_COMPLETION_ENABLED:
+        return None
+    if not settings.CONTRACT_REVIEW_ENDPOINT:
+        return None
+    circuit_breaker = None
+    if settings.CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED:
+        circuit_breaker = shared_model_circuit_breaker(
+            operation="element_completion",
+            endpoint=settings.CONTRACT_REVIEW_ENDPOINT,
+            model=settings.CONTRACT_REVIEW_MODEL,
+            failure_threshold=settings.CONTRACT_REVIEW_MODEL_CIRCUIT_FAILURE_THRESHOLD,
+            open_timeout_seconds=settings.CONTRACT_REVIEW_MODEL_CIRCUIT_OPEN_TIMEOUT_SECONDS,
+        )
+    return RelayElementCompletionClient(
+        endpoint=settings.CONTRACT_REVIEW_ENDPOINT,
+        api_key=settings.CONTRACT_REVIEW_API_KEY or None,
+        model_version=settings.CONTRACT_REVIEW_MODEL,
+        json_mode=settings.CONTRACT_REVIEW_JSON_MODE,
+        timeout_seconds=settings.CONTRACT_REVIEW_TIMEOUT_SECONDS,
+        max_attempts=settings.CONTRACT_REVIEW_MODEL_MAX_ATTEMPTS,
+        backoff_seconds=settings.CONTRACT_REVIEW_MODEL_RETRY_BACKOFF_SECONDS,
         max_concurrency=settings.CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY,
         queue_timeout_seconds=settings.CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS,
         jitter_ratio=settings.CONTRACT_REVIEW_MODEL_RETRY_JITTER_RATIO,
         max_backoff_seconds=settings.CONTRACT_REVIEW_MODEL_MAX_BACKOFF_SECONDS,
-        adaptive_controller=adaptive_controller,
+        circuit_breaker=circuit_breaker,
+    )
+
+
+def _risk_analysis_client() -> RelayRiskAnalysisClient | None:
+    """通读风险分析客户端：需要同时开启开关并配置模型端点。"""
+
+    if not settings.CONTRACT_RISK_ANALYSIS_ENABLED:
+        return None
+    if not settings.CONTRACT_REVIEW_ENDPOINT:
+        return None
+    # 闸门按 operation 复用，"risk_analysis" 与语义审查的闸门互不占用，所以
+    # 这里可以按风险分析自己的分片并发度敞开容量：用户只调一个配置就能生效，
+    # 不必再去改全局的模型并发上限。默认两边都是 1，行为与串行时一致。
+    risk_analysis_max_concurrency = validate_risk_analysis_concurrency(
+        settings.CONTRACT_REVIEW_RISK_ANALYSIS_MAX_CONCURRENCY
+    )
+    queue_timeout_seconds = settings.CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS
+    if risk_analysis_max_concurrency > 1:
+        # 分片数可能多于闸门容量，排在后面的分片要等前面那片答完才拿得到槽位；
+        # 等待窗口若短于一次请求的耗时，它必然被误判为"提供方不可用"。并发
+        # 开启时把窗口放宽到一次请求的超时时间，与排队的真实量级对齐。
+        queue_timeout_seconds = max(
+            queue_timeout_seconds, settings.CONTRACT_REVIEW_TIMEOUT_SECONDS
+        )
+    circuit_breaker = None
+    if settings.CONTRACT_REVIEW_MODEL_CIRCUIT_BREAKER_ENABLED:
+        circuit_breaker = shared_model_circuit_breaker(
+            operation="risk_analysis",
+            endpoint=settings.CONTRACT_REVIEW_ENDPOINT,
+            model=settings.CONTRACT_REVIEW_MODEL,
+            failure_threshold=settings.CONTRACT_REVIEW_MODEL_CIRCUIT_FAILURE_THRESHOLD,
+            open_timeout_seconds=settings.CONTRACT_REVIEW_MODEL_CIRCUIT_OPEN_TIMEOUT_SECONDS,
+        )
+    return RelayRiskAnalysisClient(
+        endpoint=settings.CONTRACT_REVIEW_ENDPOINT,
+        api_key=settings.CONTRACT_REVIEW_API_KEY or None,
+        model_version=settings.CONTRACT_REVIEW_MODEL,
+        timeout_seconds=settings.CONTRACT_REVIEW_TIMEOUT_SECONDS,
+        max_attempts=settings.CONTRACT_REVIEW_MODEL_MAX_ATTEMPTS,
+        backoff_seconds=settings.CONTRACT_REVIEW_MODEL_RETRY_BACKOFF_SECONDS,
+        max_concurrency=max(
+            settings.CONTRACT_REVIEW_MODEL_MAX_CONCURRENCY,
+            risk_analysis_max_concurrency,
+        ),
+        queue_timeout_seconds=queue_timeout_seconds,
+        jitter_ratio=settings.CONTRACT_REVIEW_MODEL_RETRY_JITTER_RATIO,
+        max_backoff_seconds=settings.CONTRACT_REVIEW_MODEL_MAX_BACKOFF_SECONDS,
         circuit_breaker=circuit_breaker,
     )
 
@@ -211,6 +354,7 @@ def replay_contract_review(
         document_kinds=document_kinds,
         ocr_provider=ocr_provider,
         knowledge_index_factory=_replay_knowledge_index_factory(result),
+        element_catalog=load_element_catalog(),
     )
 
 
@@ -294,6 +438,11 @@ def _review_fingerprint(
     model_queue_timeout = validate_model_queue_timeout(
         settings.CONTRACT_REVIEW_MODEL_QUEUE_TIMEOUT_SECONDS
     )
+    # 风险分析分片并发度会改变分片执行的顺序与合并后的头部响应，必须进缓存身份，
+    # 否则调完并发度还会命中按旧模式算出的缓存结果。
+    risk_analysis_max_concurrency = validate_risk_analysis_concurrency(
+        settings.CONTRACT_REVIEW_RISK_ANALYSIS_MAX_CONCURRENCY
+    )
     embedding_max_concurrency = validate_model_concurrency(
         settings.CONTRACT_REVIEW_EMBEDDING_MAX_CONCURRENCY
     )
@@ -337,6 +486,23 @@ def _review_fingerprint(
             parts.append(hashlib.sha256(extension.read_bytes()).hexdigest())
     except OSError:
         pass
+    # 规则引擎库覆盖层（合同检查标准的编辑结果）改变规则集合，必须进缓存身份。
+    parts.append(settings.CONTRACT_CUSTOM_RULES_PATH)
+    try:
+        custom_overlay = rule_edits.custom_rules_path()
+        if custom_overlay.is_file():
+            parts.append(hashlib.sha256(custom_overlay.read_bytes()).hexdigest())
+    except OSError:
+        pass
+    # 要素字段目录决定 contract_element:* 事实的抽取口径，必须进缓存身份，
+    # 否则改完目录会命中按旧口径算出的缓存结果。
+    parts.append(settings.CONTRACT_ELEMENT_FIELDS_PATH)
+    try:
+        catalog_file = element_catalog_path()
+        if catalog_file is not None:
+            parts.append(hashlib.sha256(catalog_file.read_bytes()).hexdigest())
+    except OSError:
+        pass
     parts.extend(
         [
             settings.CONTRACT_REVIEW_MODEL,
@@ -375,6 +541,15 @@ def _review_fingerprint(
             str(settings.CONTRACT_AI_PII_GATE_ENABLED),
             settings.CONTRACT_AI_PII_MODE,
             settings.CONTRACT_PII_SCANNER_VERSION,
+            # 要素补全开关与提示词版本会改变 facts，必须进缓存身份。
+            str(settings.CONTRACT_ELEMENT_AI_COMPLETION_ENABLED),
+            settings.CONTRACT_ELEMENT_AI_COMPLETION_PROMPT_VERSION,
+            ELEMENT_COMPLETION_VERSION,
+            # 风险分析挂载 risk_analysis_response，同样改变结果指纹。
+            str(settings.CONTRACT_RISK_ANALYSIS_ENABLED),
+            settings.CONTRACT_RISK_ANALYSIS_PROMPT_VERSION,
+            RISK_ANALYSIS_VERSION,
+            str(risk_analysis_max_concurrency),
         ]
     )
     return fingerprint(parts)
@@ -403,6 +578,9 @@ def run_contract_review(
     """
     effective_context = review_context
     semantic_max_concurrency, _ = _semantic_concurrency_policy()
+    risk_analysis_max_concurrency = validate_risk_analysis_concurrency(
+        settings.CONTRACT_REVIEW_RISK_ANALYSIS_MAX_CONCURRENCY
+    )
     cache_key = _review_fingerprint(
         files,
         package_id=package_id,
@@ -423,7 +601,9 @@ def run_contract_review(
         except Exception as exc:
             logger.warning(f"审查缓存读取失败，重新审查: {exc}")
 
-    rule_bundle = load_active_rule_bundle(rules_path(), core_rules_path())
+    # 规则引擎库：基础/扩展快照与「合同检查标准」编辑层合成，保存即生效。
+    rule_bundle = rule_edits.active_rule_bundle()
+    element_catalog = load_element_catalog()
     provider = ocr_provider if ocr_provider is not None else TritonOCRProvider()
     with (
         start_span(
@@ -452,6 +632,8 @@ def run_contract_review(
             document_filenames=temporary_document_filenames,
         )
         client = _semantic_client() if allow_semantic else None
+        completion_client = _element_completion_client() if allow_semantic else None
+        risk_client = _risk_analysis_client() if allow_semantic else None
         # Scan the exact parsed text (including OCR output) before any
         # semantic provider is allowed to receive context chunks.
         pii_gate = gate_paths(
@@ -483,6 +665,16 @@ def run_contract_review(
                 "target_latency_seconds": settings.CONTRACT_REVIEW_MODEL_ADAPTIVE_TARGET_LATENCY_SECONDS,
                 "success_window": settings.CONTRACT_REVIEW_MODEL_ADAPTIVE_SUCCESS_WINDOW,
                 "selected_limit": semantic_max_concurrency,
+            },
+            "element_ai_completion": {
+                "enabled": settings.CONTRACT_ELEMENT_AI_COMPLETION_ENABLED,
+                "requested": completion_client is not None and not pii_gate.blocked,
+                "prompt_version": settings.CONTRACT_ELEMENT_AI_COMPLETION_PROMPT_VERSION,
+            },
+            "risk_analysis": {
+                "enabled": settings.CONTRACT_RISK_ANALYSIS_ENABLED,
+                "requested": risk_client is not None and not pii_gate.blocked,
+                "prompt_version": settings.CONTRACT_RISK_ANALYSIS_PROMPT_VERSION,
             },
         }
         set_span_attributes(
@@ -517,6 +709,7 @@ def run_contract_review(
                     extra_evidence=seal_evidence,
                     knowledge_index_factory=knowledge_index_factory,
                     retrieval_top_k=retrieval_top_k,
+                    element_catalog=element_catalog,
                     configuration=gate_configuration,
                 )
             else:
@@ -538,12 +731,28 @@ def run_contract_review(
                     knowledge_index_factory=knowledge_index_factory,
                     retrieval_top_k=retrieval_top_k,
                     semantic_max_concurrency=semantic_max_concurrency,
+                    element_catalog=element_catalog,
+                    element_completion_client=completion_client,
+                    element_completion_prompt_version=(
+                        settings.CONTRACT_ELEMENT_AI_COMPLETION_PROMPT_VERSION
+                    ),
+                    risk_analysis_client=risk_client,
+                    risk_analysis_prompt_version=(
+                        settings.CONTRACT_RISK_ANALYSIS_PROMPT_VERSION
+                    ),
+                    risk_analysis_max_concurrency=risk_analysis_max_concurrency,
                     configuration=gate_configuration,
                 )
         finally:
             close_client = getattr(client, "close", None)
             if callable(close_client):
                 close_client()
+            close_completion = getattr(completion_client, "close", None)
+            if callable(close_completion) and completion_client is not client:
+                close_completion()
+            close_risk = getattr(risk_client, "close", None)
+            if callable(close_risk) and risk_client is not client:
+                close_risk()
         set_span_attributes(
             span,
             {
@@ -553,6 +762,24 @@ def run_contract_review(
             },
         )
     authoritative_result = register_authoritative_review_result(result)
+    # AI 规则自进化（v1 同款）：审查完成后把模型通读分析的结论提炼成
+    # 候选检查点，进入规则引擎库的「AI 自进化规则」池待确认。提炼失败
+    # 只记日志，绝不影响审查结果本身。
+    analysis = authoritative_result.risk_analysis_response
+    if analysis is not None and analysis.items:
+        try:
+            # 只提炼"规则清单外"的风险点（不带 rule_id 的条目）；每条规则的
+            # 判定项是审查清单本身，进候选池会把规则库重复刷一遍。
+            extra_items = [item for item in analysis.items if not item.rule_id]
+            if extra_items:
+                added = rule_edits.add_ai_candidates(
+                    extra_items,
+                    response_id=analysis.response_id,
+                )
+                if added:
+                    logger.info(f"AI 自进化规则：提炼 {added} 条候选检查点待确认")
+        except Exception as exc:
+            logger.warning(f"AI 自进化规则提炼失败（不影响审查结果）: {exc}")
     if not authoritative_result.run.configuration.get(
         SEMANTIC_REVIEW_FALLBACK_CONFIGURATION_KEY
     ):

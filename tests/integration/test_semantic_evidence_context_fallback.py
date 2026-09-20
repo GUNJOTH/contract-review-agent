@@ -22,6 +22,7 @@ from contract_review.models import (
 from contract_review.semantic import contract_evidence_ids_by_rule
 from contract_review_app.config import settings
 from contract_review_app.services import review_service
+from contract_review_app.services import rule_edits
 from contract_review_app.services.review_result_store import (
     load_authoritative_review_result,
 )
@@ -310,9 +311,9 @@ def _assert_invalid_evidence_degrades_to_baseline(
     )
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_EMBEDDING_ENDPOINT", "")
     monkeypatch.setattr(
-        review_service,
-        "load_active_rule_bundle",
-        lambda *_args: bundle,
+        rule_edits,
+        "active_rule_bundle",
+        lambda *_args, **_kwargs: bundle,
     )
     monkeypatch.setattr(review_service, "_semantic_client", lambda: semantic_reviewer)
     monkeypatch.setattr(

@@ -9,6 +9,7 @@ from contract_review_app.config import settings
 from contract_review_app.config.settings import Settings
 from contract_review_app.services.model_transport import HttpxModelTransport
 from contract_review_app.services import review_service
+from contract_review_app.services import rule_edits
 from contract_review_app.services.review_result_store import (
     load_authoritative_review_result,
 )
@@ -86,9 +87,9 @@ def test_provider_transport_degradation_is_not_cached_and_replays_as_baseline(
     _UnavailableRelayClient.instances.clear()
 
     monkeypatch.setattr(
-        review_service,
-        "load_active_rule_bundle",
-        lambda *_args: bundle,
+        rule_edits,
+        "active_rule_bundle",
+        lambda *_args, **_kwargs: bundle,
     )
     monkeypatch.setattr(
         review_service,

@@ -552,8 +552,12 @@ class LexicalKnowledgeIndex:
                 has_precise_exact_anchor or has_exact_query_phrase
             ):
                 protected_contract_chunk_ids.add(chunk.chunk_id)
+            # 要素定位检索以"召回标题/元信息区"为目的：这类块往往不含
+            # 完整字段词（如只有书名号里的合同名），BM25 分数天然达不到
+            # 规则审查的相关性阈值，按同一门槛会把目标块挡在证据窗口外。
             if (
                 chunk.source_kind == KnowledgeSourceKind.CONTRACT
+                and query.purpose != "element_location"
                 and score < MIN_CONTRACT_LEXICAL_SCORE
                 and not has_precise_exact_anchor
                 and not has_exact_query_phrase
@@ -585,7 +589,9 @@ class LexicalKnowledgeIndex:
             == KnowledgeSourceKind.CONTRACT
         ]
         best_contract_score = max(contract_scores, default=0.0)
-        if best_contract_score > 0:
+        # 与绝对门槛同理：要素定位检索不做相对分数裁剪，由 top_k 限流。
+        relax_contract_thresholds = query.purpose == "element_location"
+        if best_contract_score > 0 and not relax_contract_thresholds:
             scored = [
                 hit
                 for hit in scored
