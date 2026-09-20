@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题
+    url: https://github.com/GUNJOTH/contract-review-agent/security/policy
+    about: 请勿在公开 Issue 中披露漏洞、密钥、个人信息或真实合同内容。
