@@ -10,7 +10,8 @@ v1 的规则库是一个可编辑的规则池：新增/编辑/启用/停用/删�
 
 每次变更原子落盘后即生效：审查用的正式规则包由
 ``active_rule_bundle()`` 现场合成并过 ``publish_playbook_bundle``
-指纹门禁，不需要任何"发布"步骤。
+指纹门禁，不需要任何"发布"步骤。所有覆盖层写操作还会在同一进程内串行化，
+避免异步线程各自读取旧快照后互相覆盖。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -32,6 +34,15 @@ from contract_review_app.config import settings
 
 
 OVERLAY_SCHEMA_VERSION = "1.0"
+# FastAPI 通过 asyncio.to_thread 执行编辑，锁必须覆盖完整的读改写临界区。
+_WRITE_LOCK = threading.RLock()
+_DEFAULT_APPLIES_TO = [
+    "软件产品销售",
+    "软件开发/转让服务",
+    "一般商品销售合同",
+    "混合合同",
+    "其它服务合同",
+]
 
 
 class RuleEditError(RuntimeError):
@@ -213,38 +224,63 @@ def active_rule_bundle() -> RuleBundle:
         raise RuleEditError(f"规则包合成失败: {exc}") from exc
 
 
-def _build_rule(payload: dict[str, Any], *, rule_id: str | None) -> Rule:
+def _build_rule(
+    payload: dict[str, Any],
+    *,
+    rule_id: str | None,
+    existing_rule: Rule | None = None,
+) -> Rule:
+    merged = (
+        existing_rule.model_dump(mode="json") if existing_rule is not None else {}
+    )
+    merged.update(payload)
+
+    raw_applies_to = (
+        payload["applies_to"]
+        if "applies_to" in payload
+        else (existing_rule.applies_to if existing_rule is not None else [])
+    )
     applies_to = [
         str(item).strip()
-        for item in (payload.get("applies_to") or [])
+        for item in (raw_applies_to or [])
         if str(item).strip()
     ]
     if not applies_to:
         # v1 表单没有"适用类型"输入：默认适用全部标准合同类型。
-        applies_to = [
-            "软件产品销售",
-            "软件开发/转让服务",
-            "一般商品销售合同",
-            "混合合同",
-            "其它服务合同",
-        ]
+        applies_to = list(_DEFAULT_APPLIES_TO)
+
+    if "applicability" in payload:
+        applicability = payload.get("applicability") or {}
+    elif existing_rule is not None:
+        # 编辑表单不会提交复杂适用性声明，必须保留原规则的结构化口径。
+        applicability = {
+            item: spec.model_dump(mode="json")
+            for item, spec in existing_rule.applicability.items()
+        }
+    else:
+        applicability = {
+            item: {"applicability": "required"} for item in applies_to
+        }
+
     # 风险等级口径是 low/medium/high/critical；空值或旧口径值统一归为
     # unclassified（留空），避免措辞漂移把脏值带进快照。
-    risk_level = str(payload.get("risk_level") or "").strip().lower()
+    risk_level = str(merged.get("risk_level") or "").strip().lower()
     if risk_level not in {"low", "medium", "high", "critical"}:
         risk_level = None
-    merged = {
-        **payload,
-        # v1 表单没有版本输入：默认 v1，编辑覆盖时允许沿用传入值。
-        "version": str(payload.get("version") or "v1"),
-        "applies_to": applies_to,
-        "risk_level": risk_level,
-        # 适用性声明由后端统一补齐：声明的类型一律按"该检查适用"处理。
-        "applicability": {
-            item: {"applicability": "required"} for item in applies_to
-        },
-        "source_snapshot": str(payload.get("source_snapshot") or "rules-engine#1"),
-    }
+
+    merged.update(
+        {
+            # v1 表单没有版本输入：编辑时沿用原规则版本，新建时默认 v1。
+            "version": str(merged.get("version") or "v1"),
+            "applies_to": applies_to,
+            "risk_level": risk_level,
+            "applicability": applicability,
+            # 编辑时沿用原规则来源，新建规则使用编辑层来源标记。
+            "source_snapshot": str(
+                merged.get("source_snapshot") or "rules-engine#1"
+            ),
+        }
+    )
     try:
         rule = Rule.model_validate(merged)
     except ValueError as exc:
@@ -264,30 +300,42 @@ def upsert_rule(payload: dict[str, Any], *, rule_id: str | None = None) -> Rule:
     编辑一条 AI 候选规则 = 采纳它：条目转入"合同检查标准"并从候选池移除。
     """
 
-    overlay = load_overlay()
-    baseline_ids_ = baseline_ids()
-    if rule_id is None:
-        rule_id = str(payload.get("rule_id") or "").strip() or generate_rule_id()
-    if rule_id in baseline_ids_ or any(
-        item.rule_id == rule_id for item in overlay.custom_rules
-    ) or any(item.rule_id == rule_id for item in overlay.ai_candidates):
-        # 编辑：同 rule_id 覆盖（基础规则与 AI 候选也允许编辑）。
-        rule = _build_rule({**payload, "rule_id": rule_id}, rule_id=rule_id)
-        overlay.custom_rules = [
-            item for item in overlay.custom_rules if item.rule_id != rule_id
-        ]
-        overlay.ai_candidates = [
-            item for item in overlay.ai_candidates if item.rule_id != rule_id
-        ]
-        overlay.custom_rules.append(rule)
-        overlay.removed_ids = [
-            item for item in overlay.removed_ids if item != rule_id
-        ]
-    else:
-        rule = _build_rule({**payload, "rule_id": rule_id}, rule_id=rule_id)
-        overlay.custom_rules.append(rule)
-    _write_overlay(overlay)
-    return rule
+    with _WRITE_LOCK:
+        overlay = load_overlay()
+        baseline = baseline_rules()
+        baseline_by_id = {item.rule_id: item for item in baseline}
+        if rule_id is None:
+            rule_id = str(payload.get("rule_id") or "").strip() or generate_rule_id()
+        existing_rule = next(
+            (
+                item
+                for item in [*overlay.custom_rules, *overlay.ai_candidates]
+                if item.rule_id == rule_id
+            ),
+            baseline_by_id.get(rule_id),
+        )
+        if existing_rule is not None:
+            # 编辑：同 rule_id 覆盖（基础规则与 AI 候选也允许编辑）。
+            rule = _build_rule(
+                {**payload, "rule_id": rule_id},
+                rule_id=rule_id,
+                existing_rule=existing_rule,
+            )
+            overlay.custom_rules = [
+                item for item in overlay.custom_rules if item.rule_id != rule_id
+            ]
+            overlay.ai_candidates = [
+                item for item in overlay.ai_candidates if item.rule_id != rule_id
+            ]
+            overlay.custom_rules.append(rule)
+            overlay.removed_ids = [
+                item for item in overlay.removed_ids if item != rule_id
+            ]
+        else:
+            rule = _build_rule({**payload, "rule_id": rule_id}, rule_id=rule_id)
+            overlay.custom_rules.append(rule)
+        _write_overlay(overlay)
+        return rule
 
 
 def remove_rule(rule_id: str) -> dict[str, str]:
@@ -297,50 +345,52 @@ def remove_rule(rule_id: str) -> dict[str, str]:
     删除的语义是"这条规则从清单里消失"。
     """
 
-    overlay = load_overlay()
-    base_ids = baseline_ids()
-    in_custom = any(item.rule_id == rule_id for item in overlay.custom_rules)
-    in_candidates = any(item.rule_id == rule_id for item in overlay.ai_candidates)
-    if rule_id in base_ids:
-        overlay.custom_rules = [
-            item for item in overlay.custom_rules if item.rule_id != rule_id
-        ]
-        if rule_id not in overlay.removed_ids:
-            overlay.removed_ids.append(rule_id)
-        overlay.disabled_ids = [
-            item for item in overlay.disabled_ids if item != rule_id
-        ]
-    elif in_custom or in_candidates:
-        overlay.custom_rules = [
-            item for item in overlay.custom_rules if item.rule_id != rule_id
-        ]
-        overlay.ai_candidates = [
-            item for item in overlay.ai_candidates if item.rule_id != rule_id
-        ]
-        overlay.disabled_ids = [
-            item for item in overlay.disabled_ids if item != rule_id
-        ]
-    else:
-        raise RuleEditError(f"规则不存在: {rule_id}")
-    _write_overlay(overlay)
-    return {"status": "deleted", "rule_id": rule_id}
+    with _WRITE_LOCK:
+        overlay = load_overlay()
+        base_ids = baseline_ids()
+        in_custom = any(item.rule_id == rule_id for item in overlay.custom_rules)
+        in_candidates = any(item.rule_id == rule_id for item in overlay.ai_candidates)
+        if rule_id in base_ids:
+            overlay.custom_rules = [
+                item for item in overlay.custom_rules if item.rule_id != rule_id
+            ]
+            if rule_id not in overlay.removed_ids:
+                overlay.removed_ids.append(rule_id)
+            overlay.disabled_ids = [
+                item for item in overlay.disabled_ids if item != rule_id
+            ]
+        elif in_custom or in_candidates:
+            overlay.custom_rules = [
+                item for item in overlay.custom_rules if item.rule_id != rule_id
+            ]
+            overlay.ai_candidates = [
+                item for item in overlay.ai_candidates if item.rule_id != rule_id
+            ]
+            overlay.disabled_ids = [
+                item for item in overlay.disabled_ids if item != rule_id
+            ]
+        else:
+            raise RuleEditError(f"规则不存在: {rule_id}")
+        _write_overlay(overlay)
+        return {"status": "deleted", "rule_id": rule_id}
 
 
 def set_rule_enabled(rule_id: str, *, enabled: bool) -> dict[str, str]:
     """启用/停用开关（v1 同款）：停用保留在列表中，开关显示"否"。"""
 
-    overlay = load_overlay()
-    known_ids = baseline_ids() | {item.rule_id for item in overlay.custom_rules}
-    if rule_id not in known_ids:
-        raise RuleEditError(f"规则不存在: {rule_id}")
-    if enabled:
-        overlay.disabled_ids = [
-            item for item in overlay.disabled_ids if item != rule_id
-        ]
-    elif rule_id not in overlay.disabled_ids:
-        overlay.disabled_ids.append(rule_id)
-    _write_overlay(overlay)
-    return {"status": "enabled" if enabled else "disabled", "rule_id": rule_id}
+    with _WRITE_LOCK:
+        overlay = load_overlay()
+        known_ids = baseline_ids() | {item.rule_id for item in overlay.custom_rules}
+        if rule_id not in known_ids:
+            raise RuleEditError(f"规则不存在: {rule_id}")
+        if enabled:
+            overlay.disabled_ids = [
+                item for item in overlay.disabled_ids if item != rule_id
+            ]
+        elif rule_id not in overlay.disabled_ids:
+            overlay.disabled_ids.append(rule_id)
+        _write_overlay(overlay)
+        return {"status": "enabled" if enabled else "disabled", "rule_id": rule_id}
 
 
 def baseline_ids() -> set[str]:
@@ -394,47 +444,57 @@ def add_ai_candidates(items: Sequence[RiskAnalysisItem], *, response_id: str) ->
     「合同检查标准」。返回本次新增数量。
     """
 
-    overlay = load_overlay()
-    existing_titles = {
-        rule.title.strip()
-        for rule in [*overlay.ai_candidates, *overlay.custom_rules, *baseline_rules()]
-    }
-    existing_ids = {rule.rule_id for rule in overlay.ai_candidates}
-    added = 0
-    for item in items:
-        title = str(item.title or "").strip()
-        if not title or title in existing_titles:
-            continue
-        rule = _candidate_from_analysis(item, response_id=response_id)
-        existing_titles.add(title)
-        existing_ids.add(rule.rule_id)
-        overlay.ai_candidates.append(rule)
-        added += 1
-    if added:
-        _write_overlay(overlay)
-    return added
+    with _WRITE_LOCK:
+        overlay = load_overlay()
+        existing_titles = {
+            rule.title.strip()
+            for rule in [
+                *overlay.ai_candidates,
+                *overlay.custom_rules,
+                *baseline_rules(),
+            ]
+        }
+        existing_ids = {rule.rule_id for rule in overlay.ai_candidates}
+        added = 0
+        for item in items:
+            title = str(item.title or "").strip()
+            if not title or title in existing_titles:
+                continue
+            rule = _candidate_from_analysis(item, response_id=response_id)
+            existing_titles.add(title)
+            existing_ids.add(rule.rule_id)
+            overlay.ai_candidates.append(rule)
+            added += 1
+        if added:
+            _write_overlay(overlay)
+        return added
 
 
 def confirm_candidate(rule_id: str) -> Rule:
     """确认启用 AI 候选规则：转入「合同检查标准」并立即生效。"""
 
-    overlay = load_overlay()
-    candidate = next(
-        (item for item in overlay.ai_candidates if item.rule_id == rule_id), None
-    )
-    if candidate is None:
-        raise RuleEditError(f"AI 候选规则不存在: {rule_id}")
-    overlay.ai_candidates = [
-        item for item in overlay.ai_candidates if item.rule_id != rule_id
-    ]
-    overlay.custom_rules = [
-        item for item in overlay.custom_rules if item.rule_id != rule_id
-    ]
-    overlay.custom_rules.append(candidate)
-    overlay.disabled_ids = [item for item in overlay.disabled_ids if item != rule_id]
-    overlay.removed_ids = [item for item in overlay.removed_ids if item != rule_id]
-    _write_overlay(overlay)
-    return candidate
+    with _WRITE_LOCK:
+        overlay = load_overlay()
+        candidate = next(
+            (item for item in overlay.ai_candidates if item.rule_id == rule_id), None
+        )
+        if candidate is None:
+            raise RuleEditError(f"AI 候选规则不存在: {rule_id}")
+        overlay.ai_candidates = [
+            item for item in overlay.ai_candidates if item.rule_id != rule_id
+        ]
+        overlay.custom_rules = [
+            item for item in overlay.custom_rules if item.rule_id != rule_id
+        ]
+        overlay.custom_rules.append(candidate)
+        overlay.disabled_ids = [
+            item for item in overlay.disabled_ids if item != rule_id
+        ]
+        overlay.removed_ids = [
+            item for item in overlay.removed_ids if item != rule_id
+        ]
+        _write_overlay(overlay)
+        return candidate
 
 
 RULE_TOPICS: list[str] = [

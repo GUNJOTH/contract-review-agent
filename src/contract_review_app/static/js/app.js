@@ -2566,7 +2566,8 @@ function buildApprovalRuleTable(rules, start = 0, conditionColumn = "规则内�
     el("th", { text: "操作" }),
   ]);
   const body = rules.map((rule, index) => {
-    const enabled = isRuleEnabled(rule);
+    const isDraft = rule.status === "draft";
+    const enabled = !isDraft && isRuleEnabled(rule);
     return el("tr", {}, [
       el("td", { class: "muted", text: String(start + index + 1) }),
       el("td", { class: "mono", text: rule.code || "-" }),
@@ -2577,9 +2578,9 @@ function buildApprovalRuleTable(rules, start = 0, conditionColumn = "规则内�
       conditionColumn ? el("td", { class: "rule-condition", text: rule.condition || "-" }) : null,
       el("td", {}, [
         el("button", {
-          class: "enable-toggle" + (enabled ? " on" : ""),
-          text: enabled ? "是" : "否",
-          onclick: () => toggleRuleEnabled(rule, !enabled),
+          class: "enable-toggle" + (enabled ? " on" : "") + (isDraft ? " draft-confirm" : ""),
+          text: isDraft ? "确认启用" : (enabled ? "是" : "否"),
+          onclick: () => isDraft ? confirmCandidate(rule) : toggleRuleEnabled(rule, !enabled),
         }),
       ]),
       el("td", {}, [
@@ -2792,6 +2793,11 @@ async function toggleRuleEnabled(rule, enabled) {
   } catch (e) {
     toast("操作失败：" + (e?.message || e), "err");
   }
+}
+
+async function confirmCandidate(rule) {
+  // 候选规则不是普通启停状态，必须明确执行确认动作。
+  await toggleRuleEnabled(rule, true);
 }
 
 async function deleteRule(rule) {
