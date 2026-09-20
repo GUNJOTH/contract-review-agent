@@ -36,6 +36,13 @@ from .terminology import (
 
 
 RETRIEVAL_QUERY_VERSION = "retrieval-query-0.6.0"
+# 要素字段定位检索的固定占位规则标识：它不对应任何业务规则，只承载
+# "按字段名/别名定位合同正文"这一路检索，审计按 purpose 识别它。
+ELEMENT_LOCATION_RULE_ID = "element-location"
+ELEMENT_LOCATION_VERSION = "element-location-0.1.0"
+# 要素定位检索的候选规模：目标块（标题/元信息）对字段别名有大量 2-gram
+# 命中，排名靠前；40 足以覆盖长合同的头部元信息区，又不至于拖垮下游。
+ELEMENT_LOCATION_TOP_K = 40
 _NUMERIC_ANCHOR_PATTERN = re.compile(
     r"(?:\d[\d,]*(?:\.\d+)?\s*(?:%|元|万元|日|天|工作日|月|年)?|"
     r"[一二三四五六七八九十百千万零〇]+\s*(?:%|元|万元|日|天|工作日|月|年))"
@@ -319,6 +326,90 @@ def build_retrieval_query(
             retrieval_filter.document_kinds
             or review_context.document_kinds
         ),
+        retrieval_filter=retrieval_filter,
+    )
+
+
+def build_element_location_query(
+    field_terms: Sequence[str],
+    *,
+    location_version: str,
+    documents: Sequence[Document],
+    review_context: ReviewContext,
+) -> RetrievalQuery:
+    """为标准要素字段构造一路独立的定位检索查询。
+
+    合同的标题/元信息（如书名号里的合同名）往往不含规则措辞，规则检索
+    永远够不到它，而要素抽取又必须依赖统一的候选证据链。因此把字段名与
+    别名本身作为检索词，走同一条 ``RetrievalQuery`` 契约：候选仍然要经过
+    证据资格裁决，审计可以按 ``purpose="element_location"`` 重算校验。
+    ``field_terms`` 由调用方从当前生效的要素目录派生并记录进运行配置，
+    保证审计无需读盘就能重算同一查询。
+    """
+
+    terms = _unique(field_terms)
+    if not terms:
+        raise ValueError("要素定位检索至少需要一个字段词")
+    rule_id = ELEMENT_LOCATION_RULE_ID
+    rule_version = location_version
+    text = expand_terminology_text("；".join(terms))[:4000]
+    lexical_terms = _unique(expand_terminology_terms(terms))
+    exact_anchors = _unique(terms)
+    # 只检索合同正文：规则定义块里的字段名（如规则标题"合同名称"）是
+    # 错位命中，对要素定位没有任何价值，反而会污染候选池。
+    retrieval_filter = RetrievalFilter(
+        document_ids=[document.document_id for document in documents],
+        source_names=[document.filename for document in documents],
+        source_sha256s=[document.source_sha256 for document in documents],
+        source_versions=[document.parser_version for document in documents],
+        source_kinds=[KnowledgeSourceKind.CONTRACT],
+        document_kinds=[document.document_kind for document in documents],
+        applicable_rule_ids=[rule_id],
+        rule_versions=[rule_version],
+    )
+    document_kinds = (
+        retrieval_filter.document_kinds or review_context.document_kinds
+    )
+    fingerprint_payload = {
+        "version": RETRIEVAL_QUERY_VERSION,
+        "rule_id": rule_id,
+        "rule_version": rule_version,
+        "terminology_version": TERMINOLOGY_NORMALIZATION_VERSION,
+        "purpose": "element_location",
+        "text": text,
+        "clause_types": [],
+        "lexical_terms": lexical_terms,
+        "exact_anchors": exact_anchors,
+        "numeric_anchors": [],
+        "negation_anchors": [],
+        "required_fact_types": [],
+        "required_fact_anchors": [],
+        "document_kinds": [item.value for item in document_kinds],
+        "retrieval_filter": retrieval_filter.model_dump(mode="json"),
+    }
+    query_id = "query-" + hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:20]
+    return RetrievalQuery(
+        query_id=query_id,
+        rule_id=rule_id,
+        rule_version=rule_version,
+        terminology_version=TERMINOLOGY_NORMALIZATION_VERSION,
+        purpose="element_location",
+        text=text,
+        clause_types=[],
+        lexical_terms=lexical_terms,
+        exact_anchors=exact_anchors,
+        numeric_anchors=[],
+        negation_anchors=[],
+        required_fact_types=[],
+        required_fact_anchors=[],
+        document_kinds=document_kinds,
         retrieval_filter=retrieval_filter,
     )
 

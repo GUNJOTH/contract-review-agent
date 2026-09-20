@@ -100,7 +100,7 @@ ReviewDecision / ContractVersionComparison / ContractRevisionSet（人工确认�
 - `task_service.py`：负责上传落盘、任务状态和 Celery 入队；同步 Redis/文件适配器在异步 API 中通过线程池调用。
 - `result_cache.py`：以输入/规则/模型/提示词指纹为键的可选缓存，使用同目录临时文件加原子替换；缓存不是后置状态的权威来源。
 - `review_result_store.py`：按 `run_id` 保存并回读服务器当前 `ReviewResult`，后置接口只能基于该快照追加结果。
-- `/contract-review/rule-bundle` 直接返回正式 `RuleBundle`；标准合同要素只作为 `ReviewResult.facts` 的事实类型提供，不再暴露独立目录或抽取接口。
+- `/contract-review/rule-bundle` 直接返回正式 `RuleBundle`；标准合同要素只作为 `ReviewResult.facts` 的事实类型提供，不再暴露独立目录或抽取接口。`/contract-review/element-form` 是该事实集合的只读回填投影（字段目录身份取自 `run.configuration.element_catalog`），它不重新解析合同，也不产生第二套要素结论。
 
 ### 适配层与运行时
 

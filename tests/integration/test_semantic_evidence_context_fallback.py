@@ -22,6 +22,7 @@ from contract_review.models import (
 from contract_review.semantic import contract_evidence_ids_by_rule
 from contract_review_app.config import settings
 from contract_review_app.services import review_service
+from contract_review_app.services import rule_edits
 from contract_review_app.services.review_result_store import (
     load_authoritative_review_result,
 )
@@ -138,6 +139,17 @@ def test_upload_review_degrades_without_persisting_out_of_context_response(
     }
     assert audit_result(first.result).passed
 
+    # 语义链路逐规则顺序调用，遇到证据越界立即中断并整段降级。候选语义规则条数
+    # 由当前规则包决定，所以这里不锁死绝对值：只要单次审查没有遍历全部语义规则
+    # （说明越界被及时中断），且第二次审查的调用次数与第一次一致即可。
+    semantic_rule_count = sum(
+        1
+        for rule in first.result.rule_bundle.rules
+        if getattr(rule.check_method, "value", rule.check_method) == "semantic"
+    )
+    first_run_calls = semantic_reviewer.calls
+    assert 0 < first_run_calls < semantic_rule_count
+
     second = review_service.run_contract_review(
         [("合同主文.pdf", content)],
         package_id="pkg-semantic-context-fallback",
@@ -147,7 +159,7 @@ def test_upload_review_degrades_without_persisting_out_of_context_response(
 
     assert isinstance(second, ReviewExecution)
     assert second.cached is False
-    assert semantic_reviewer.calls == 2
+    assert semantic_reviewer.calls == first_run_calls * 2
 
     replayed = review_service.replay_contract_review(
         first.result,
@@ -310,9 +322,9 @@ def _assert_invalid_evidence_degrades_to_baseline(
     )
     monkeypatch.setattr(settings, "CONTRACT_REVIEW_EMBEDDING_ENDPOINT", "")
     monkeypatch.setattr(
-        review_service,
-        "load_active_rule_bundle",
-        lambda *_args: bundle,
+        rule_edits,
+        "active_rule_bundle",
+        lambda *_args, **_kwargs: bundle,
     )
     monkeypatch.setattr(review_service, "_semantic_client", lambda: semantic_reviewer)
     monkeypatch.setattr(
@@ -339,6 +351,10 @@ def _assert_invalid_evidence_degrades_to_baseline(
     assert first.result.run.status.value == "HUMAN_REVIEW"
     assert audit_result(first.result).passed
     assert not list((tmp_path / "review_cache").glob("*.json"))
+    # 同一次审查里逐规则顺序调用、越界后立即中断；候选语义规则条数由规则包
+    # 决定，所以不锁死绝对值，只要求第二次审查的调用次数与第一次一致。
+    first_run_calls = semantic_reviewer.calls
+    assert first_run_calls >= 1
 
     authoritative = load_authoritative_review_result(first.result)
     assert authoritative.run.result_fingerprint == first.result.run.result_fingerprint
@@ -370,7 +386,7 @@ def _assert_invalid_evidence_degrades_to_baseline(
     assert second.result.semantic_request is None
     assert second.result.semantic_response is None
     assert not list((tmp_path / "review_cache").glob("*.json"))
-    assert semantic_reviewer.calls == 2
+    assert semantic_reviewer.calls == first_run_calls * 2
 
 
 def test_known_cross_rule_evidence_degrades_to_deterministic_baseline(

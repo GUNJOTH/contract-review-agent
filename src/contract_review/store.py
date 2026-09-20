@@ -27,6 +27,10 @@ STORE_VERSION = "json-audit-store-0.3.0"
 _WINDOWS_MAX_PATH = 260
 _STORAGE_KEY_HEX_LENGTH = 32
 _STAGE_EVENT_PATH_TOKEN = "events"
+# Windows 上目录被索引服务、杀毒扫描或编辑器文件监视器短暂持有句柄时，
+# rename 会报 WinError 5（拒绝访问）。这类占用是瞬时的，做有界退避重试。
+_COMMIT_RENAME_ATTEMPTS = 5
+_COMMIT_RENAME_BACKOFF_SECONDS = 0.05
 
 
 class AuditStoreError(RuntimeError):
@@ -113,6 +117,29 @@ def _revision_timestamp(revision_id: str) -> int | None:
         if match is not None:
             return int(match.group(1), base)
     return None
+
+
+def _commit_review_artifact(temporary: Path, target: Path, *, label: str) -> None:
+    """用 ``os.rename`` 原子提交工件目录，容忍 Windows 上的瞬时占用。
+
+    目录在被索引服务、杀毒扫描或编辑器文件监视器短暂持有句柄时，Windows 上的
+    ``os.rename`` 会报 ``WinError 5``（拒绝访问）。这类占用是瞬时的，直接失败会
+    让一次正常的人工动作随机变成 503，因此做有界退避重试；重试仍失败时按存储
+    不可用上报，既不静默降级，也不改动原子提交语义。
+    """
+
+    for attempt in range(1, _COMMIT_RENAME_ATTEMPTS + 1):
+        try:
+            os.rename(temporary, target)
+            return
+        except PermissionError as exc:
+            if attempt >= _COMMIT_RENAME_ATTEMPTS:
+                raise AuditStoreError(
+                    f"failed to commit review {label}: {exc}"
+                ) from exc
+            time.sleep(_COMMIT_RENAME_BACKOFF_SECONDS * attempt)
+        except OSError as exc:
+            raise AuditStoreError(f"failed to commit review {label}: {exc}") from exc
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -219,12 +246,7 @@ class JsonAuditStore:
         manifest["stage_event_count"] = len(result.run.stage_events)
         manifest["stage_events_sha256"] = hashlib.sha256(stage_events_bytes).hexdigest()
         (temporary / "manifest.json").write_bytes(_json_bytes(manifest))
-        try:
-            os.rename(temporary, target)
-        except OSError as exc:
-            raise AuditStoreError(
-                f"failed to commit review artifact {run_id}: {exc}"
-            ) from exc
+        _commit_review_artifact(temporary, target, label=f"artifact {run_id}")
         return target
 
     def append_revision(
@@ -327,12 +349,9 @@ class JsonAuditStore:
         manifest["stage_event_count"] = len(result.run.stage_events)
         manifest["stage_events_sha256"] = hashlib.sha256(stage_events_bytes).hexdigest()
         (temporary / "manifest.json").write_bytes(_json_bytes(manifest))
-        try:
-            os.rename(temporary, revision_target)
-        except OSError as exc:
-            raise AuditStoreError(
-                f"failed to commit review revision {revision_id}: {exc}"
-            ) from exc
+        _commit_review_artifact(
+            temporary, revision_target, label=f"revision {revision_id}"
+        )
         return revision_target
 
     def load(self, run_id: str) -> ReviewResult:

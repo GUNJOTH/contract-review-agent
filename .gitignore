@@ -25,3 +25,10 @@ htmlcov/
 
 # Local runtime diagnostics
 gcm-diagnose.log
+
+# Local agent memory（本机记忆目录，不入库）
+.workbuddy/
+
+# 规则编辑覆盖层（本机运行期数据：custom_rules / disabled_ids / removed_ids / ai_candidates，不入库）
+data/contract_custom_rules.json
+data/contract_custom_rules.json.*

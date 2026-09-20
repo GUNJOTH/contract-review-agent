@@ -183,12 +183,19 @@ def load_rule_bundle(path: str | Path) -> RuleBundle:
 def load_active_rule_bundle(
     base_path: str | Path,
     extension_path: str | Path | None = None,
+    published_path: str | Path | None = None,
 ) -> RuleBundle:
-    """加载正式基础规则并合并版本化核心扩展规则。
+    """加载正式基础规则并合并版本化核心扩展规则与规则引擎库发布层。
 
     基础快照仍保持原始来源和兼容性，扩展规则以独立快照进入合并结果。
-    两个快照均须通过校验和发布状态门禁；任何重复规则 ID 或 Playbook
-    版本冲突都会在启动/审查前失败，而不是静默覆盖旧规则。
+    各快照均须通过校验和发布状态门禁；基础层与扩展层之间的重复规则 ID
+    会在启动/审查前失败，而不是静默覆盖旧规则。
+
+    ``published_path`` 是规则引擎库发布的**生效全集快照**：发布时把
+    基础 + 扩展 + 草稿变更（新增/覆盖编辑/停用剔除）合成一个完整快照，
+    因此存在发布层时直接以它为审查用的正式规则包——这正是"编辑基础
+    规则"与"停用基础规则"能生效的机制。基础/扩展层升级后需要重新发布
+    才会带上新变化，发布层不会静默混入旧变更。
     """
 
     base_bundle = load_rule_bundle(base_path)
@@ -199,7 +206,9 @@ def load_active_rule_bundle(
         extension_path = extension_candidate if extension_candidate.is_file() else None
     if extension_path is None:
         assert_rule_bundle_compatible(base_bundle)
-        return base_bundle
+        if published_path is None:
+            return base_bundle
+        return _load_published_active_bundle(base_bundle, published_path)
 
     extension_bundle = load_rule_bundle(extension_path)
     assert_rule_bundle_compatible(base_bundle)
@@ -236,7 +245,23 @@ def load_active_rule_bundle(
     )
     # 合并结果是新的规则快照，必须重新生成自己的正式发布指纹，不能
     # 复用任一输入快照的 release_fingerprint。
-    return publish_playbook_bundle(merged)
+    merged_bundle = publish_playbook_bundle(merged)
+    if published_path is None:
+        return merged_bundle
+    return _load_published_active_bundle(merged_bundle, published_path)
+
+
+def _load_published_active_bundle(
+    fallback_bundle: RuleBundle, published_path: str | Path
+) -> RuleBundle:
+    """发布层是完整生效快照：存在即整体取代基础/扩展合并结果。"""
+
+    candidate = Path(published_path)
+    if not candidate.is_file():
+        return fallback_bundle
+    published_bundle = load_rule_bundle(candidate)
+    assert_rule_bundle_compatible(published_bundle)
+    return published_bundle
 
 
 def validate_rule(rule: Rule) -> None:

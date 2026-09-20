@@ -73,12 +73,28 @@ class PlaybookEvaluation(ModelBase):
 
 
 def _release_fingerprint(bundle: RuleBundle) -> str:
-    """计算不包含运行时发布时间的规则包发布指纹。"""
+    """计算不包含运行时发布时间的规则包发布指纹。
+
+    规则的展示元数据（weight 与高/中/低分标准，v1 评分矩阵口径）不参与
+    检查逻辑，也不进入指纹——修改它们不需要重新发布，旧快照保持可加载。
+    """
 
     payload = bundle.model_dump(
         mode="json",
         exclude={"imported_at", "published_at", "release_fingerprint", "release_status"},
     )
+    rules = payload.get("rules")
+    if isinstance(rules, list):
+        payload["rules"] = [
+            {
+                key: value
+                for key, value in rule.items()
+                if key not in _RULE_PRESENTATION_FIELDS
+            }
+            if isinstance(rule, dict)
+            else rule
+            for rule in rules
+        ]
     return hashlib.sha256(
         json.dumps(
             payload,
@@ -87,6 +103,12 @@ def _release_fingerprint(bundle: RuleBundle) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+# 纯展示字段：v1 评分矩阵的权重与高/中/低分标准、建议动作。
+_RULE_PRESENTATION_FIELDS = frozenset(
+    {"weight", "high_standard", "mid_standard", "low_standard", "suggested_action"}
+)
 
 
 def validate_playbook_spec(playbook: PlaybookSpec) -> list[PlaybookValidationIssue]:

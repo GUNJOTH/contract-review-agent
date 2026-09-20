@@ -60,7 +60,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C5"
-      }
+      },
+      "weight": 6,
+      "high_standard": "合同类型判定依据充分",
+      "mid_standard": "合同类型接近但需人工确认",
+      "low_standard": "无法判定合同类型"
     },
     {
       "rule_id": "CONTRACT-CHECK-66F4FDEE8852",
@@ -109,7 +113,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C6"
-      }
+      },
+      "weight": 6,
+      "high_standard": "合同类型判定依据充分",
+      "mid_standard": "合同类型接近但需人工确认",
+      "low_standard": "无法判定合同类型"
     },
     {
       "rule_id": "CONTRACT-CHECK-65C73394F4BA",
@@ -158,7 +166,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C7"
-      }
+      },
+      "weight": 6,
+      "high_standard": "合同类型判定依据充分",
+      "mid_standard": "合同类型接近但需人工确认",
+      "low_standard": "无法判定合同类型"
     },
     {
       "rule_id": "CONTRACT-CHECK-7EDAE6E42319",
@@ -207,7 +219,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C8"
-      }
+      },
+      "weight": 6,
+      "high_standard": "合同类型判定依据充分",
+      "mid_standard": "合同类型接近但需人工确认",
+      "low_standard": "无法判定合同类型"
     },
     {
       "rule_id": "CONTRACT-CHECK-99BE9ADE3773",
@@ -256,7 +272,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C9"
-      }
+      },
+      "weight": 6,
+      "high_standard": "合同类型判定依据充分",
+      "mid_standard": "合同类型接近但需人工确认",
+      "low_standard": "无法判定合同类型"
     },
     {
       "rule_id": "CONTRACT-CHECK-875D2A258280",
@@ -313,7 +333,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C10"
-      }
+      },
+      "weight": 18,
+      "high_standard": "金额大小写一致与合同口径完全一致",
+      "mid_standard": "金额大小写一致可核对但存在口径差异",
+      "low_standard": "金额大小写一致缺失、矛盾或无法核对"
     },
     {
       "rule_id": "CONTRACT-CHECK-5E14216899C4",
@@ -370,7 +394,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C11"
-      }
+      },
+      "weight": 12,
+      "high_standard": "金额明细汇总一致与合同口径完全一致",
+      "mid_standard": "金额明细汇总一致可核对但存在口径差异",
+      "low_standard": "金额明细汇总一致缺失、矛盾或无法核对"
     },
     {
       "rule_id": "CONTRACT-CHECK-2C24E4374821",
@@ -424,7 +452,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C12"
-      }
+      },
+      "weight": 18,
+      "high_standard": "不含税与合同口径完全一致",
+      "mid_standard": "不含税可核对但存在口径差异",
+      "low_standard": "不含税缺失、矛盾或无法核对"
     },
     {
       "rule_id": "CONTRACT-CHECK-CBAFDF262EB8",
@@ -471,14 +503,20 @@
           "note": null
         }
       },
-      "required_evidence": ["tax_rate"],
+      "required_evidence": [
+        "tax_rate"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C13"
-      }
+      },
+      "weight": 18,
+      "high_standard": "税率与合同口径完全一致",
+      "mid_standard": "税率可核对但存在口径差异",
+      "low_standard": "税率缺失、矛盾或无法核对"
     },
     {
       "rule_id": "CONTRACT-CHECK-1BF7A165D755",
@@ -536,7 +574,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C14"
-      }
+      },
+      "weight": 18,
+      "high_standard": "税额与合同口径完全一致",
+      "mid_standard": "税额可核对但存在口径差异",
+      "low_standard": "税额缺失、矛盾或无法核对"
     },
     {
       "rule_id": "CONTRACT-CHECK-8A7E00066A65",
@@ -583,14 +625,24 @@
           "note": null
         }
       },
-      "required_evidence": ["financial.payment_ratio"],
+      "required_evidence": [
+        "financial.payment_ratio"
+      ],
       "playbook": {
         "playbook_id": "payment-position-v1",
         "version": "v1",
-        "clause_types": ["付款", "支付"],
+        "clause_types": [
+          "付款",
+          "支付"
+        ],
         "preferred_position": "验收合格后支付",
-        "fallback_positions": ["分阶段付款"],
-        "prohibited_positions": ["100%预付", "一次性全额预付"],
+        "fallback_positions": [
+          "分阶段付款"
+        ],
+        "prohibited_positions": [
+          "100%预付",
+          "一次性全额预付"
+        ],
         "missing_clause_policy": "BLOCK",
         "action_on_preferred": "ACCEPT",
         "action_on_fallback": "REVISE",
@@ -604,7 +656,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C15"
-      }
+      },
+      "weight": 12,
+      "high_standard": "付款方式（付款比例）约定完整且与合同额相符",
+      "mid_standard": "付款方式（付款比例）有约定但比例/总额不清",
+      "low_standard": "付款方式（付款比例）未约定或总额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-4CABB10596A5",
@@ -658,7 +714,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C16"
-      }
+      },
+      "weight": 12,
+      "high_standard": "是否有保函要求？约定完整且与合同额相符",
+      "mid_standard": "是否有保函要求？有约定但比例/总额不清",
+      "low_standard": "是否有保函要求？未约定或总额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-6DFB2B3C395A",
@@ -715,7 +775,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C17"
-      }
+      },
+      "weight": 18,
+      "high_standard": "付款总额是否与合同额相等约定完整且与合同额相符",
+      "mid_standard": "付款总额是否与合同额相等有约定但比例/总额不清",
+      "low_standard": "付款总额是否与合同额相等未约定或总额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-51E4F72FF9D1",
@@ -762,14 +826,20 @@
           "note": null
         }
       },
-      "required_evidence": ["contract_element:invoice_type"],
+      "required_evidence": [
+        "contract_element:invoice_type"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C18"
-      }
+      },
+      "weight": 12,
+      "high_standard": "发票类型类型、金额与合同一致",
+      "mid_standard": "发票类型部分约定不清",
+      "low_standard": "发票类型缺失或与合同额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-F57828183B8B",
@@ -816,14 +886,20 @@
           "note": null
         }
       },
-      "required_evidence": ["financial.invoice_amount"],
+      "required_evidence": [
+        "financial.invoice_amount"
+      ],
       "human_review": false,
       "source_snapshot": "合同审批检查自查标准_v0.14.xlsx#9108d8c814990805218b59bf96cfc5e06a89ad9d9f592c96486475bdcfd4b055",
       "source_locator": {
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C19"
-      }
+      },
+      "weight": 12,
+      "high_standard": "发票金额类型、金额与合同一致",
+      "mid_standard": "发票金额部分约定不清",
+      "low_standard": "发票金额缺失或与合同额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-41B683F2356A",
@@ -880,7 +956,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C20"
-      }
+      },
+      "weight": 18,
+      "high_standard": "发票总额是否与合同额相等类型、金额与合同一致",
+      "mid_standard": "发票总额是否与合同额相等部分约定不清",
+      "low_standard": "发票总额是否与合同额相等缺失或与合同额不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-1EB03A0ED5A0",
@@ -933,7 +1013,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C21"
-      }
+      },
+      "weight": 6,
+      "high_standard": "未出现不受控的「源代码」交付承诺，或已明确范围",
+      "mid_standard": "出现「源代码」相关表述但范围不清",
+      "low_standard": "承诺交付「源代码」且无限制条款"
     },
     {
       "rule_id": "CONTRACT-CHECK-F036278C7CB9",
@@ -986,7 +1070,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C22"
-      }
+      },
+      "weight": 6,
+      "high_standard": "未出现不受控的「源程序」交付承诺，或已明确范围",
+      "mid_standard": "出现「源程序」相关表述但范围不清",
+      "low_standard": "承诺交付「源程序」且无限制条款"
     },
     {
       "rule_id": "CONTRACT-CHECK-997A98C9285D",
@@ -1033,7 +1121,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C23"
-      }
+      },
+      "weight": 6,
+      "high_standard": "未出现不受控的「源码」交付承诺，或已明确范围",
+      "mid_standard": "出现「源码」相关表述但范围不清",
+      "low_standard": "承诺交付「源码」且无限制条款"
     },
     {
       "rule_id": "CONTRACT-CHECK-150551B0F63E",
@@ -1086,7 +1178,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C24"
-      }
+      },
+      "weight": 6,
+      "high_standard": "未出现不受控的「代码」交付承诺，或已明确范围",
+      "mid_standard": "出现「代码」相关表述但范围不清",
+      "low_standard": "承诺交付「代码」且无限制条款"
     },
     {
       "rule_id": "CONTRACT-CHECK-16BC0E4573FB",
@@ -1139,7 +1235,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C25"
-      }
+      },
+      "weight": 6,
+      "high_standard": "未出现不受控的「程序」交付承诺，或已明确范围",
+      "mid_standard": "出现「程序」相关表述但范围不清",
+      "low_standard": "承诺交付「程序」且无限制条款"
     },
     {
       "rule_id": "CONTRACT-CHECK-AD9C3769093E",
@@ -1189,10 +1289,19 @@
       "playbook": {
         "playbook_id": "ip-ownership-v1",
         "version": "v1",
-        "clause_types": ["知识产权", "产权", "成果"],
+        "clause_types": [
+          "知识产权",
+          "产权",
+          "成果"
+        ],
         "preferred_position": "甲方所有",
-        "fallback_positions": ["双方共有"],
-        "prohibited_positions": ["乙方所有", "供应商所有"],
+        "fallback_positions": [
+          "双方共有"
+        ],
+        "prohibited_positions": [
+          "乙方所有",
+          "供应商所有"
+        ],
         "missing_clause_policy": "BLOCK",
         "action_on_preferred": "ACCEPT",
         "action_on_fallback": "ESCALATE",
@@ -1206,7 +1315,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C26"
-      }
+      },
+      "weight": 18,
+      "high_standard": "产权归属约定明确、可执行",
+      "mid_standard": "产权归属有约定但不完整",
+      "low_standard": "产权归属缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-9CCBE1B516D5",
@@ -1253,7 +1366,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C27"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-1DA17C10920C",
@@ -1300,7 +1417,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C28"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-68FD46A56186",
@@ -1350,7 +1471,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C29"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-AA61E0FE61E2",
@@ -1402,7 +1527,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C30"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-A48023900111",
@@ -1454,7 +1583,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C31"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-6C794D5A861E",
@@ -1506,7 +1639,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C32"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-0717EBD030A4",
@@ -1558,7 +1695,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C33"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-D287A323E291",
@@ -1610,7 +1751,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C34"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-157FEC3F335B",
@@ -1662,7 +1807,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C35"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-7816F4A0A226",
@@ -1714,7 +1863,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C36"
-      }
+      },
+      "weight": 6,
+      "high_standard": "信息完整可核验",
+      "mid_standard": "信息部分缺失",
+      "low_standard": "关键信息缺失"
     },
     {
       "rule_id": "CONTRACT-CHECK-97AB266DCBA7",
@@ -1767,7 +1920,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C37"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-4C9A7D6FB7EC",
@@ -1820,7 +1977,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C38"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-E1903FDBD368",
@@ -1874,7 +2035,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C39"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-6D59A5035735",
@@ -1924,10 +2089,18 @@
       "playbook": {
         "playbook_id": "breach-liability-v1",
         "version": "v1",
-        "clause_types": ["违约责任", "违约"],
+        "clause_types": [
+          "违约责任",
+          "违约"
+        ],
         "preferred_position": "违约方应承担",
-        "fallback_positions": ["按实际损失赔偿"],
-        "prohibited_positions": ["不承担任何违约责任", "免责"],
+        "fallback_positions": [
+          "按实际损失赔偿"
+        ],
+        "prohibited_positions": [
+          "不承担任何违约责任",
+          "免责"
+        ],
         "missing_clause_policy": "BLOCK",
         "action_on_preferred": "ACCEPT",
         "action_on_fallback": "ESCALATE",
@@ -1941,7 +2114,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C40"
-      }
+      },
+      "weight": 18,
+      "high_standard": "违约责任明确约定明确、可执行",
+      "mid_standard": "违约责任明确有约定但不完整",
+      "low_standard": "违约责任明确缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-62A5629DD18D",
@@ -1994,7 +2171,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C41"
-      }
+      },
+      "weight": 18,
+      "high_standard": "合同完整性（无空白等）约定明确、可执行",
+      "mid_standard": "合同完整性（无空白等）有约定但不完整",
+      "low_standard": "合同完整性（无空白等）缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-81DA4685E47F",
@@ -2047,7 +2228,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C42"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-1AD81446696C",
@@ -2100,7 +2285,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C43"
-      }
+      },
+      "weight": 12,
+      "high_standard": "约定完整、口径一致",
+      "mid_standard": "约定不完整或口径不清",
+      "low_standard": "未约定或明显不符"
     },
     {
       "rule_id": "CONTRACT-CHECK-5022DA193A57",
@@ -2149,7 +2338,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C44"
-      }
+      },
+      "weight": 18,
+      "high_standard": "封面：技术开发合同约定明确、可执行",
+      "mid_standard": "封面：技术开发合同有约定但不完整",
+      "low_standard": "封面：技术开发合同缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-BACB2ECA9235",
@@ -2198,7 +2391,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C45"
-      }
+      },
+      "weight": 18,
+      "high_standard": "项目名称约定明确、可执行",
+      "mid_standard": "项目名称有约定但不完整",
+      "low_standard": "项目名称缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-3B7CD50964E7",
@@ -2247,7 +2444,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C46"
-      }
+      },
+      "weight": 18,
+      "high_standard": "标的内容、范围和要求约定明确、可执行",
+      "mid_standard": "标的内容、范围和要求有约定但不完整",
+      "low_standard": "标的内容、范围和要求缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-EE73FB5AECCA",
@@ -2296,7 +2497,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C47"
-      }
+      },
+      "weight": 18,
+      "high_standard": "履行的计划、进度、期限、地点、地域和方式约定明确、可执行",
+      "mid_standard": "履行的计划、进度、期限、地点、地域和方式有约定但不完整",
+      "low_standard": "履行的计划、进度、期限、地点、地域和方式缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-4D4FCC703F14",
@@ -2345,7 +2550,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C48"
-      }
+      },
+      "weight": 18,
+      "high_standard": "技术情报和资料的保密约定明确、可执行",
+      "mid_standard": "技术情报和资料的保密有约定但不完整",
+      "low_standard": "技术情报和资料的保密缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-BB629A656600",
@@ -2394,7 +2603,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C49"
-      }
+      },
+      "weight": 18,
+      "high_standard": "风险责任承担约定明确、可执行",
+      "mid_standard": "风险责任承担有约定但不完整",
+      "low_standard": "风险责任承担缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-774388E91C1A",
@@ -2443,7 +2656,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C50"
-      }
+      },
+      "weight": 18,
+      "high_standard": "技术成果归属和收益的分成办法约定明确、可执行",
+      "mid_standard": "技术成果归属和收益的分成办法有约定但不完整",
+      "low_standard": "技术成果归属和收益的分成办法缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-274FC4247520",
@@ -2489,10 +2706,18 @@
       "playbook": {
         "playbook_id": "acceptance-criteria-v1",
         "version": "v1",
-        "clause_types": ["验收", "验收标准"],
+        "clause_types": [
+          "验收",
+          "验收标准"
+        ],
         "preferred_position": "验收标准和方法",
-        "fallback_positions": ["以甲方书面确认为准"],
-        "prohibited_positions": ["视为验收合格", "自动验收合格"],
+        "fallback_positions": [
+          "以甲方书面确认为准"
+        ],
+        "prohibited_positions": [
+          "视为验收合格",
+          "自动验收合格"
+        ],
         "missing_clause_policy": "BLOCK",
         "action_on_preferred": "ACCEPT",
         "action_on_fallback": "REVISE",
@@ -2506,7 +2731,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C51"
-      }
+      },
+      "weight": 18,
+      "high_standard": "验收标准和方法约定明确、可执行",
+      "mid_standard": "验收标准和方法有约定但不完整",
+      "low_standard": "验收标准和方法缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-999C61BD8B59",
@@ -2555,7 +2784,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C52"
-      }
+      },
+      "weight": 18,
+      "high_standard": "开具技术开发服务发票（税率为0的普票，非专票）约定明确、可执行",
+      "mid_standard": "开具技术开发服务发票（税率为0的普票，非专票）有约定但不完整",
+      "low_standard": "开具技术开发服务发票（税率为0的普票，非专票）缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-1B59A23E6377",
@@ -2604,7 +2837,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C53"
-      }
+      },
+      "weight": 18,
+      "high_standard": "合同（包括：技术协议及附件）必须盖骑缝章约定明确、可执行",
+      "mid_standard": "合同（包括：技术协议及附件）必须盖骑缝章有约定但不完整",
+      "low_standard": "合同（包括：技术协议及附件）必须盖骑缝章缺失或约定无效，构成重大风险"
     },
     {
       "rule_id": "CONTRACT-CHECK-44EA101C6E2C",
@@ -2653,7 +2890,11 @@
         "locator_type": "table_cell",
         "sheet_name": "Sheet1",
         "cell_reference": "C54"
-      }
+      },
+      "weight": 18,
+      "high_standard": "如果有是升级、优化、扩展可能会需要提供第一次开发合同约定明确、可执行",
+      "mid_standard": "如果有是升级、优化、扩展可能会需要提供第一次开发合同有约定但不完整",
+      "low_standard": "如果有是升级、优化、扩展可能会需要提供第一次开发合同缺失或约定无效，构成重大风险"
     }
   ],
   "imported_at": "2026-08-28T01:47:47.153Z"

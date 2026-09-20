@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     CELERY_LOG_LEVEL: str = "INFO"
 
     MAX_IMAGE_SIZE: int = 10 * 1024 * 1024
+    # 合同文档（PDF/DOCX/XLSX）上传上限：扫描版合同普遍超过 OCR 图片的
+    # 10MB 量级，审查/对比/预览按文档口径放宽，图片接口仍用 MAX_IMAGE_SIZE。
+    MAX_DOCUMENT_SIZE: int = 100 * 1024 * 1024
     SEAL_PDF_RENDER_DPI: int = 200
 
     OCR_GATEWAY_BASE_URL: str = "http://127.0.0.1:8080"
@@ -38,6 +41,8 @@ class Settings(BaseSettings):
 
     CONTRACT_RULES_PATH: str = "data/contract_rules_v0.14.json"
     CONTRACT_CORE_RULES_PATH: str = "data/contract_core_rules_v0.15.json"
+    # 标准要素字段目录快照；其指纹进入审查结果回放身份。
+    CONTRACT_ELEMENT_FIELDS_PATH: str = "data/contract_element_fields_v1.json"
     CONTRACT_OCR_CONFIDENCE_THRESHOLD: float = 0.0
     CONTRACT_REVIEW_ENDPOINT: str = ""
     CONTRACT_REVIEW_API_KEY: str = ""
@@ -65,6 +70,11 @@ class Settings(BaseSettings):
     CONTRACT_REVIEW_MODEL_ADAPTIVE_SUCCESS_WINDOW: int = 4
     # 阶段 1 只开放经过 A/B 验证的规则级并发上限，默认保持串行兼容。
     CONTRACT_REVIEW_SEMANTIC_MAX_CONCURRENCY: int = 1
+    # 通读风险分析的分片并发上限；默认 1（逐片串行）。风险分析用的是自己那份
+    # 进程内模型闸门（operation=risk_analysis，与语义审查的闸门互不占用），
+    # 客户端会按该值敞开闸门容量，因此改这一个值即可生效。并发开启时排队
+    # 窗口同步放宽到一次请求的超时时间，避免排在后面的分片被误判为不可用。
+    CONTRACT_REVIEW_RISK_ANALYSIS_MAX_CONCURRENCY: int = 1
     CONTRACT_REVIEW_JSON_MODE: bool = False
     CONTRACT_SEAL_DETECTION_ENABLED: bool = True
     CONTRACT_SEAL_MAX_PAGES: int = 50
@@ -76,6 +86,23 @@ class Settings(BaseSettings):
     CONTRACT_REVIEW_EMBEDDING_QUEUE_TIMEOUT_SECONDS: float = 30.0
     CONTRACT_REVIEW_EMBEDDING_CACHE_DIR: str = "runtime/embedding_cache"
     CONTRACT_REVIEW_RETRIEVAL_TOP_K: int = 7
+    # 要素 AI 补全只补确定性抽取未命中的字段，且必须回指候选证据；默认开启，
+    # 但仅在配置了 CONTRACT_REVIEW_ENDPOINT 时才会真正发起模型调用。
+    CONTRACT_ELEMENT_AI_COMPLETION_ENABLED: bool = True
+    CONTRACT_ELEMENT_AI_COMPLETION_PROMPT_VERSION: str = (
+        "contract-element-completion-prompt-v1"
+    )
+    # 通读式 AI 风险分析（批次 2 第二判据）：模型通读合同摘录，补充规则库
+    # 未覆盖的风险点；每条必须回指候选证据。默认开启，但仅在配置了
+    # CONTRACT_REVIEW_ENDPOINT 时才会真正发起模型调用。
+    CONTRACT_RISK_ANALYSIS_ENABLED: bool = True
+    CONTRACT_RISK_ANALYSIS_PROMPT_VERSION: str = (
+        "contract-risk-analysis-prompt-v1"
+    )
+    # 规则引擎库（批次 3）：与 v1 同构——"合同检查标准"规则可新增/编辑/
+    # 启停/删除，保存即生效。覆盖层落盘为版本化 JSON（含自定义规则、
+    # 停用与删除标记），审查时与基础/扩展快照合成带指纹的正式规则包。
+    CONTRACT_CUSTOM_RULES_PATH: str = "data/contract_custom_rules.json"
     # 外部模型调用默认采用 fail-closed PII 门禁；关闭仅适用于已审批的隔离环境。
     CONTRACT_AI_PII_GATE_ENABLED: bool = True
     CONTRACT_AI_PII_MODE: str = "block"

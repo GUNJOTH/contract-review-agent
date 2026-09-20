@@ -112,11 +112,15 @@ def test_contract_compare_api_returns_diff_list(monkeypatch):
                 other,
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ),
-        },
-        data={
-            "ReviewResultPayload": json.dumps(
-                review_response.json()["review_result"], ensure_ascii=False
-            )
+            # ReviewResultPayload 必须走文件部件：完整 ReviewResult 超过 1MB，
+            # 用普通 Form 字段会撞 Starlette multipart 的 1MB part 上限。
+            "ReviewResultPayload": (
+                "review-result.json",
+                json.dumps(
+                    review_response.json()["review_result"], ensure_ascii=False
+                ).encode("utf-8"),
+                "application/json",
+            ),
         },
     )
     assert response.status_code == 200, response.text
@@ -127,7 +131,9 @@ def test_contract_compare_api_returns_diff_list(monkeypatch):
     assert "差异" in payload["report"] or "修改" in payload["report"]
 
 
-def test_contract_compare_api_requires_review_result():
+def test_contract_compare_api_allows_pure_compare_without_review_result():
+    """不提供 ReviewResultPayload 时做纯文档对比（v1 同款，无需先审查）。"""
+
     base = _docx_bytes("付款方式：银行转账")
     other = _docx_bytes("付款方式：支票支付")
     response = client.post(
@@ -138,4 +144,8 @@ def test_contract_compare_api_requires_review_result():
             "compare_file": ("比对.docx", other, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         },
     )
-    assert response.status_code == 422, response.text
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["modified"] >= 1
+    assert payload["changes"]
+    assert payload["review_result"] is None

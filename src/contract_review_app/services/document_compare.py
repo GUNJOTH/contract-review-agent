@@ -77,9 +77,13 @@ class DocumentCompareResult(BaseModel):
 
 
 class ContractCompareResponse(DocumentCompareResult):
-    """版本比对 HTTP 响应：差异结果必须挂载到核心审查结果。"""
+    """版本比对 HTTP 响应。
 
-    review_result: ReviewResult
+    ``review_result`` 可选：提供 ReviewResultPayload 时挂载并重新登记，
+    纯文档对比（v1 同款，无需先审查）时为空。
+    """
+
+    review_result: ReviewResult | None = None
 
 
 def compare_contract_documents(

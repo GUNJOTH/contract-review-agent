@@ -652,15 +652,13 @@ def findings_from_semantic_response(
             and known_evidence[evidence_id].document_id
             and (known_evidence[evidence_id].raw_excerpt or "").strip()
         ]
-        minimum_confidence = (
-            MIN_CONFIDENCE_FOR_AUTOMATIC_PASS
-            if status == FindingStatus.PASS
-            else MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS
-        )
+        minimum_confidence = MIN_CONFIDENCE_FOR_AUTOMATIC_STATUS
         force_unknown_reason: str | None = None
-        if rule.human_review or rule.check_method == "human":
-            force_unknown_reason = "该规则明确要求人工复核，模型结论不能直接落为自动状态。"
-        elif status in {
+        # v1 口径（2026-09-17 对齐）：human_review 只是复核队列标记，不否决
+        # 模型结论——v0.14 快照里全部 semantic 规则都带 human_review=true，
+        # 若在此强制 UNKNOWN，AI 判定会被整体作废（整页退化为"待确认"）。
+        # 保留 v1 同款的置信度门槛与"必须引用带原文的合同证据"门禁。
+        if status in {
             FindingStatus.PASS,
             FindingStatus.WARN,
             FindingStatus.BLOCK,

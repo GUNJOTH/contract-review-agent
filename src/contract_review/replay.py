@@ -194,6 +194,16 @@ def build_result_fingerprint(result: ReviewResult) -> str:
         )
         if result.semantic_request is not None
         else None,
+        "element_completion_response": result.element_completion_response.model_dump(
+            mode="json", exclude={"created_at"}
+        )
+        if result.element_completion_response is not None
+        else None,
+        "element_completion_request": result.element_completion_request.model_dump(
+            mode="json", exclude={"request_id"}
+        )
+        if result.element_completion_request is not None
+        else None,
         "attachment_references": [
             item.model_dump(mode="json")
             for item in sorted(
