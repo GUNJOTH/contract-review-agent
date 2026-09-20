@@ -688,14 +688,15 @@ def run_review(
         },
     }
     # 补全失败时的降级说明由调用方写入配置，并在回放时作为输入传回；这里必须
-    # 原样保留，否则回放重建出的配置与存档不一致，结果指纹会对不上。
+    # 原样保留，否则回放重建出的配置与存档不一致，结果指纹会对不上。下面只重建
+    # "这次补全是怎么跑的"这层结构键，调用方写入的说明键（status / reason /
+    # detail 等）一律按原值带回。
     previous_completion = (configuration or {}).get("element_completion")
     if isinstance(previous_completion, Mapping):
-        for marker in ("status", "reason"):
-            if marker in previous_completion:
-                run_configuration["element_completion"][marker] = (
-                    previous_completion[marker]
-                )
+        rebuilt_keys = set(run_configuration["element_completion"])
+        for marker, value in previous_completion.items():
+            if marker not in rebuilt_keys:
+                run_configuration["element_completion"][marker] = value
     if extra_evidence:
         run_configuration["extra_evidence_ids"] = [
             item.evidence_id for item in extra_evidence

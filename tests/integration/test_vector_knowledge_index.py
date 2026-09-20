@@ -735,18 +735,28 @@ def test_contract_review_uses_vector_retrieval(monkeypatch, tmp_path):
         if trace.index_version.startswith("vector-knowledge")
     ]
     assert vector_traces, "配置 embedding 后审查应使用向量检索"
-    assert all(trace.fusion_method == RetrievalFusion.RRF for trace in vector_traces)
+    # 要素定位检索（purpose=element_location、rule_id=element-location）只检合同
+    # 正文、不绑定条款，clause_ids 天然为空；针对规则检索的过滤条件断言需排除它。
+    rule_vector_traces = [
+        trace
+        for trace in vector_traces
+        if trace.retrieval_query.rule_id != "element-location"
+    ]
+    assert rule_vector_traces, "配置 embedding 后规则检索应使用向量检索"
+    assert all(
+        trace.fusion_method == RetrievalFusion.RRF for trace in rule_vector_traces
+    )
     assert all(
         trace.retrieval_query.retrieval_filter.applicable_rule_ids
         == trace.used_for_rule_ids
-        for trace in vector_traces
+        for trace in rule_vector_traces
     )
     assert all(
         trace.retrieval_query.retrieval_filter.clause_ids
         and trace.retrieval_query.retrieval_filter.source_names
         and trace.retrieval_query.retrieval_filter.source_versions
         and trace.retrieval_query.retrieval_filter.rule_versions
-        for trace in vector_traces
+        for trace in rule_vector_traces
     )
     # 语义规则应检索到正文证据（不是只有规则片段）
     chunks_by_id = {chunk.chunk_id: chunk for chunk in result.knowledge_chunks}

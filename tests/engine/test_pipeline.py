@@ -180,8 +180,14 @@ class PipelineTests(unittest.TestCase):
             run_id="run-inapplicable-semantic",
         )
 
+        # 要素定位检索（purpose=element_location、rule_id=element-location）只检
+        # 合同正文、不参与规则检索，规则轨迹断言需要排除它。
         self.assertEqual(
-            {trace.retrieval_query.rule_id for trace in result.retrieval_traces},
+            {
+                trace.retrieval_query.rule_id
+                for trace in result.retrieval_traces
+                if trace.retrieval_query.rule_id != "element-location"
+            },
             {rule.rule_id for rule in self.bundle.rules},
         )
         self.assertTrue(result.candidate_evidence)
