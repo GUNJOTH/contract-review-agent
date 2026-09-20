@@ -488,8 +488,8 @@ def get_hardware_summary() -> dict:
                 }
 
                 summary["gpu"].append(gpu_info)
-        except Exception as e:
-            summary["gpu_error"] = str(e)
+        except Exception:
+            summary["gpu_error"] = "GPU 信息暂不可用"
 
     # 磁盘信息
     if psutil:
